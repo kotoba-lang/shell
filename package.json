@@ -1,0 +1,21 @@
+{
+  "name": "@kotoba-lang/shell",
+  "version": "0.1.0",
+  "description": "Kotoba Shell: Clojure/Kotoba-native shell adapter and native-host bridge",
+  "bin": {
+    "kotoba-shell": "bin/kotoba-shell"
+  },
+  "files": [
+    "bin",
+    "src",
+    "resources",
+    "README.md",
+    "deps.edn"
+  ],
+  "scripts": {
+    "test": "clojure -M:test",
+    "check": "clojure -M -m kotoba.shell.launcher native-host check --target macos --json"
+  },
+  "license": "UNLICENSED",
+  "private": false
+}

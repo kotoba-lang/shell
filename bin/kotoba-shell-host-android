@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+provider_command=""
+args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target) shift 2 ;;
+    --provider-command) provider_command="${2:-}"; shift 2 ;;
+    --host-arg) args+=("${2:-}"); shift 2 ;;
+    --) shift; args+=("$@"); break ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+cat >/dev/null || true
+
+if ! command -v adb >/dev/null 2>&1; then
+  printf 'adb is required for the Android host runner\n' >&2
+  exit 69
+fi
+
+if [[ -n "$provider_command" && ${#args[@]} -eq 0 ]]; then
+  printf 'android provider command requires --host-arg command for adb shell\n' >&2
+  exit 64
+fi
+
+if [[ ${#args[@]} -eq 0 ]]; then
+  adb devices
+else
+  adb shell "${args[@]}"
+fi

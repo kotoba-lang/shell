@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+exec clojure -Sdeps "{:deps {kotoba-lang/shell {:local/root \"$repo_dir\"}}}" -M -m kotoba.shell.launcher "$@"

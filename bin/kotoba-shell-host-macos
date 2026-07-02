@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="macos"
+provider_command=""
+path=""
+url=""
+service="kotoba-shell"
+account="default"
+title="Kotoba"
+message=""
+args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target) target="${2:-macos}"; shift 2 ;;
+    --provider-command) provider_command="${2:-}"; shift 2 ;;
+    --path) path="${2:-}"; shift 2 ;;
+    --url) url="${2:-}"; shift 2 ;;
+    --service) service="${2:-kotoba-shell}"; shift 2 ;;
+    --account) account="${2:-default}"; shift 2 ;;
+    --title) title="${2:-Kotoba}"; shift 2 ;;
+    --message) message="${2:-}"; shift 2 ;;
+    --) shift; args+=("$@"); break ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+stdin="$(cat || true)"
+
+case "$provider_command" in
+  "")
+    printf 'kotoba-shell-host-macos ready target=%s\n' "$target"
+    ;;
+  clipboard/write-text)
+    printf '%s' "$stdin" | /usr/bin/pbcopy
+    ;;
+  clipboard/read-text)
+    /usr/bin/pbpaste
+    ;;
+  fs/read-text)
+    test -n "$path"
+    cat "$path"
+    ;;
+  fs/write-text)
+    test -n "$path"
+    mkdir -p "$(dirname "$path")"
+    printf '%s' "$stdin" > "$path"
+    ;;
+  fs/append-text)
+    test -n "$path"
+    mkdir -p "$(dirname "$path")"
+    printf '%s' "$stdin" >> "$path"
+    ;;
+  http/fetch)
+    test -n "$url"
+    /usr/bin/curl -fsSL "$url"
+    ;;
+  notify/show)
+    text="${message:-$stdin}"
+    /usr/bin/osascript -e "display notification \"${text//\"/\\\"}\" with title \"${title//\"/\\\"}\""
+    ;;
+  keychain/read-text)
+    /usr/bin/security find-generic-password -s "$service" -a "$account" -w
+    ;;
+  keychain/write-text)
+    /usr/bin/security add-generic-password -U -s "$service" -a "$account" -w "$stdin" >/dev/null
+    ;;
+  keychain/delete)
+    /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null
+    ;;
+  *)
+    printf 'unsupported macos provider command: %s\n' "$provider_command" >&2
+    exit 64
+    ;;
+esac
