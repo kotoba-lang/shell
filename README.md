@@ -69,8 +69,8 @@ booted simulator for `xcrun simctl` or a connected Android device/emulator for
 `adb`.
 
 The shell does not require a Tauri-style system WebView. `surface check` records
-`kotoba-lang/browser` as the browser/OS surface engine and `kotoba-lang/wasm-ui`
-as the `kotoba:dom` UI substrate. Native hosts provide a display surface,
+`kotoba-lang/browser` as the browser/OS surface engine and `kotoba-lang/dom-gpu`
+(renamed from `wasm-ui`) as the `kotoba:dom` UI substrate. Native hosts provide a display surface,
 input events, lifecycle, and provider capabilities.
 
 `app scaffold` generates minimal macOS, iOS, Android, and Windows native
@@ -128,8 +128,9 @@ as warnings, while `--strict` is intended for CI/device-farm gates.
 iOS/Android device readiness with an optional external device-farm command and
 only runs that command when `--execute` is present.
 
-`ui check` verifies that `kotoba-lang/wasm-ui` and `kotoba-lang/browser` are
-present with the required source files and package scripts for the
+`ui check` verifies that `kotoba-lang/dom-gpu` (internally keyed `:wasm-ui`,
+unchanged to keep the `--substrate wasm-ui` CLI value stable) and
+`kotoba-lang/browser` are present with the required source files and package scripts for the
 Kotoba-native surface path. This is the readiness gate that replaces a
 Tauri-style WebView dependency.
 

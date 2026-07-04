@@ -57,25 +57,25 @@
 (def surface-host-specs
   {:macos {:kind :native-surface
            :display "app-window"
-           :ui-substrate "kotoba-lang/wasm-ui"
+           :ui-substrate "kotoba-lang/dom-gpu"
            :browser-engine "kotoba-lang/browser"
            :renderers [:webgl :webgpu :native]
            :input-events [:pointer :keyboard :text :focus :resize]}
    :ios {:kind :native-surface
          :display "ui-window-scene"
-         :ui-substrate "kotoba-lang/wasm-ui"
+         :ui-substrate "kotoba-lang/dom-gpu"
          :browser-engine "kotoba-lang/browser"
          :renderers [:webgpu :native]
          :input-events [:touch :keyboard :text :focus :resize]}
    :android {:kind :native-surface
              :display "activity-surface"
-             :ui-substrate "kotoba-lang/wasm-ui"
+             :ui-substrate "kotoba-lang/dom-gpu"
              :browser-engine "kotoba-lang/browser"
              :renderers [:vulkan :opengles :native]
              :input-events [:touch :keyboard :text :focus :resize]}
    :windows {:kind :native-surface
              :display "external-window"
-             :ui-substrate "kotoba-lang/wasm-ui"
+             :ui-substrate "kotoba-lang/dom-gpu"
              :browser-engine "kotoba-lang/browser"
              :renderers [:webgpu :native]
              :input-events [:pointer :keyboard :text :focus :resize]}})
@@ -225,7 +225,7 @@
              :checks [:external-host-runner :authenticode :msix]}})
 
 (def ui-substrate-specs
-  {:wasm-ui {:repo "../wasm-ui"
+  {:wasm-ui {:repo "../dom-gpu"
              :role "kotoba:dom UI substrate"
              :required-files ["deps.edn"
                               "package.json"
@@ -1120,7 +1120,7 @@
                        {:kotoba.shell/target target
                         :kotoba.shell/webview-required? false
                         :kotoba.shell/surface-host (get surface-host-specs target)
-                        :kotoba.shell/ui-substrate "kotoba-lang/wasm-ui"
+                        :kotoba.shell/ui-substrate "kotoba-lang/dom-gpu"
                         :kotoba.shell/browser-engine "kotoba-lang/browser"
                         :kotoba.shell/abi "kotoba:dom"})}))
 

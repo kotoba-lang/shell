@@ -114,7 +114,7 @@
     (is (false? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
     (is (= "kotoba-lang/browser"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/browser-engine])))
-    (is (= "kotoba-lang/wasm-ui"
+    (is (= "kotoba-lang/dom-gpu"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/ui-substrate])))
     (is (= :native-surface
            (get-in check-result [:kotoba.cli/data :kotoba.shell/surface-host :kind])))
