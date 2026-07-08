@@ -9,6 +9,12 @@ service="kotoba-shell"
 account="default"
 title="Kotoba"
 message=""
+rp_id=""
+challenge=""
+salt=""
+user_name=""
+user_id=""
+credential_id=""
 args=()
 
 while [[ $# -gt 0 ]]; do
@@ -21,6 +27,12 @@ while [[ $# -gt 0 ]]; do
     --account) account="${2:-default}"; shift 2 ;;
     --title) title="${2:-Kotoba}"; shift 2 ;;
     --message) message="${2:-}"; shift 2 ;;
+    --rp-id) rp_id="${2:-}"; shift 2 ;;
+    --challenge) challenge="${2:-}"; shift 2 ;;
+    --salt) salt="${2:-}"; shift 2 ;;
+    --user-name) user_name="${2:-}"; shift 2 ;;
+    --user-id) user_id="${2:-}"; shift 2 ;;
+    --credential-id) credential_id="${2:-}"; shift 2 ;;
     --) shift; args+=("$@"); break ;;
     *) args+=("$1"); shift ;;
   esac
@@ -68,6 +80,34 @@ case "$provider_command" in
     ;;
   keychain/delete)
     /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null
+    ;;
+  webauthn/register)
+    if [[ -z "$rp_id" || -z "$challenge" || -z "$salt" || -z "$user_name" ]]; then
+      printf 'webauthn/register requires --rp-id, --challenge, --salt, --user-name\n' >&2
+      exit 64
+    fi
+    passkey_helper="${KOTOBA_SHELL_PASSKEY_HELPER:-$(dirname "$0")/../target/kotoba-shell-host-macos-passkey}"
+    if [[ ! -x "$passkey_helper" ]]; then
+      printf 'passkey helper not built: %s (run bin/kotoba-shell-build-macos-passkey --bundle-id <id> --team-id <TEAMID>, or set KOTOBA_SHELL_PASSKEY_HELPER)\n' "$passkey_helper" >&2
+      exit 69
+    fi
+    passkey_args=(register --rp-id "$rp_id" --challenge "$challenge" --salt "$salt" --user-name "$user_name")
+    [[ -n "$user_id" ]] && passkey_args+=(--user-id "$user_id")
+    "$passkey_helper" "${passkey_args[@]}"
+    ;;
+  webauthn/assert)
+    if [[ -z "$rp_id" || -z "$challenge" || -z "$salt" ]]; then
+      printf 'webauthn/assert requires --rp-id, --challenge, --salt\n' >&2
+      exit 64
+    fi
+    passkey_helper="${KOTOBA_SHELL_PASSKEY_HELPER:-$(dirname "$0")/../target/kotoba-shell-host-macos-passkey}"
+    if [[ ! -x "$passkey_helper" ]]; then
+      printf 'passkey helper not built: %s (run bin/kotoba-shell-build-macos-passkey --bundle-id <id> --team-id <TEAMID>, or set KOTOBA_SHELL_PASSKEY_HELPER)\n' "$passkey_helper" >&2
+      exit 69
+    fi
+    passkey_args=(assert --rp-id "$rp_id" --challenge "$challenge" --salt "$salt")
+    [[ -n "$credential_id" ]] && passkey_args+=(--credential-id "$credential_id")
+    "$passkey_helper" "${passkey_args[@]}"
     ;;
   *)
     printf 'unsupported macos provider command: %s\n' "$provider_command" >&2

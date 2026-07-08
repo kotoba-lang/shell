@@ -1,5 +1,6 @@
 (ns kotoba.shell.launcher-test
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.launcher :as launcher]))
 
@@ -29,7 +30,7 @@
            (get-in macos-result [:kotoba.cli/data :kotoba.shell/authority])))
     (is (false? (get-in macos-result [:kotoba.cli/data :kotoba.shell/deprecated-shim?])))
     (is (= :shell/native-host-ready (:kotoba.cli/code macos-result)))
-    (is (= 13 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
+    (is (= 15 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
     (is (string? (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-command])))
     (is (= :process (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :simctl (get-in ios-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
@@ -177,6 +178,71 @@
            (get-in read-result [:kotoba.cli/data :kotoba.shell/provider-output])))
     (is (= :provider/ran
            (get-in read-result [:kotoba.cli/data :kotoba.shell/audit :audit/event])))))
+
+(deftest macos-webauthn-provider-is-macos-only-and-gated-by-default
+  ;; ASAuthorizationController (real Touch ID / passkey ceremony) needs a
+  ;; live interactive session and cannot be exercised in an automated test,
+  ;; so this only verifies the dispatch/catalog/policy plumbing -- exactly
+  ;; how the other native-only behavior (real biometric hardware) is out of
+  ;; scope for the rest of this suite too. A fake --host-command stands in
+  ;; for the real (never built in CI) native passkey helper.
+  (let [explicit-allow-policy "{:allow [\"webauthn/passkey\"] :deny []}"
+        register-with-fake-host
+        (launcher/dispatch ["native-host" "provider"
+                            "--target" "macos"
+                            "--provider-command" "webauthn/register"
+                            "--host-command" "/bin/echo"
+                            "--host-arg" "fake-webauthn-ok"
+                            "--policy-edn" explicit-allow-policy])
+        ios-unknown (launcher/dispatch ["native-host" "provider"
+                                        "--target" "ios"
+                                        "--provider-command" "webauthn/register"
+                                        "--host-command" "/bin/echo"
+                                        "--policy-edn" explicit-allow-policy])
+        windows-unknown (launcher/dispatch ["native-host" "provider"
+                                            "--target" "windows"
+                                            "--provider-command" "webauthn/assert"
+                                            "--policy-edn" explicit-allow-policy])
+        default-policy-denied (launcher/dispatch ["native-host" "provider"
+                                                  "--target" "macos"
+                                                  "--provider-command" "webauthn/register"
+                                                  "--host-command" "/bin/echo"])]
+    (is (:kotoba.cli/ok? register-with-fake-host))
+    (is (= :shell/provider-ran (:kotoba.cli/code register-with-fake-host)))
+    (is (= "webauthn/passkey"
+           (get-in register-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
+    (is (str/includes? (get-in register-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
+                       "fake-webauthn-ok"))
+    (is (false? (:kotoba.cli/ok? ios-unknown)))
+    (is (= :shell/provider-command-unknown (:kotoba.cli/code ios-unknown))
+        "webauthn requires :macos in :required-targets, even when the policy allows it")
+    (is (false? (:kotoba.cli/ok? windows-unknown)))
+    (is (= :shell/provider-command-unknown (:kotoba.cli/code windows-unknown)))
+    (is (false? (:kotoba.cli/ok? default-policy-denied))
+        "webauthn/* must not be in the default allow-list, same as keychain/*")
+    (is (= :shell/provider-denied (:kotoba.cli/code default-policy-denied)))))
+
+(deftest macos-webauthn-provider-allowed-with-explicit-policy
+  (let [policy "{:allow [\"webauthn/passkey\"] :deny []}"
+        allowed (launcher/dispatch ["native-host" "provider"
+                                    "--target" "macos"
+                                    "--provider-command" "webauthn/assert"
+                                    "--host-command" "/bin/echo"
+                                    "--host-arg" "fake-assert-ok"
+                                    "--policy-edn" policy])]
+    (is (:kotoba.cli/ok? allowed))
+    (is (str/includes? (get-in allowed [:kotoba.cli/data :kotoba.shell/stdout]) "fake-assert-ok"))))
+
+(deftest webauthn-provider-declares-a-longer-timeout-than-instant-providers
+  ;; A real passkey ceremony needs a human to notice and respond to a system
+  ;; Touch ID / password sheet, which routinely exceeds the 10s default used
+  ;; by every other (near-instant) provider.
+  (is (= 120 (launcher/provider-timeout-seconds :macos "webauthn/register")))
+  (is (= 120 (launcher/provider-timeout-seconds :macos "webauthn/assert")))
+  (is (= launcher/default-provider-timeout-seconds
+         (launcher/provider-timeout-seconds :macos "clipboard/read-text")))
+  (is (= launcher/default-provider-timeout-seconds
+         (launcher/provider-timeout-seconds :macos "unknown/command"))))
 
 (deftest release-check-and-evidence-cover-packaging-signing-updater
   (let [macos-manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\"}"

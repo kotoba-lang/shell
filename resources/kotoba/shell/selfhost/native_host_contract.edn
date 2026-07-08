@@ -4,7 +4,7 @@
  :oracle "native_host_contract.kotoba"
  :common-exports {"native-host-schema-digest" 19969
                   "bridge-runtime-digest" 19507
-                  "provider-command-count" 13
+                  "provider-command-count" 15
                   "capability-gate-count" 7
                   "native-command-surface-digest" 53766}
  :target-exports {:macos {}

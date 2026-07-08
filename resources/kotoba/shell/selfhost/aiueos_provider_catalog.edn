@@ -2,8 +2,8 @@
  :owner "kotoba/selfhost"
  :canonical-format :edn
  :json-role :interop
- :oracle-exports {"provider-family-count" 8
-                  "provider-command-count" 13
+ :oracle-exports {"provider-family-count" 9
+                  "provider-command-count" 15
                   "portable-provider-command-count" 10
                   "provider-status-class-count" 2
                   "provider-contract-score" 81302
@@ -15,7 +15,8 @@
                   "http-fetch-provider-score" 111
                   "keychain-provider-score" 331
                   "contacts-provider-score" 111
-                  "calendar-provider-score" 111}
+                  "calendar-provider-score" 111
+                  "webauthn-provider-score" 111}
  :digest {:modulus 65521
           :ids {"aiueos/ledger-audit" 101
                 "shell/fs-app-data" 102
@@ -24,7 +25,8 @@
                 "shell/http-fetch" 105
                 "shell/keychain" 106
                 "shell/contacts" 107
-                "shell/calendar" 108}
+                "shell/calendar" 108
+                "shell/webauthn" 109}
           :capabilities {"ledger/append" 201
                          "fs/app-data" 202
                          "notify/show" 203
@@ -32,7 +34,8 @@
                          "http/fetch" 205
                          "keychain/text" 206
                          "contacts/read" 207
-                         "calendar/read" 208}
+                         "calendar/read" 208
+                         "webauthn/passkey" 209}
           :commands {"ledger/append" 301
                      "fs/read-text" 302
                      "fs/write-text" 303
@@ -45,7 +48,9 @@
                      "keychain/write-text" 310
                      "keychain/delete" 311
                      "contacts/list" 312
-                     "calendar/list-events" 313}
+                     "calendar/list-events" 313
+                     "webauthn/register" 314
+                     "webauthn/assert" 315}
           :statuses {"implemented-shell-provider" 1
                      "aiueos-audit-provider" 2}}
  :providers [{:id "aiueos/ledger-audit"
@@ -103,4 +108,16 @@
               :matches ["calendar/read" "calendar/list-events" "calendar/*"]
               :commands ["calendar/list-events"]
               :required-targets [:macos :ios :android]
+              :status "implemented-shell-provider"}
+             {:id "shell/webauthn"
+              :oracle-label "webauthn"
+              :capability "webauthn/passkey"
+              :matches ["webauthn/register" "webauthn/assert" "webauthn/*"]
+              :commands ["webauthn/register" "webauthn/assert"]
+              :required-targets [:macos]
+              ;; ADR-0018 段階4 (kotoba-lang/kotoba wraps ASAuthorizationController):
+              ;; a real passkey ceremony needs the user to notice and respond to a
+              ;; system Touch ID / password sheet, which routinely exceeds the 10s
+              ;; default used by every other (near-instant) provider here.
+              :timeout-seconds 120
               :status "implemented-shell-provider"}]}
