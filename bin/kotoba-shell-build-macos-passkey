@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Compiles and code-signs the native macOS passkey/PRF helper
+# (bin/kotoba-shell-host-macos-passkey.swift) used by bin/kotoba-shell-host-macos
+# for the webauthn/register and webauthn/assert provider commands.
+#
+# Unlike every other host-runner script in bin/, this one cannot be shipped as
+# a plain interpreted script: ASAuthorizationController (real macOS Passkey +
+# PRF extension API) rejects any calling process that lacks a valid
+# `application-identifier` entitlement bound to a real Apple Developer Team
+# ID. That entitlement is necessarily specific to the CONSUMING app (its own
+# bundle id + team id) -- kotoba-shell itself has neither, so it cannot ship a
+# pre-built, pre-signed binary. Each consuming app builds+signs its own copy
+# with its own identity via this script (verified empirically: a real Team ID
+# is required -- ad-hoc signing reproduces the same rejection as no signing
+# at all; no .app bundle wrapper is required, a signed bare binary suffices).
+#
+# usage: kotoba-shell-build-macos-passkey --bundle-id <id> --team-id <TEAMID> \
+#          [--identity <codesign-identity>] [--output <path>]
+
+usage() {
+  echo "usage: $0 --bundle-id <id> --team-id <TEAMID> [--identity <codesign-identity>] [--output <path>]" >&2
+  exit 64
+}
+
+bundle_id=""
+team_id=""
+identity="Apple Development"
+output=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bundle-id) bundle_id="${2:-}"; shift 2 ;;
+    --team-id) team_id="${2:-}"; shift 2 ;;
+    --identity) identity="${2:-}"; shift 2 ;;
+    --output) output="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[[ -n "$bundle_id" && -n "$team_id" ]] || usage
+
+# These get interpolated unescaped into an XML entitlements plist below;
+# real Apple team IDs (10 alnum chars) and bundle IDs (reverse-DNS) never
+# contain XML metacharacters, but validate anyway rather than trust that.
+id_pattern='^[A-Za-z0-9.-]+$'
+[[ "$bundle_id" =~ $id_pattern ]] || { echo "--bundle-id has unexpected characters: $bundle_id" >&2; exit 64; }
+[[ "$team_id" =~ $id_pattern ]] || { echo "--team-id has unexpected characters: $team_id" >&2; exit 64; }
+
+dir="$(cd "$(dirname "$0")" && pwd)"
+output="${output:-$dir/../target/kotoba-shell-host-macos-passkey}"
+mkdir -p "$(dirname "$output")"
+
+swiftc "$dir/kotoba-shell-host-macos-passkey.swift" -o "$output" \
+  -framework AppKit -framework AuthenticationServices
+
+work_dir="$(mktemp -d -t kotoba-shell-passkey)"
+trap 'rm -rf "$work_dir"' EXIT
+entitlements="$work_dir/entitlements.plist"
+cat > "$entitlements" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>application-identifier</key>
+  <string>${team_id}.${bundle_id}</string>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>${team_id}.${bundle_id}</string>
+  </array>
+</dict>
+</plist>
+EOF
+
+codesign -s "$identity" --force --entitlements "$entitlements" "$output"
+printf 'built and signed: %s (application-identifier=%s.%s)\n' "$output" "$team_id" "$bundle_id"

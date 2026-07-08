@@ -22,7 +22,9 @@
                        "notify/show"
                        "keychain/read-text"
                        "keychain/write-text"
-                       "keychain/delete"]}
+                       "keychain/delete"
+                       "webauthn/register"
+                       "webauthn/assert"]}
    :ios {:kind :simctl
          :command "bin/kotoba-shell-host-ios"
          :connection "xcrun-simctl"
@@ -212,7 +214,8 @@
                             "/usr/bin/security"
                             "/usr/bin/codesign"]
            :optional-tools ["/usr/bin/osascript"
-                            "/usr/bin/xcrun"]
+                            "/usr/bin/xcrun"
+                            "/usr/bin/swift"]
            :checks [:host-runner :clipboard :fs :http :keychain :codesign :notarization]}
    :ios {:required-tools ["/usr/bin/xcrun"]
          :optional-tools []
@@ -388,14 +391,30 @@
       (.getPath (io/file root command))
       command)))
 
-(defn provider-capability
+(def default-provider-timeout-seconds 10)
+
+(defn provider-for
   [target command]
   (let [catalog (selfhost-seed "aiueos_provider_catalog")]
     (some (fn [provider]
             (when (and (provider-target-supported? target provider)
                        (some #{command} (:commands provider)))
-              (:capability provider)))
+              provider))
           (:providers catalog))))
+
+(defn provider-capability
+  [target command]
+  (:capability (provider-for target command)))
+
+(defn provider-timeout-seconds
+  "Per-provider subprocess timeout, in seconds. Most providers (clipboard,
+   keychain, fs, http) complete near-instantly and use the default; providers
+   that need a human to notice and respond to system UI (e.g. webauthn's
+   Touch ID / password sheet) declare a longer :timeout-seconds in the
+   catalog so they are not killed mid-ceremony."
+  [target command]
+  (or (:timeout-seconds (provider-for target command))
+      default-provider-timeout-seconds))
 
 (defn provider-policy
   [argv]
@@ -908,7 +927,8 @@
 
 (defn run-native-host-command
   ([command args] (run-native-host-command command args nil))
-  ([command args stdin]
+  ([command args stdin] (run-native-host-command command args stdin default-provider-timeout-seconds))
+  ([command args stdin timeout-seconds]
    (let [process (-> (ProcessBuilder. (into [command] args))
                      (.redirectErrorStream true)
                      (.start))
@@ -917,7 +937,7 @@
              (with-open [writer (io/writer (.getOutputStream process))]
                (.write writer (str stdin)))
              (.close (.getOutputStream process)))
-         completed? (.waitFor process 10 java.util.concurrent.TimeUnit/SECONDS)]
+         completed? (.waitFor process timeout-seconds java.util.concurrent.TimeUnit/SECONDS)]
      (if completed?
        {:exit (.exitValue process)
         :stdout (output-or-timeout output-future)
@@ -949,12 +969,7 @@
 
 (defn provider-command-known?
   [target command]
-  (let [catalog (selfhost-seed "aiueos_provider_catalog")]
-    (boolean
-     (some (fn [provider]
-             (and (provider-target-supported? target provider)
-                  (some #{command} (:commands provider))))
-           (:providers catalog)))))
+  (boolean (provider-for target command)))
 
 (defn native-provider-command
   [target command text host-command host-args]
@@ -964,7 +979,8 @@
                                             (into ["--target" (name target)
                                                    "--provider-command" command]
                                                   host-args)
-                                            text)]
+                                            text
+                                            (provider-timeout-seconds target command))]
         (assoc result
                :provider-output (when (or (str/includes? command "/read")
                                           (str/includes? command "/fetch"))
