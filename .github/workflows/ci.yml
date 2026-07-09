@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: shell
+      # launcher.clj's substrate-readiness check reads these siblings by
+      # hardcoded relative path (../dom-gpu, ../browser).
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/dom-gpu
+          path: dom-gpu
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/browser
+          path: browser
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - working-directory: shell
+        run: clojure -M:test
+      - working-directory: shell
+        run: clojure -M:lint

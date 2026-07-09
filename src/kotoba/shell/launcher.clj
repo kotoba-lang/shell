@@ -253,7 +253,7 @@
                               "src/browser/session.cljc"
                               "src/browser/surface.cljc"
                               "src/browser/input.cljc"
-                              "src/browser/visual_smoke_check.cljc"
+                              "src/browser/visual_smoke_check.clj"
                               "public/index.html"]
              :required-scripts ["compile:smoke"
                                 "compile:webgpu-smoke"
