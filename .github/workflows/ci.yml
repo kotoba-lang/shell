@@ -7,7 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # macos-latest, not ubuntu: launcher_test.clj's native-host tests shell
+    # out to real macOS tools (/usr/bin/pbpaste, /usr/bin/pbcopy, the
+    # kotoba-shell-host-macos* binaries) -- this repo's substrate is
+    # macOS-specific by design (WebAuthn PRF passkey provider, #1).
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
