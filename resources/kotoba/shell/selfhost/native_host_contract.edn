@@ -1,13 +1,1 @@
-{:schema "kotoba.selfhost.native-host-contract.v0"
- :owner "kotoba/selfhost"
- :canonical-format :edn
- :oracle "native_host_contract.kotoba"
- :common-exports {"native-host-schema-digest" 19969
-                  "bridge-runtime-digest" 19507
-                  "provider-command-count" 15
-                  "capability-gate-count" 7
-                  "native-command-surface-digest" 53766}
- :target-exports {:macos {}
-                  :ios {}
-                  :android {}
-                  :windows {}}}
+[{:db/id -1, :shell.selfhost.native-host-contract/schema "kotoba.selfhost.native-host-contract.v0", :shell.selfhost.native-host-contract/owner "kotoba/selfhost", :shell.selfhost.native-host-contract/canonical-format :edn, :shell.selfhost.native-host-contract/oracle "native_host_contract.kotoba", :shell.selfhost.native-host-contract/common-exports "{\"native-host-schema-digest\" 19969, \"bridge-runtime-digest\" 19507, \"provider-command-count\" 15, \"capability-gate-count\" 7, \"native-command-surface-digest\" 53766}", :shell.selfhost.native-host-contract/target-exports "{:macos {}, :ios {}, :android {}, :windows {}}"}]

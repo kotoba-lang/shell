@@ -267,11 +267,35 @@
    "native_host_contract"
    "shell_evidence_profile"])
 
+(defn- unblob
+  "resources/kotoba/shell/selfhost/*.edn is stored on disk as a Datomic/
+   Datascript tx-data vector (scripts/edn-datomize.bb): a single entity map
+   whose non-scalar values (nested maps, vectors-of-maps) are pr-str'd blob
+   strings so the file stays queryable at the entity+attribute granularity.
+   unblob reverses that for one value: if it is a string that reads back to
+   a collection, return the parsed collection; otherwise return it unchanged."
+  [v]
+  (if (string? v)
+    (try (let [parsed (edn/read-string v)] (if (coll? parsed) parsed v))
+         (catch Exception _ v))
+    v))
+
+(defn- reconstitute-entity
+  "Reverses the scripts/edn-datomize.bb wrap-map transform: strips the
+   :db/id and the namespace off every attribute key, and unblobs any pr-str'd
+   nested value, so callers get back the exact same flat un-namespaced map
+   the seed files used to contain (only the file's on-disk shape changed;
+   selfhost-seed's return shape is unchanged)."
+  [tx-data]
+  (into {}
+        (map (fn [[k v]] [(keyword (name k)) (unblob v)]))
+        (dissoc (first tx-data) :db/id)))
+
 (defn selfhost-seed
   [name]
   (let [resource (str "kotoba/shell/selfhost/" name ".edn")]
     (if-let [url (io/resource resource)]
-      (-> url slurp edn/read-string)
+      (reconstitute-entity (-> url slurp edn/read-string))
       (throw (ex-info "missing kotoba-shell selfhost seed"
                       {:resource resource
                        :seed name})))))
