@@ -959,6 +959,21 @@
      :files file-rows
      :missing-files missing}))
 
+;; native build/sign/submit/updater ツールは default-provider-timeout-seconds
+;; (10秒、clipboard/notify 等の軽量 provider call 向け)ではまず終わらない —
+;; 実機確認: xcodebuild によるクリーンビルドは(トリビアルな demo app でも)
+;; 15〜40秒かかり、10秒 timeout で :timed-out? true になって :app-build-blocked
+;; へ落ちた。ビルド系ステップは長めの既定値を持ち、step-run-result 側もこの
+;; :timeout-seconds を尊重する(無ければ従来どおり provider 既定へフォールバック)。
+(def default-build-timeout-seconds
+  "xcodebuild/gradle/msbuild 用(クリーンビルド・初回の module/dependency 解決を
+  含む想定)。"
+  900)
+
+(def default-submit-timeout-seconds
+  "notarytool submit --wait 等、Apple/Google 側の審査待ちを伴う遅い操作用。"
+  1800)
+
 (defn default-app-build-step
   [root target]
   (case target
@@ -967,22 +982,26 @@
                    "-scheme" "KotobaShell"
                    "build"]
             :default? true
-            :platform-step :xcodebuild-macos}
+            :platform-step :xcodebuild-macos
+            :timeout-seconds default-build-timeout-seconds}
     :ios {:command "xcodebuild"
           :args ["-project" (.getPath (io/file root "KotobaShell.xcodeproj"))
                  "-scheme" "KotobaShell"
                  "-sdk" "iphonesimulator"
                  "build"]
           :default? true
-          :platform-step :xcodebuild-ios-simulator}
+          :platform-step :xcodebuild-ios-simulator
+          :timeout-seconds default-build-timeout-seconds}
     :android {:command "gradle"
               :args ["-p" (.getPath root) "assembleDebug"]
               :default? true
-              :platform-step :gradle-assemble-debug}
+              :platform-step :gradle-assemble-debug
+              :timeout-seconds default-build-timeout-seconds}
     :windows {:command "msbuild"
               :args [(.getPath (io/file root "KotobaShell.wapproj"))]
               :default? true
-              :platform-step :msbuild-msix}
+              :platform-step :msbuild-msix
+              :timeout-seconds default-build-timeout-seconds}
     nil))
 
 (defn app-build-row
@@ -1761,27 +1780,31 @@
                    (credential-present-value argv row :developer-id-application)
                    (artifact-path row :app-bundle)]
             :default? true
-            :platform-step :codesign}
+            :platform-step :codesign
+            :timeout-seconds default-build-timeout-seconds}
     :ios {:command "xcodebuild"
           :args ["-exportArchive"
                  "-archivePath" (artifact-path row :xcode-archive)
                  "-exportPath" (or (artifact-path row :ipa) "build/ios")
                  "-allowProvisioningUpdates"]
           :default? true
-          :platform-step :xcode-export-ipa}
+          :platform-step :xcode-export-ipa
+          :timeout-seconds default-build-timeout-seconds}
     :android {:command "jarsigner"
               :args ["-keystore" (credential-present-value argv row :keystore)
                      (or (artifact-path row :aab)
                          (artifact-path row :apk))
                      (credential-present-value argv row :keystore-alias)]
               :default? true
-              :platform-step :jarsigner}
+              :platform-step :jarsigner
+              :timeout-seconds default-build-timeout-seconds}
     :windows {:command "signtool"
               :args ["sign"
                      "/f" (credential-present-value argv row :authenticode-cert)
                      (artifact-path row :msix)]
               :default? true
-              :platform-step :authenticode}
+              :platform-step :authenticode
+              :timeout-seconds default-build-timeout-seconds}
     nil))
 
 (defn default-submit-step
@@ -1794,23 +1817,27 @@
                    (credential-present-value argv row :notary-profile)
                    "--wait"]
             :default? true
-            :platform-step :notarytool-submit}
+            :platform-step :notarytool-submit
+            :timeout-seconds default-submit-timeout-seconds}
     :ios {:command "/usr/bin/xcrun"
           :args ["altool" "--upload-app"
                  "-f" (artifact-path row :ipa)
                  "--apiKey" (credential-present-value argv row :app-store-connect-key)]
           :default? true
-          :platform-step :app-store-connect-upload}
+          :platform-step :app-store-connect-upload
+          :timeout-seconds default-submit-timeout-seconds}
     :android {:command "gradle"
               :args ["publishReleaseBundle"
                      (str "-PplayServiceAccount="
                           (credential-present-value argv row :play-service-account))]
               :default? true
-              :platform-step :google-play-publish}
+              :platform-step :google-play-publish
+              :timeout-seconds default-submit-timeout-seconds}
     :windows {:command "signtool"
               :args ["timestamp" (artifact-path row :msix)]
               :default? true
-              :platform-step :windows-release-finalize}
+              :platform-step :windows-release-finalize
+              :timeout-seconds default-submit-timeout-seconds}
     nil))
 
 (defn default-updater-step
@@ -1826,13 +1853,15 @@
           :args ["altool" "--list-apps"
                  "--apiKey" (credential-present-value argv row :app-store-connect-key)]
           :default? true
-          :platform-step :app-store-release-feed}
+          :platform-step :app-store-release-feed
+          :timeout-seconds default-build-timeout-seconds}
     :android {:command "gradle"
               :args ["publishReleaseBundle"
                      (str "-PplayServiceAccount="
                           (credential-present-value argv row :play-service-account))]
               :default? true
-              :platform-step :play-release-track}
+              :platform-step :play-release-track
+              :timeout-seconds default-build-timeout-seconds}
     nil))
 
 (defn step-run-result
@@ -1852,7 +1881,14 @@
            :reason :planned)
 
     :else
-    (let [{:keys [exit stdout timed-out?]} (run-native-host-command (:command step) (vec (:args step)))]
+    ;; :timeout-seconds(既定 step 定義に付いていれば — build/sign/submit/
+    ;; updater は default-provider-timeout-seconds=10秒 ではまず完了しない、
+    ;; 実機確認: 単純な demo app の xcodebuild でも 15〜40秒かかった)。
+    ;; external-step(ユーザー指定コマンド)には付かないので、その場合は
+    ;; provider 既定へ自然にフォールバックする。
+    (let [timeout-seconds (or (:timeout-seconds step) default-provider-timeout-seconds)
+          {:keys [exit stdout timed-out?]}
+          (run-native-host-command (:command step) (vec (:args step)) nil timeout-seconds)]
       (assoc step
              :configured? true
              :executed? true
