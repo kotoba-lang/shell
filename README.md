@@ -7,6 +7,70 @@ contracts.
 The old `kotoba-lang/kotoba` CLI no longer keeps a compatibility shim for
 `kotoba shell ...`; shell work and shell gates should call this CLI directly.
 
+## Status
+
+Everything below this section is a command reference for the full CLI
+surface; not every command is equally mature. This section says plainly what
+is real and verified today versus still aspirational, so a consumer doesn't
+have to rediscover the gap by hitting it (as `local-manimani`'s own
+integration did more than once).
+
+- **`app scaffold`/`app build` (macOS, iOS): real, verified.** `app scaffold`
+  generates an XcodeGen `project.yml` and runs `xcodegen generate` itself
+  (not a hand-written `project.pbxproj`), producing a project that
+  `xcodebuild` actually builds — confirmed end to end, including installing
+  and launching the built app on a real booted iOS Simulator and
+  screenshotting real WKWebView-rendered content. CI (`.github/workflows/
+  ci.yml`) runs a real `app scaffold` + `app build --execute` for both
+  targets on every push, not just a file-presence check.
+- **`app scaffold`/`app build` (Android): build-verified, less exercised.**
+  Generates a real WebView-hosting `MainActivity.java` and a Gradle project
+  that `gradle assembleDebug` builds successfully (verified manually with a
+  real Gradle install). Not yet wired into CI (GitHub's `macos-latest`
+  runner doesn't ship a ready-to-use Android SDK/Gradle setup) and installing
+  +launching on a real device/emulator has not been exercised the way iOS
+  has.
+- **`app scaffold`/`app build` (Windows): scaffolding only, unverified.** The
+  generated `Package.appxmanifest`/`.wapproj` skeleton has never been run
+  through `msbuild` — there is no Windows CI runner and no Windows
+  development machine has exercised this path.
+- **Rendering substrate: WKWebView (macOS/iOS) and `android.webkit.WebView`
+  (Android) today, not `kotoba-lang/dom-gpu`/`kotoba-lang/browser`.**
+  `surface check`'s `:ui-substrate`/`:browser-engine` fields describe the
+  long-term target architecture (see ADR-2607081015 in the superproject);
+  `:render-substrate` in the same data says what actually renders content in
+  a scaffolded app right now. dom-gpu/browser were R0-stage with no real-app
+  adoption at the time of that decision — this is a deliberate, documented
+  pragmatic choice, not an oversight.
+- **`contacts/list`/`calendar/list-events`: real, macOS-only.** Backed by
+  AppleScript (`resources/kotoba/shell/selfhost/{contacts_list,
+  calendar_list_events}.applescript`) through `bin/kotoba-shell-host-macos`,
+  manually verified against real Contacts/Calendar data. There is no
+  CLI-invokable equivalent on iOS/Android — that would need native
+  Contacts/EventKit or ContactsContract/CalendarContract bridges compiled
+  into an app, which don't exist yet. The provider catalog's
+  `:required-targets` correctly says `[:macos]` only; it used to (wrongly)
+  claim iOS/Android support with zero implementation behind it.
+- **`webauthn/register`/`webauthn/assert`: real, macOS-only** (Touch ID/
+  password-sheet passkey ceremony via a companion Swift helper). iOS/Android
+  passkey providers are unimplemented.
+- **Manifest schema is flat and shell-specific, not a general "app
+  manifest" format.** `app scaffold`/`app build`/etc. expect exactly
+  `:app/id`, `:app/name`, `:app/version`, `:ios/bundle-id`,
+  `:android/application-id`, and the optional `:web/dist-dir` (a directory
+  to embed as the app's web content; falls back to a placeholder page if
+  omitted). A consumer with its own nested manifest convention (e.g.
+  `local-manimani`'s `app.kotoba.edn`, which uses `:kotoba.app/id`/`:ui
+  {...}`/`:capabilities {...}`) must translate it before calling this CLI;
+  there is no schema auto-detection.
+- **Not published anywhere.** No npm package, no Homebrew formula, no
+  GitHub Release — `bin/kotoba-shell` is a thin `clojure -Sdeps` wrapper, so
+  even a hypothetical `brew install`/`npm install -g` would still require a
+  working Clojure CLI + JVM on the consumer's machine. Use it today as a
+  sibling checkout with `KOTOBA_SHELL_BIN` pointed at `bin/kotoba-shell`, or
+  a git dependency pinned to a specific commit (as `local-manimani/mobile`
+  already does for the underlying `kotoba-lang/kotoba` crates).
+
 ## Commands
 
 ```sh
