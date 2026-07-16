@@ -35,7 +35,12 @@
     (is (= :process (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :simctl (get-in ios-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :adb (get-in android-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
-    (is (= 8 (get-in ios-result [:kotoba.cli/data :kotoba.shell/capability-gate-count])))
+    ;; 9 catalog providers total; contacts/calendar are macOS-only (real
+    ;; AppleScript-backed providers, bin/kotoba-shell-host-macos) so iOS sees
+    ;; 6, not the other 8 (was incorrectly 8 before contacts/calendar were
+    ;; narrowed to :required-targets [:macos] to match what's actually
+    ;; implemented -- they used to falsely claim iOS/Android support too).
+    (is (= 6 (get-in ios-result [:kotoba.cli/data :kotoba.shell/capability-gate-count])))
     (is (= 53766 (get-in android-result [:kotoba.cli/data :kotoba.shell/native-host-exports
                                          "native-command-surface-digest"])))
     (is (false? (:kotoba.cli/ok? unknown-result)))
@@ -99,7 +104,8 @@
     (let [result (launcher/dispatch ["adapter" "check" "--target" "android" "--json"])]
       (is (:kotoba.cli/ok? result))
       (is (= :android (get-in result [:kotoba.cli/data :kotoba.shell/target])))
-      (is (= 8 (get-in result [:kotoba.cli/data :kotoba.shell/provider-count]))))))
+      ;; contacts/calendar are macOS-only (see native-host-check-uses-shell-owned-contracts)
+      (is (= 6 (get-in result [:kotoba.cli/data :kotoba.shell/provider-count]))))))
 
 (deftest surface-host-uses-browser-and-wasm-ui-without-webview
   (let [check-result (launcher/dispatch ["surface" "check" "--target" "macos" "--json"])
@@ -243,6 +249,77 @@
          (launcher/provider-timeout-seconds :macos "clipboard/read-text")))
   (is (= launcher/default-provider-timeout-seconds
          (launcher/provider-timeout-seconds :macos "unknown/command"))))
+
+(deftest macos-contacts-calendar-providers-are-macos-only-and-gated-by-default
+  ;; Contacts.app/Calendar.app access needs a real TCC grant a fresh CI
+  ;; runner won't have (and shouldn't be asked to grant interactively), so
+  ;; this only verifies the dispatch/catalog/policy plumbing -- same
+  ;; approach as the webauthn tests above. A fake --host-command stands in
+  ;; for the real osascript-backed provider
+  ;; (resources/kotoba/shell/selfhost/{contacts_list,calendar_list_events}.applescript,
+  ;; manually verified against real Contacts/Calendar data during
+  ;; development: 128 contacts in ~8s, real calendar events with correct
+  ;; JSON escaping).
+  (let [contacts-allow-policy "{:allow [\"contacts/read\"] :deny []}"
+        calendar-allow-policy "{:allow [\"calendar/read\"] :deny []}"
+        contacts-with-fake-host
+        (launcher/dispatch ["native-host" "provider"
+                            "--target" "macos"
+                            "--provider-command" "contacts/list"
+                            "--host-command" "/bin/echo"
+                            "--host-arg" "fake-contacts-ok"
+                            "--policy-edn" contacts-allow-policy])
+        calendar-with-fake-host
+        (launcher/dispatch ["native-host" "provider"
+                            "--target" "macos"
+                            "--provider-command" "calendar/list-events"
+                            "--host-command" "/bin/echo"
+                            "--host-arg" "fake-calendar-ok"
+                            "--policy-edn" calendar-allow-policy])
+        ios-unknown (launcher/dispatch ["native-host" "provider"
+                                        "--target" "ios"
+                                        "--provider-command" "contacts/list"
+                                        "--host-command" "/bin/echo"
+                                        "--policy-edn" contacts-allow-policy])
+        android-unknown (launcher/dispatch ["native-host" "provider"
+                                            "--target" "android"
+                                            "--provider-command" "calendar/list-events"
+                                            "--host-command" "/bin/echo"
+                                            "--policy-edn" calendar-allow-policy])
+        contacts-default-policy-denied
+        (launcher/dispatch ["native-host" "provider"
+                            "--target" "macos"
+                            "--provider-command" "contacts/list"
+                            "--host-command" "/bin/echo"])]
+    (is (:kotoba.cli/ok? contacts-with-fake-host))
+    (is (= :shell/provider-ran (:kotoba.cli/code contacts-with-fake-host)))
+    (is (= "contacts/read"
+           (get-in contacts-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
+    (is (str/includes? (get-in contacts-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
+                       "fake-contacts-ok"))
+    (is (:kotoba.cli/ok? calendar-with-fake-host))
+    (is (= :shell/provider-ran (:kotoba.cli/code calendar-with-fake-host)))
+    (is (= "calendar/read"
+           (get-in calendar-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
+    (is (str/includes? (get-in calendar-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
+                       "fake-calendar-ok"))
+    (is (false? (:kotoba.cli/ok? ios-unknown)))
+    (is (= :shell/provider-command-unknown (:kotoba.cli/code ios-unknown))
+        "contacts/calendar require :macos in :required-targets -- there is no CLI-invokable
+        iOS/Android equivalent (would need native Contacts/EventKit or
+        ContactsContract/CalendarContract bridges compiled into an app, not a bash host
+        script), so the catalog must not claim they do")
+    (is (false? (:kotoba.cli/ok? android-unknown)))
+    (is (= :shell/provider-command-unknown (:kotoba.cli/code android-unknown)))
+    (is (false? (:kotoba.cli/ok? contacts-default-policy-denied))
+        "contacts/calendar must not be in the default allow-list, same as keychain/*/webauthn/*")
+    (is (= :shell/provider-denied (:kotoba.cli/code contacts-default-policy-denied)))))
+
+(deftest contacts-calendar-providers-declare-longer-timeouts-than-instant-providers
+  ;; Real AppleScript/Apple Events round trips scale with data volume (128
+  ;; contacts took ~8s in manual testing) -- not "instant" like clipboard/fs.
+  (is (= 60 (launcher/provider-timeout-seconds :macos "contacts/list")))
+  (is (= 30 (launcher/provider-timeout-seconds :macos "calendar/list-events"))))
 
 (deftest release-check-and-evidence-cover-packaging-signing-updater
   (let [macos-manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\"}"
