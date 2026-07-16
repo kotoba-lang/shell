@@ -219,6 +219,13 @@
    :host-abi :pointer-length-buffer-result})
 
 (def doctor-target-specs
+  ;; xcodegen(macos/ios)と gradle(android)は native-render-pipeline(app
+  ;; scaffold/app build)が実際に依存する外部ツールだが、当時 doctor の棚卸しに
+  ;; 追加し忘れていた — `doctor check` は今まで「app scaffold/build が動くか」を
+  ;; 一切見ておらず、xcodegen 不在は :xcodegen-ok? false で初めて判明する
+  ;; (実行するまで分からない)状態だった。:optional-tools に加えるだけなので
+  ;; :required-ok?/:ready? の計算(tool-row required? のみ見る)には影響しない —
+  ;; 既存の doctor check 呼び出しの合否は変わらず、可視性が増えるだけ。
   {:macos {:required-tools ["/usr/bin/pbcopy"
                             "/usr/bin/pbpaste"
                             "/usr/bin/curl"
@@ -226,13 +233,14 @@
                             "/usr/bin/codesign"]
            :optional-tools ["/usr/bin/osascript"
                             "/usr/bin/xcrun"
-                            "/usr/bin/swift"]
+                            "/usr/bin/swift"
+                            "xcodegen"]
            :checks [:host-runner :clipboard :fs :http :keychain :codesign :notarization]}
    :ios {:required-tools ["/usr/bin/xcrun"]
-         :optional-tools []
+         :optional-tools ["xcodegen"]
          :checks [:host-runner :simctl :xcodebuild :codesign :provisioning]}
    :android {:required-tools ["adb"]
-             :optional-tools ["keytool" "jarsigner"]
+             :optional-tools ["keytool" "jarsigner" "gradle"]
              :checks [:host-runner :adb :gradle :keystore :apk-signing]}
    :windows {:required-tools []
              :optional-tools []
