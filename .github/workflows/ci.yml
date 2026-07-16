@@ -29,6 +29,11 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.4
         with:
           cli: latest
+      # app scaffold(macOS/iOS)は project.pbxproj を手書きせず xcodegen で
+      # 生成する(ADR-2607081015 の WKWebView 実用優先決定、native-render-pipeline
+      # ブランチ)。CI にも無いと launcher_test.clj の app-scaffold テストが
+      # xcodegen 不在のまま "動いたことにする" 偽陽性になる。
+      - run: brew install xcodegen
       - working-directory: shell
         run: clojure -M:test
       - working-directory: shell
