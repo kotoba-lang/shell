@@ -42,6 +42,24 @@ integration did more than once).
   a scaffolded app right now. dom-gpu/browser were R0-stage with no real-app
   adoption at the time of that decision — this is a deliberate, documented
   pragmatic choice, not an oversight.
+- **Known WKWebView caveat: large scittle/SCI-interpreted bundles have
+  thrown an opaque, undiagnosed error in testing.** `:web/dist-dir` was
+  verified against two very different sizes of content: a small placeholder
+  page (renders correctly, screenshot-confirmed) and `local-manimani/mobile`'s
+  full real UI bundle (~225KB of embedded design-system + app ClojureScript,
+  interpreted at runtime via `scittle`/SCI, not precompiled) — which reached
+  its own page's 5s stuck-on-loading watchdog and then, after 45s, an
+  `error` event with every field (`message`/`filename`/`lineno`/`stack`)
+  empty. That specific shape — a generic error with no detail at all — is
+  the standard browser signature for an error whose details were redacted
+  for security reasons (commonly: the throwing script is treated as a
+  different origin than the page that installed the `error` listener), not
+  a timeout — the same bundle renders correctly in Chromium/V8 in a few
+  seconds via Playwright, so this is WKWebView-specific behavior, not a bug
+  in the bundle itself. Not yet root-caused (would need Safari Web Inspector
+  attached to the simulator, which isn't scriptable from a CLI session) or
+  fixed here; recorded so it isn't rediscovered from scratch. Small-to-medium
+  web content is unaffected by this as far as has been tested.
 - **`contacts/list`/`calendar/list-events`: real, macOS-only.** Backed by
   AppleScript (`resources/kotoba/shell/selfhost/{contacts_list,
   calendar_list_events}.applescript`) through `bin/kotoba-shell-host-macos`,
