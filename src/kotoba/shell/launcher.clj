@@ -24,7 +24,9 @@
                        "keychain/write-text"
                        "keychain/delete"
                        "webauthn/register"
-                       "webauthn/assert"]}
+                       "webauthn/assert"
+                       "contacts/list"
+                       "calendar/list-events"]}
    :ios {:kind :simctl
          :command "bin/kotoba-shell-host-ios"
          :connection "xcrun-simctl"

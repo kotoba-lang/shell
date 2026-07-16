@@ -81,6 +81,12 @@ case "$provider_command" in
   keychain/delete)
     /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null
     ;;
+  contacts/list)
+    /usr/bin/osascript "$(dirname "$0")/../resources/kotoba/shell/selfhost/contacts_list.applescript"
+    ;;
+  calendar/list-events)
+    /usr/bin/osascript "$(dirname "$0")/../resources/kotoba/shell/selfhost/calendar_list_events.applescript"
+    ;;
   webauthn/register)
     if [[ -z "$rp_id" || -z "$challenge" || -z "$salt" || -z "$user_name" ]]; then
       printf 'webauthn/register requires --rp-id, --challenge, --salt, --user-name\n' >&2
