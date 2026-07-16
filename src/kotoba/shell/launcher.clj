@@ -7,7 +7,7 @@
 
 (def supported-shell-targets #{:macos :ios :android :windows})
 
-(declare run-native-host-command execute-requested? external-step step-run-result)
+(declare run-native-host-command run-native-host-command-in-dir execute-requested? external-step step-run-result)
 
 (def host-runner-specs
   {:macos {:kind :process
@@ -56,23 +56,32 @@
              :connection "external-host-command"
              :providers []}})
 
+;; :ui-substrate/:browser-engine は長期目標のアーキテクチャ(kotoba-lang/dom-gpu +
+;; kotoba-lang/browser、ADR-2607081015)を表す。ADR-2607081015 時点でその2 repo は
+;; R0段階・実運用実績ゼロだったため、ADR の "WKWebView 実用優先" 決定に沿って
+;; `app scaffold` が実際に生成する macOS/iOS アプリは今 WKWebView を使う
+;; (:render-substrate で現在の実装を明示 — :ui-substrate の値を偽らない)。
+;; Android/Windows はこのラウンドで未着手のため :render-substrate は付けない。
 (def surface-host-specs
   {:macos {:kind :native-surface
            :display "app-window"
            :ui-substrate "kotoba-lang/dom-gpu"
            :browser-engine "kotoba-lang/browser"
+           :render-substrate :wkwebview
            :renderers [:webgl :webgpu :native]
            :input-events [:pointer :keyboard :text :focus :resize]}
    :ios {:kind :native-surface
          :display "ui-window-scene"
          :ui-substrate "kotoba-lang/dom-gpu"
          :browser-engine "kotoba-lang/browser"
+         :render-substrate :wkwebview
          :renderers [:webgpu :native]
          :input-events [:touch :keyboard :text :focus :resize]}
    :android {:kind :native-surface
              :display "activity-surface"
              :ui-substrate "kotoba-lang/dom-gpu"
              :browser-engine "kotoba-lang/browser"
+             :render-substrate :android-webview
              :renderers [:vulkan :opengles :native]
              :input-events [:touch :keyboard :text :focus :resize]}
    :windows {:kind :native-surface
@@ -495,7 +504,10 @@
     (assoc :ios/bundle-id (option-value argv "--ios-bundle-id"))
 
     (option-value argv "--android-application-id")
-    (assoc :android/application-id (option-value argv "--android-application-id"))))
+    (assoc :android/application-id (option-value argv "--android-application-id"))
+
+    (option-value argv "--web-dist-dir")
+    (assoc :web/dist-dir (option-value argv "--web-dist-dir"))))
 
 (defn missing-manifest-keys
   [target manifest]
@@ -548,6 +560,48 @@
   (spit file value)
   file)
 
+;; ─── web bundle embedding (ADR-2607081015 の "WKWebView 実用優先" 決定) ───────
+;;
+;; native-rendering の設計フォークは WKWebView(macOS/iOS)/android.webkit.WebView
+;; (Android)を今のレンダー基盤にする側を選んだ — kotoba-lang/dom-gpu +
+;; kotoba-lang/browser は R0 段階・実運用実績ゼロ(ADR-2607081015)のため、
+;; surface-host-specs が示す長期目標のまま残し、scaffold が実際に生成する
+;; アプリはこの pragmatic な WebView 実装にする(:web/dist-dir manifest オプション)。
+
+(def placeholder-web-index-html
+  "manifest に :web/dist-dir が無い時に使う既定 web bundle。WKWebView/WebView が
+  実際に何かを描画できることをスモークテストできる最小の静的ページ。"
+  (str "<!doctype html><html><head><meta charset=\"utf-8\">"
+       "<title>kotoba-shell</title></head>"
+       "<body style=\"font:16px -apple-system,sans-serif;display:flex;"
+       "align-items:center;justify-content:center;height:100vh;margin:0;"
+       "background:#111;color:#eee;\">"
+       "<div>kotoba-shell native host — WKWebView/WebView OK</div>"
+       "</body></html>"))
+
+(defn- copy-tree!
+  "src ディレクトリ配下のファイルをすべて dest 配下へ再帰コピーする(単純な
+  file-seq 走査、シンボリックリンクは辿らない)。"
+  [src dest]
+  (let [src-file (io/file src)]
+    (when (.isDirectory src-file)
+      (doseq [f (file-seq src-file)]
+        (when (.isFile f)
+          (let [rel (.relativize (.toPath src-file) (.toPath f))
+                target (io/file dest (str rel))]
+            (.mkdirs (.getParentFile target))
+            (io/copy f target)))))))
+
+(defn web-assets-into!
+  "manifest の :web/dist-dir(あれば)を dest-dir へコピーする。無ければ
+  placeholder-web-index-html を1枚書く — :web/dist-dir 無しでも scaffold/build
+  が常に動作確認できるようにする(スモークテスト用途)。"
+  [manifest dest-dir]
+  (if-let [src (:web/dist-dir manifest)]
+    (do (copy-tree! src dest-dir) {:source src :placeholder? false})
+    (do (write-text-file! (io/file dest-dir "index.html") placeholder-web-index-html)
+        {:source nil :placeholder? true})))
+
 (defn release-dry-run-row
   [output-dir manifest target]
   (let [missing (missing-manifest-keys target manifest)
@@ -597,29 +651,173 @@
          :updater-ready? true
          :dry-run? true}))))
 
+(defn- xml-escape
+  [s]
+  (-> (str s)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")))
+
+(defn- xcodegen-project-yml
+  "macOS/iOS 共通の XcodeGen spec。project.pbxproj を手書きせず、scaffold 後に
+  `xcodegen generate` へ渡して実際にビルド可能な .xcodeproj を作る(xcodegen-generate!
+  参照)。CODE_SIGNING_ALLOWED=NO はローカル build/シミュレータ実行専用の設定 —
+  配布(release/sign)は別の release-* パイプラインが担当する。
+
+  Info.plist は別ファイルを手書きして `info.path` で渡す方式を試したが、
+  xcodegen 2.45.4 はテンプレート側の既定キー(CFBundleShortVersionString=\"1.0\"
+  固定など)で上書きし、こちらが書いた NSPrincipalClass 等は消えて反映されない
+  ことを実機で確認した(scaffold-check 後の実 Info.plist を diff して確認済み) —
+  よって `info.properties` に必要な key を直接書き、xcodegen 自身に完全な
+  Info.plist を生成させる(手書きファイルを介さない)。同じ理由で target 直下の
+  `resources:` キーも存在しない(書いても Copy Bundle Resources フェーズが
+  生成されないことを確認済み) — `sources:` に列挙したパス配下の各ファイルは
+  拡張子で自動判定され、コンパイル対象でないもの(index.html 等)は自動的に
+  Resources ビルドフェーズへ入る。"
+  [target manifest]
+  (let [platform (case target :macos "macOS" :ios "iOS")
+        deployment (case target :macos "13.0" :ios "16.0")
+        bundle-id (case target
+                    :macos (or (:macos/bundle-id manifest) (:app/id manifest))
+                    :ios (:ios/bundle-id manifest))
+        info-properties (case target
+                          :macos (str "        NSPrincipalClass: NSApplication\n"
+                                      "        NSHighResolutionCapable: true\n")
+                          ;; scene 無しの単純な UIApplicationDelegate ライフサイクルに
+                          ;; するため UIApplicationSceneManifest は書かない。
+                          ;; UILaunchScreen だけ空辞書で用意し、別途 storyboard を
+                          ;; 用意しなくても xcodebuild が起動画面要件を満たせるように
+                          ;; する(iOS 13+ の推奨最小構成)。
+                          :ios (str "        UILaunchScreen: {}\n"
+                                    "        UISupportedInterfaceOrientations:\n"
+                                    "          - UIInterfaceOrientationPortrait\n"))]
+    (str "name: KotobaShell\n"
+         "options:\n"
+         "  createIntermediateGroups: true\n"
+         "targets:\n"
+         "  KotobaShell:\n"
+         "    type: application\n"
+         "    platform: " platform "\n"
+         "    deploymentTarget: \"" deployment "\"\n"
+         "    sources:\n"
+         "      - Sources\n"
+         "      - Resources\n"
+         "    info:\n"
+         ;; path は既存ファイルを読む指定ではなく、xcodegen が生成する Info.plist
+         ;; の出力先(pre-create 不要 — 実機確認: path 無しだと
+         ;; \"Decoding failed at path: Nothing found\" で generate 自体が失敗する)。
+         "      path: Info.plist\n"
+         "      properties:\n"
+         "        CFBundleShortVersionString: \"" (:app/version manifest) "\"\n"
+         "        CFBundleVersion: \"1\"\n"
+         info-properties
+         "    settings:\n"
+         "      base:\n"
+         "        PRODUCT_NAME: KotobaShell\n"
+         "        PRODUCT_BUNDLE_IDENTIFIER: " bundle-id "\n"
+         "        MARKETING_VERSION: \"" (:app/version manifest) "\"\n"
+         "        CODE_SIGNING_ALLOWED: NO\n"
+         "        CODE_SIGNING_REQUIRED: NO\n"
+         "        ENABLE_HARDENED_RUNTIME: NO\n"
+         "    dependencies:\n"
+         "      - sdk: WebKit.framework\n")))
+
+(def ^:private macos-app-delegate-swift
+  (str "import Cocoa\n"
+       "import WebKit\n\n"
+       "final class AppDelegate: NSObject, NSApplicationDelegate {\n"
+       "    var window: NSWindow!\n\n"
+       "    func applicationDidFinishLaunching(_ notification: Notification) {\n"
+       "        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))\n"
+       "        if let url = Bundle.main.url(forResource: \"index\", withExtension: \"html\") {\n"
+       "            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())\n"
+       "        }\n"
+       "        window = NSWindow(\n"
+       "            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),\n"
+       "            styleMask: [.titled, .closable, .resizable, .miniaturizable],\n"
+       "            backing: .buffered,\n"
+       "            defer: false)\n"
+       "        window.center()\n"
+       "        window.title = \"Kotoba Shell\"\n"
+       "        window.contentView = webView\n"
+       "        window.makeKeyAndOrderFront(nil)\n"
+       "        NSApp.activate(ignoringOtherApps: true)\n"
+       "    }\n\n"
+       "    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {\n"
+       "        true\n"
+       "    }\n"
+       "}\n"))
+
+(def ^:private macos-main-swift
+  (str "import Cocoa\n\n"
+       "let app = NSApplication.shared\n"
+       "let delegate = AppDelegate()\n"
+       "app.delegate = delegate\n"
+       "app.run()\n"))
+
+(def ^:private ios-app-delegate-swift
+  (str "import UIKit\n"
+       "import WebKit\n\n"
+       ;; scene manifest を Info.plist に書いていないので UISceneSession 系
+       ;; delegate は不要 — application(_:didFinishLaunchingWithOptions:) だけの
+       ;; 昔ながらの単一 delegate ライフサイクル(SceneDelegate.swift を別途
+       ;; 用意しなくて済む、最小構成)。
+       "@main\n"
+       "final class AppDelegate: UIResponder, UIApplicationDelegate {\n"
+       "    var window: UIWindow?\n\n"
+       "    func application(_ application: UIApplication,\n"
+       "                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {\n"
+       "        let webView = WKWebView(frame: UIScreen.main.bounds)\n"
+       "        if let url = Bundle.main.url(forResource: \"index\", withExtension: \"html\") {\n"
+       "            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())\n"
+       "        }\n"
+       "        let viewController = UIViewController()\n"
+       "        viewController.view = webView\n"
+       "        let window = UIWindow(frame: UIScreen.main.bounds)\n"
+       "        window.rootViewController = viewController\n"
+       "        window.makeKeyAndVisible()\n"
+       "        self.window = window\n"
+       "        return true\n"
+       "    }\n"
+       "}\n"))
+
+(defn- android-package-path
+  [application-id]
+  (str/replace (str application-id) "." "/"))
+
+(defn- android-main-activity-java
+  [manifest]
+  (str "package " (:android/application-id manifest) ";\n\n"
+       "import android.app.Activity;\n"
+       "import android.os.Bundle;\n"
+       "import android.webkit.WebSettings;\n"
+       "import android.webkit.WebView;\n\n"
+       "public class MainActivity extends Activity {\n"
+       "    @Override\n"
+       "    protected void onCreate(Bundle savedInstanceState) {\n"
+       "        super.onCreate(savedInstanceState);\n"
+       "        WebView webView = new WebView(this);\n"
+       "        WebSettings settings = webView.getSettings();\n"
+       "        settings.setJavaScriptEnabled(true);\n"
+       "        webView.loadUrl(\"file:///android_asset/index.html\");\n"
+       "        setContentView(webView);\n"
+       "    }\n"
+       "}\n"))
+
 (defn scaffold-files
   [target manifest]
   (case target
-    :macos [["Info.plist"
-             (str "{:CFBundleIdentifier " (pr-str (or (:macos/bundle-id manifest)
-                                                      (:app/id manifest)))
-                  " :CFBundleName " (pr-str (:app/name manifest))
-                  " :CFBundleShortVersionString " (pr-str (:app/version manifest)) "}\n")]
-            ["Sources/AppDelegate.swift"
-             "import Foundation\n\nfinal class AppDelegate {}\n"]
+    :macos [["project.yml" (xcodegen-project-yml target manifest)]
+            ["Sources/main.swift" macos-main-swift]
+            ["Sources/AppDelegate.swift" macos-app-delegate-swift]
             ["Resources/kotoba-shell.edn"
              (pr-str {:schema "kotoba.shell.app.v0"
                       :target target
                       :surface (get surface-host-specs target)
                       :manifest manifest})]]
-    :ios [["Info.plist"
-           (str "{:CFBundleIdentifier " (pr-str (:ios/bundle-id manifest))
-                " :CFBundleName " (pr-str (:app/name manifest))
-                " :CFBundleShortVersionString " (pr-str (:app/version manifest)) "}\n")]
-          ["Sources/AppDelegate.swift"
-           "import UIKit\n\nfinal class AppDelegate: UIResponder {}\n"]
-          ["Sources/SceneDelegate.swift"
-           "import UIKit\n\nfinal class SceneDelegate: UIResponder {}\n"]
+    :ios [["project.yml" (xcodegen-project-yml target manifest)]
+          ["Sources/AppDelegate.swift" ios-app-delegate-swift]
           ["Resources/kotoba-shell.edn"
            (pr-str {:schema "kotoba.shell.app.v0"
                     :target target
@@ -632,15 +830,40 @@
               ["build.gradle"
                "plugins {\n    id 'com.android.application' version '8.5.0' apply false\n}\n"]
               ["app/build.gradle"
+               ;; Groovy DSL は括弧無しメソッド呼び出しを1行に複数並べると誤って
+               ;; 解釈される(実機確認: "applicationId 'x' minSdk 26 ..." を1行に
+               ;; 詰めると "Cannot invoke method minSdk() on null object" で
+               ;; assembleDebug が落ちる) — defaultConfig 内は1行1呼び出しにする。
                (str "plugins { id 'com.android.application' }\n\n"
-                    "android { namespace '" (:android/application-id manifest) "'\n"
+                    "android {\n"
+                    "    namespace '" (:android/application-id manifest) "'\n"
                     "    compileSdk 35\n"
-                    "    defaultConfig { applicationId '" (:android/application-id manifest) "' minSdk 26 targetSdk 35 versionName '" (:app/version manifest) "' versionCode 1 }\n"
+                    "    defaultConfig {\n"
+                    "        applicationId '" (:android/application-id manifest) "'\n"
+                    "        minSdk 26\n"
+                    "        targetSdk 35\n"
+                    "        versionName '" (:app/version manifest) "'\n"
+                    "        versionCode 1\n"
+                    "    }\n"
+                    "    compileOptions {\n"
+                    "        sourceCompatibility JavaVersion.VERSION_17\n"
+                    "        targetCompatibility JavaVersion.VERSION_17\n"
+                    "    }\n"
                     "}\n")]
               ["app/src/main/AndroidManifest.xml"
-               (str "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"><application android:label=\""
-                    (:app/name manifest)
-                    "\"><activity android:name=\".MainActivity\" android:exported=\"true\" /></application></manifest>\n")]
+               (str "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"
+                    "  <uses-permission android:name=\"android.permission.INTERNET\" />\n"
+                    "  <application android:label=\"" (xml-escape (:app/name manifest)) "\" android:usesCleartextTraffic=\"true\">\n"
+                    "    <activity android:name=\".MainActivity\" android:exported=\"true\">\n"
+                    "      <intent-filter>\n"
+                    "        <action android:name=\"android.intent.action.MAIN\" />\n"
+                    "        <category android:name=\"android.intent.category.LAUNCHER\" />\n"
+                    "      </intent-filter>\n"
+                    "    </activity>\n"
+                    "  </application>\n"
+                    "</manifest>\n")]
+              [(str "app/src/main/java/" (android-package-path (:android/application-id manifest)) "/MainActivity.java")
+               (android-main-activity-java manifest)]
               ["app/src/main/kotoba-shell.edn"
                (pr-str {:schema "kotoba.shell.app.v0"
                         :target target
@@ -655,6 +878,32 @@
                         :surface (get surface-host-specs target)
                         :manifest manifest})]]
     []))
+
+(defn web-assets-dest
+  "target ごとの web bundle 展開先(WKWebView/WebView が読む場所)。"
+  [target root]
+  (case target
+    (:macos :ios) (io/file root "Resources")
+    :android (io/file root "app" "src" "main" "assets")
+    root))
+
+(defn xcodegen-generate!
+  "root(scaffold 済みディレクトリ)で `xcodegen generate --spec project.yml` を
+  実行し KotobaShell.xcodeproj を作る(macOS/iOS のみ)。project.pbxproj を
+  手書きしない代わりに xcodegen に依存する — 未インストール環境でも scaffold
+  全体は落とさず、結果に :xcodegen-ok?/:xcodegen-error を残して呼び出し側が
+  判断できるようにする。"
+  [root]
+  (try
+    (let [{:keys [exit stdout timed-out?]}
+          (run-native-host-command-in-dir (.getPath root) "xcodegen"
+                                          ["generate" "--spec" "project.yml"] 120)]
+      {:xcodegen-ok? (and (not timed-out?) (zero? exit))
+       :xcodegen-exit exit
+       :xcodegen-output stdout})
+    (catch Exception e
+      {:xcodegen-ok? false
+       :xcodegen-error (.getMessage e)})))
 
 (defn scaffold-target-row
   [output-dir manifest target]
@@ -672,18 +921,31 @@
       (do
         (doseq [[path body] files]
           (write-text-file! (io/file root path) body))
-        {:target target
-         :ok? true
-         :root (.getPath root)
-         :files (mapv first files)
-         :file-count (count files)
-         :surface (get surface-host-specs target)
-         :manifest manifest}))))
+        (let [web-result (web-assets-into! manifest (web-assets-dest target root))
+              xcodegen-result (when (#{:macos :ios} target)
+                                (xcodegen-generate! root))]
+          (merge
+           {:target target
+            :ok? (and ok? (or (nil? xcodegen-result) (:xcodegen-ok? xcodegen-result)))
+            :root (.getPath root)
+            :files (mapv first files)
+            :file-count (count files)
+            :surface (get surface-host-specs target)
+            :web-assets web-result
+            :manifest manifest}
+           xcodegen-result))))))
 
 (defn scaffold-check-row
   [output-dir manifest target]
   (let [root (io/file output-dir (name target))
-        files (mapv first (scaffold-files target manifest))
+        ;; macOS/iOS の xcodegen 産物(KotobaShell.xcodeproj/project.pbxproj)は
+        ;; scaffold-files の [[path body]...] 一覧には含まれない(xcodegen
+        ;; generate が別途作る)ので、app-build-row が xcodebuild を実行する前に
+        ;; 本当に buildable かをここで見る — scaffold 直後に確認できないと
+        ;; xcodebuild 実行時になって初めて壊れているとわかる事故を防ぐ。
+        xcodeproj-paths (when (#{:macos :ios} target)
+                          ["KotobaShell.xcodeproj/project.pbxproj"])
+        files (concat (mapv first (scaffold-files target manifest)) xcodeproj-paths)
         file-rows (mapv (fn [path]
                           {:path path
                            :present? (.isFile (io/file root path))})

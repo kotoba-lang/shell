@@ -365,9 +365,20 @@
     (is (= 3 (get-in scaffold [:kotoba.cli/data :kotoba.shell/ready-count])))
     (is (every? pos-int?
                 (map :file-count (get-in scaffold [:kotoba.cli/data :kotoba.shell/app-rows]))))
+    ;; macOS/iOS: project.pbxproj を手書きせず xcodegen generate に作らせる方式
+    ;; (native-render-pipeline、ADR-2607081015 の WKWebView 実用優先決定)。
+    ;; Info.plist もその生成物(xcodegen の info.path 出力) — scaffold-files が
+    ;; 直接書くファイル一覧には含まれないが、scaffold-target-row のパイプライン
+    ;; 全体を通せば実在するようになる。SceneDelegate.swift は scene 無しの単純な
+    ;; UIApplicationDelegate ライフサイクルにしたため、もう存在しない(意図的)。
     (is (.isFile (io/file output-dir "macos" "Info.plist")))
-    (is (.isFile (io/file output-dir "ios" "Sources" "SceneDelegate.swift")))
+    (is (.isFile (io/file output-dir "macos" "KotobaShell.xcodeproj" "project.pbxproj")))
+    (is (.isFile (io/file output-dir "macos" "Resources" "index.html")))
+    (is (.isFile (io/file output-dir "ios" "Info.plist")))
+    (is (.isFile (io/file output-dir "ios" "KotobaShell.xcodeproj" "project.pbxproj")))
+    (is (.isFile (io/file output-dir "ios" "Resources" "index.html")))
     (is (.isFile (io/file output-dir "android" "app" "build.gradle")))
+    (is (.isFile (io/file output-dir "android" "app" "src" "main" "assets" "index.html")))
     (is (:kotoba.cli/ok? check))
     (is (= :shell/app-ready (:kotoba.cli/code check)))
     (is (every? :ok? (get-in check [:kotoba.cli/data :kotoba.shell/app-rows])))
