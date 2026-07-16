@@ -38,3 +38,26 @@ jobs:
         run: clojure -M:test
       - working-directory: shell
         run: clojure -M:lint
+      # ADR-2607081015 follow-up(native-render-pipeline, build-step-timeouts):
+      # unit test は :xcodegen-ok?/ファイル存在だけを確認しており、xcodegen が
+      # 吐いた project.pbxproj が実際に xcodebuild を通るかは手動確認でしか
+      # 担保していなかった(実 gap — 見つかった実バグ2件、project.yml の
+      # resources: キー無視と10秒 timeout はどちらもここを自動化していれば
+      # CI が先に検出できていたはず)。scaffold→build --execute を実行し、
+      # xcodebuild が本当に成功することを毎回確認する。
+      - name: app build smoke test (macOS)
+        working-directory: shell
+        run: |
+          ./bin/kotoba-shell app scaffold --target macos --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
+          ./bin/kotoba-shell app build --target macos --execute --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
+      - name: app build smoke test (iOS simulator SDK)
+        working-directory: shell
+        run: |
+          ./bin/kotoba-shell app scaffold --target ios --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
+          ./bin/kotoba-shell app build --target ios --execute --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
