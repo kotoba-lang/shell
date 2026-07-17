@@ -62,21 +62,34 @@ integration did more than once).
   Verified against `local-manimani/mobile`'s full real UI bundle
   (~225KB, `vendor/` included): the built app's CSS now visibly renders
   (background gradient, no longer blank white), confirming the fix.
-- **Remaining, more narrowly-scoped WKWebView issue: scripts execute but
-  throw an opaque `"Script error."`.** With the packaging bug above fixed,
-  `vendor/scittle.js` etc. do load (no more 404s), but evaluating manimani's
-  large embedded ClojureScript bundle still throws an uncaught error whose
-  `message` is the literal string `"Script error."` — the standard
-  browser/WebKit placeholder used when an error's real details are withheld
-  from `window.onerror`, normally reserved for cross-origin scripts. The
-  same bundle renders correctly in Chromium/V8 via Playwright in a few
-  seconds, so this is WKWebView-specific. Not yet root-caused past this
-  point (would need Safari Web Inspector attached to the simulator to see
-  the real underlying error, since the message-relay technique above only
-  forwards whatever the browser's own `error` event already contains, and in
-  this case that's the redacted placeholder, not the original error).
-  Small-to-medium web content (a placeholder page with no external `vendor/`
-  scripts) is unaffected, on both counts, as far as has been tested.
+- **Fixed: `loadFileURL` (`file://` origin) redacted every uncaught JS error
+  to the opaque placeholder `"Script error."`, with zero message/filename/
+  line/column/stack.** With the packaging bug above fixed, `vendor/
+  scittle.js` etc. loaded correctly (no more 404s), but evaluating
+  manimani's real bundle still surfaced only `"Script error."` and nothing
+  else via `window.onerror`. Isolated in a minimal reproduction (not
+  manimani-specific): loading *any* HTML/JS — inline `<script>`, external
+  `<script src>`, even a plain `throw new Error(...)` with no `eval`/
+  `Function` involved — via `WKWebView.loadFileURL` gets this same blanket
+  redaction from every uncaught error, while loading byte-identical content
+  over `http://127.0.0.1` (a throwaway local test server used only for this
+  diagnostic) gets full detail every time. This is WebKit's standard
+  cross-origin error-redaction policy applying unconditionally to `file://`
+  content — not a manimani bug, not something fixable from the HTML/JS side
+  (a `crossorigin` attribute doesn't help; even same-document inline script
+  was redacted). Fixed by dropping `loadFileURL` entirely: macOS/iOS
+  AppDelegate templates now register a `WKURLSchemeHandler`
+  (`KotobaWebBundleSchemeHandler`, `Sources/WebBundleSchemeHandler.swift`)
+  that serves `Resources/WebBundle` under a custom `kotoba-webbundle://`
+  scheme, which WebKit treats as a normal non-opaque origin — the same
+  reason Capacitor/Ionic-style production WKWebView apps avoid `file://`.
+  Verified against `local-manimani/mobile`'s real bundle on both a real
+  macOS build and a real booted iOS Simulator install+launch: `window.
+  onerror` now reports full detail. That full detail immediately surfaced
+  the actual underlying bug in `local-manimani`'s bundle itself (not
+  kotoba-shell's): `Could not find namespace kotoba-ui.theme.` — a missing
+  scittle namespace script, filed separately as a `local-manimani` gap, not
+  fixed here.
 - **`contacts/list`/`calendar/list-events`: real, macOS-only.** Backed by
   AppleScript (`resources/kotoba/shell/selfhost/{contacts_list,
   calendar_list_events}.applescript`) through `bin/kotoba-shell-host-macos`,

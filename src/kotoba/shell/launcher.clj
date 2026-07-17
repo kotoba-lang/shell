@@ -745,16 +745,86 @@
          "    dependencies:\n"
          "      - sdk: WebKit.framework\n")))
 
+(def ^:private web-bundle-scheme-handler-swift
+  "macOS/iOS 共通。`loadFileURL` は file:// origin をロードするため、WebKit の
+  cross-origin エラー抑制ポリシーが無条件に効いて window.onerror の
+  message/filename/lineno/colno/error が全て失われ `\"Script error.\"` にしか
+  ならない実バグを、WKScriptMessageHandler 診断ブリッジによる隔離実験で特定した
+  (file:// 経由の inline script・external script・eval 生成コードいずれも再現、
+  同一内容を http://127.0.0.1 経由でロードすると詳細は復元する)。file:// を
+  完全にやめ、WKURLSchemeHandler で自前スキームからバンドルを配信することで
+  origin を http/https と同じ非-opaque 扱いにし、詳細を保ったまま最小の
+  実装(実ネットワークリスナー不要)で解決する — Capacitor/Ionic 等の実運用
+  WKWebView アプリが同じ理由で file:// を避け custom scheme を使うのと同じ
+  対策。"
+  (str "import WebKit\n\n"
+       "final class KotobaWebBundleSchemeHandler: NSObject, WKURLSchemeHandler {\n"
+       "    static let scheme = \"kotoba-webbundle\"\n\n"
+       "    private let bundleDir: URL\n\n"
+       "    init(bundleDir: URL) {\n"
+       "        self.bundleDir = bundleDir\n"
+       "    }\n\n"
+       "    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {\n"
+       "        guard let url = urlSchemeTask.request.url else {\n"
+       "            urlSchemeTask.didFailWithError(URLError(.badURL))\n"
+       "            return\n"
+       "        }\n"
+       "        var relativePath = url.path\n"
+       "        if relativePath.isEmpty || relativePath == \"/\" {\n"
+       "            relativePath = \"/index.html\"\n"
+       "        }\n"
+       "        let fileURL = bundleDir.appendingPathComponent(String(relativePath.dropFirst()))\n"
+       "        guard let data = try? Data(contentsOf: fileURL) else {\n"
+       "            urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))\n"
+       "            return\n"
+       "        }\n"
+       "        let response = URLResponse(\n"
+       "            url: url,\n"
+       "            mimeType: KotobaWebBundleSchemeHandler.mimeType(forExtension: fileURL.pathExtension),\n"
+       "            expectedContentLength: data.count,\n"
+       "            textEncodingName: \"utf-8\")\n"
+       "        urlSchemeTask.didReceive(response)\n"
+       "        urlSchemeTask.didReceive(data)\n"
+       "        urlSchemeTask.didFinish()\n"
+       "    }\n\n"
+       "    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {\n"
+       "        // ファイル読み取りは同期実行なので中断すべき非同期処理は無い。\n"
+       "    }\n\n"
+       "    static func mimeType(forExtension ext: String) -> String {\n"
+       "        switch ext.lowercased() {\n"
+       "        case \"html\", \"htm\": return \"text/html\"\n"
+       "        case \"js\", \"mjs\": return \"application/javascript\"\n"
+       "        case \"css\": return \"text/css\"\n"
+       "        case \"json\", \"map\": return \"application/json\"\n"
+       "        case \"svg\": return \"image/svg+xml\"\n"
+       "        case \"png\": return \"image/png\"\n"
+       "        case \"jpg\", \"jpeg\": return \"image/jpeg\"\n"
+       "        case \"gif\": return \"image/gif\"\n"
+       "        case \"woff2\": return \"font/woff2\"\n"
+       "        case \"woff\": return \"font/woff\"\n"
+       "        case \"ico\": return \"image/x-icon\"\n"
+       "        case \"wasm\": return \"application/wasm\"\n"
+       "        default: return \"application/octet-stream\"\n"
+       "        }\n"
+       "    }\n"
+       "}\n"))
+
 (def ^:private macos-app-delegate-swift
   (str "import Cocoa\n"
        "import WebKit\n\n"
        "final class AppDelegate: NSObject, NSApplicationDelegate {\n"
-       "    var window: NSWindow!\n\n"
+       "    var window: NSWindow!\n"
+       "    private var schemeHandler: KotobaWebBundleSchemeHandler?\n\n"
        "    func applicationDidFinishLaunching(_ notification: Notification) {\n"
-       "        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))\n"
+       "        let config = WKWebViewConfiguration()\n"
        "        if let bundleDir = Bundle.main.url(forResource: \"WebBundle\", withExtension: nil) {\n"
-       "            let indexURL = bundleDir.appendingPathComponent(\"index.html\")\n"
-       "            webView.loadFileURL(indexURL, allowingReadAccessTo: bundleDir)\n"
+       "            let handler = KotobaWebBundleSchemeHandler(bundleDir: bundleDir)\n"
+       "            schemeHandler = handler\n"
+       "            config.setURLSchemeHandler(handler, forURLScheme: KotobaWebBundleSchemeHandler.scheme)\n"
+       "        }\n"
+       "        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 960, height: 640), configuration: config)\n"
+       "        if let indexURL = URL(string: \"\\(KotobaWebBundleSchemeHandler.scheme)://app/index.html\") {\n"
+       "            webView.load(URLRequest(url: indexURL))\n"
        "        }\n"
        "        window = NSWindow(\n"
        "            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),\n"
@@ -788,13 +858,19 @@
        ;; 用意しなくて済む、最小構成)。
        "@main\n"
        "final class AppDelegate: UIResponder, UIApplicationDelegate {\n"
-       "    var window: UIWindow?\n\n"
+       "    var window: UIWindow?\n"
+       "    private var schemeHandler: KotobaWebBundleSchemeHandler?\n\n"
        "    func application(_ application: UIApplication,\n"
        "                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {\n"
-       "        let webView = WKWebView(frame: UIScreen.main.bounds)\n"
+       "        let config = WKWebViewConfiguration()\n"
        "        if let bundleDir = Bundle.main.url(forResource: \"WebBundle\", withExtension: nil) {\n"
-       "            let indexURL = bundleDir.appendingPathComponent(\"index.html\")\n"
-       "            webView.loadFileURL(indexURL, allowingReadAccessTo: bundleDir)\n"
+       "            let handler = KotobaWebBundleSchemeHandler(bundleDir: bundleDir)\n"
+       "            schemeHandler = handler\n"
+       "            config.setURLSchemeHandler(handler, forURLScheme: KotobaWebBundleSchemeHandler.scheme)\n"
+       "        }\n"
+       "        let webView = WKWebView(frame: UIScreen.main.bounds, configuration: config)\n"
+       "        if let indexURL = URL(string: \"\\(KotobaWebBundleSchemeHandler.scheme)://app/index.html\") {\n"
+       "            webView.load(URLRequest(url: indexURL))\n"
        "        }\n"
        "        let viewController = UIViewController()\n"
        "        viewController.view = webView\n"
@@ -834,6 +910,7 @@
   (case target
     :macos [["project.yml" (xcodegen-project-yml target manifest)]
             ["Sources/main.swift" macos-main-swift]
+            ["Sources/WebBundleSchemeHandler.swift" web-bundle-scheme-handler-swift]
             ["Sources/AppDelegate.swift" macos-app-delegate-swift]
             ["Resources/kotoba-shell.edn"
              (pr-str {:schema "kotoba.shell.app.v0"
@@ -841,6 +918,7 @@
                       :surface (get surface-host-specs target)
                       :manifest manifest})]]
     :ios [["project.yml" (xcodegen-project-yml target manifest)]
+          ["Sources/WebBundleSchemeHandler.swift" web-bundle-scheme-handler-swift]
           ["Sources/AppDelegate.swift" ios-app-delegate-swift]
           ["Resources/kotoba-shell.edn"
            (pr-str {:schema "kotoba.shell.app.v0"
