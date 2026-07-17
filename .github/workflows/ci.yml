@@ -61,3 +61,27 @@ jobs:
           ./bin/kotoba-shell app build --target ios --execute --app-id dev.kotoba.ci-smoke \
             --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
             --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
+      # Android の app build は README で "Not yet wired into CI" と明記していた
+      # gap — default-app-build-step が呼ぶのは `gradle`(`./gradlew` ではなく
+      # bare command)なので、macos-latest ランナーに無ければ brew で入れる。
+      - run: brew install gradle
+      # 実機確認(この worktree で AGP 8.5.0 / compileSdk 35 を再現): Gradle 9.x が
+      # AGP の androidJdkImage 変換(core-for-system-modules.jar 用 jlink)に使う
+      # JDK を Homebrew の無印 `openjdk`(執筆時点で 26)から自動検出してしまうと
+      # `Could not resolve all files for configuration ':app:androidJdkImage'`
+      # で assembleDebug が落ちる(AGP 8.5.0 は compileSdk 34 までしか検証されて
+      # おらず JDK 17/21 系を前提にしている)。JAVA_HOME を明示して Gradle 自身と
+      # そのツールチェーン検出を JDK 17 に固定することで解消する。
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: app build smoke test (Android)
+        working-directory: shell
+        run: |
+          ./bin/kotoba-shell app scaffold --target android --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-android --json
+          ./bin/kotoba-shell app build --target android --execute --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-android --json
