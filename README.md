@@ -23,13 +23,26 @@ integration did more than once).
   screenshotting real WKWebView-rendered content. CI (`.github/workflows/
   ci.yml`) runs a real `app scaffold` + `app build --execute` for both
   targets on every push, not just a file-presence check.
-- **`app scaffold`/`app build` (Android): build-verified, less exercised.**
-  Generates a real WebView-hosting `MainActivity.java` and a Gradle project
-  that `gradle assembleDebug` builds successfully (verified manually with a
-  real Gradle install). Not yet wired into CI (GitHub's `macos-latest`
-  runner doesn't ship a ready-to-use Android SDK/Gradle setup) and installing
-  +launching on a real device/emulator has not been exercised the way iOS
-  has.
+- **`app scaffold`/`app build` (Android): now CI-verified for the build,
+  device/emulator install+launch still not exercised.** Generates a real
+  WebView-hosting `MainActivity.java` and a Gradle project that `gradle
+  assembleDebug` builds into a real `app-debug.apk`. CI now runs a real
+  `app scaffold` + `app build --execute` for Android on every push (same
+  pattern as the macOS/iOS smoke tests), after installing `gradle` via
+  Homebrew. **Real gotcha found while wiring this up**: Gradle 9.x lets AGP's
+  `androidJdkImage` transform (the `jlink` step over `core-for-system-
+  modules.jar`, needed for `compileSdk` 33+) auto-detect whichever JDK it
+  finds newest among all installed JDKs, not whatever `java` resolves to on
+  `PATH` — with a too-new JDK (e.g. Homebrew's unversioned `openjdk`, which
+  tracks latest upstream) this fails with `Could not resolve all files for
+  configuration ':app:androidJdkImage'` even though AGP 8.5.0 + `gradle
+  assembleDebug` otherwise runs fine. Fixed (both in CI and reproduced
+  locally) by pinning `JAVA_HOME` to a JDK 17 install before invoking
+  `gradle` — AGP 8.5.0 is only tested up to `compileSdk` 34/JDK 17-ish, so
+  don't assume "whatever JDK happens to be newest on this machine" works.
+  Installing+launching on a real device/emulator has still not been
+  exercised the way iOS has (no Android system image installed in this
+  environment yet — a real, not-yet-attempted gap, not a claim of success).
 - **`app scaffold`/`app build` (Windows): scaffolding only, unverified.** The
   generated `Package.appxmanifest`/`.wapproj` skeleton has never been run
   through `msbuild` — there is no Windows CI runner and no Windows
