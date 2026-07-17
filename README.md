@@ -42,24 +42,41 @@ integration did more than once).
   a scaffolded app right now. dom-gpu/browser were R0-stage with no real-app
   adoption at the time of that decision — this is a deliberate, documented
   pragmatic choice, not an oversight.
-- **Known WKWebView caveat: large scittle/SCI-interpreted bundles have
-  thrown an opaque, undiagnosed error in testing.** `:web/dist-dir` was
-  verified against two very different sizes of content: a small placeholder
-  page (renders correctly, screenshot-confirmed) and `local-manimani/mobile`'s
-  full real UI bundle (~225KB of embedded design-system + app ClojureScript,
-  interpreted at runtime via `scittle`/SCI, not precompiled) — which reached
-  its own page's 5s stuck-on-loading watchdog and then, after 45s, an
-  `error` event with every field (`message`/`filename`/`lineno`/`stack`)
-  empty. That specific shape — a generic error with no detail at all — is
-  the standard browser signature for an error whose details were redacted
-  for security reasons (commonly: the throwing script is treated as a
-  different origin than the page that installed the `error` listener), not
-  a timeout — the same bundle renders correctly in Chromium/V8 in a few
-  seconds via Playwright, so this is WKWebView-specific behavior, not a bug
-  in the bundle itself. Not yet root-caused (would need Safari Web Inspector
-  attached to the simulator, which isn't scriptable from a CLI session) or
-  fixed here; recorded so it isn't rediscovered from scratch. Small-to-medium
-  web content is unaffected by this as far as has been tested.
+- **Fixed: nested `:web/dist-dir` directories (e.g. `vendor/`) were silently
+  flattened out of the macOS/iOS app bundle.** What was first recorded here
+  as an "opaque WKWebView error with large bundles" turned out to be a real
+  packaging bug, root-caused with a `WKScriptMessageHandler` bridge (inject a
+  `WKUserScript` that relays `console.*`/`window.onerror`/
+  `unhandledrejection` to native code, which appends to a file under the
+  app's Documents directory, readable via `xcrun simctl get_app_container
+  <udid> <bundle-id> data` — no Safari Web Inspector needed, fully
+  CLI-scriptable). Xcode's default "Copy Bundle Resources" build phase
+  flattens nested directories added as a normal group reference: a source
+  tree with `Resources/vendor/scittle.js` landed as `<bundle>/scittle.js`
+  (no `vendor/` at all), so `index.html`'s `<script src="vendor/scittle.js">`
+  ended up pointing at nothing and every `resource failed to load` fired at
+  once. `:web/dist-dir` content is now copied into `Resources/WebBundle`,
+  which the XcodeGen spec (`xcodegen-project-yml`) declares as a `type:
+  folder` **folder reference** instead of a plain path — folder references
+  are copied recursively, preserving structure, unlike group references.
+  Verified against `local-manimani/mobile`'s full real UI bundle
+  (~225KB, `vendor/` included): the built app's CSS now visibly renders
+  (background gradient, no longer blank white), confirming the fix.
+- **Remaining, more narrowly-scoped WKWebView issue: scripts execute but
+  throw an opaque `"Script error."`.** With the packaging bug above fixed,
+  `vendor/scittle.js` etc. do load (no more 404s), but evaluating manimani's
+  large embedded ClojureScript bundle still throws an uncaught error whose
+  `message` is the literal string `"Script error."` — the standard
+  browser/WebKit placeholder used when an error's real details are withheld
+  from `window.onerror`, normally reserved for cross-origin scripts. The
+  same bundle renders correctly in Chromium/V8 via Playwright in a few
+  seconds, so this is WKWebView-specific. Not yet root-caused past this
+  point (would need Safari Web Inspector attached to the simulator to see
+  the real underlying error, since the message-relay technique above only
+  forwards whatever the browser's own `error` event already contains, and in
+  this case that's the redacted placeholder, not the original error).
+  Small-to-medium web content (a placeholder page with no external `vendor/`
+  scripts) is unaffected, on both counts, as far as has been tested.
 - **`contacts/list`/`calendar/list-events`: real, macOS-only.** Backed by
   AppleScript (`resources/kotoba/shell/selfhost/{contacts_list,
   calendar_list_events}.applescript`) through `bin/kotoba-shell-host-macos`,

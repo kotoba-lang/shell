@@ -684,7 +684,15 @@
   `resources:` キーも存在しない(書いても Copy Bundle Resources フェーズが
   生成されないことを確認済み) — `sources:` に列挙したパス配下の各ファイルは
   拡張子で自動判定され、コンパイル対象でないもの(index.html 等)は自動的に
-  Resources ビルドフェーズへ入る。"
+  Resources ビルドフェーズへ入る。
+
+  Resources/WebBundle だけ `type: folder`(folder reference)にしているのは
+  意図的 — 通常の group 参照だと Xcode の Copy Bundle Resources が入れ子
+  ディレクトリをバンドルのルートへフラット化してしまい、index.html が
+  `vendor/scittle.js` のような相対パスで参照する子ディレクトリが実機バンドル
+  から消える実バグを Safari Web Inspector 無しで再現・特定した
+  (web-assets-dest の docstring 参照)。folder reference はディレクトリ構造を
+  保ったままコピーするので、WebBundle 配下は何階層ネストしても安全。"
   [target manifest]
   (let [platform (case target :macos "macOS" :ios "iOS")
         deployment (case target :macos "13.0" :ios "16.0")
@@ -712,7 +720,11 @@
          "    deploymentTarget: \"" deployment "\"\n"
          "    sources:\n"
          "      - Sources\n"
-         "      - Resources\n"
+         "      - path: Resources\n"
+         "        excludes:\n"
+         "          - \"WebBundle/**\"\n"
+         "      - path: Resources/WebBundle\n"
+         "        type: folder\n"
          "    info:\n"
          ;; path は既存ファイルを読む指定ではなく、xcodegen が生成する Info.plist
          ;; の出力先(pre-create 不要 — 実機確認: path 無しだと
@@ -740,8 +752,9 @@
        "    var window: NSWindow!\n\n"
        "    func applicationDidFinishLaunching(_ notification: Notification) {\n"
        "        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))\n"
-       "        if let url = Bundle.main.url(forResource: \"index\", withExtension: \"html\") {\n"
-       "            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())\n"
+       "        if let bundleDir = Bundle.main.url(forResource: \"WebBundle\", withExtension: nil) {\n"
+       "            let indexURL = bundleDir.appendingPathComponent(\"index.html\")\n"
+       "            webView.loadFileURL(indexURL, allowingReadAccessTo: bundleDir)\n"
        "        }\n"
        "        window = NSWindow(\n"
        "            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),\n"
@@ -779,8 +792,9 @@
        "    func application(_ application: UIApplication,\n"
        "                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {\n"
        "        let webView = WKWebView(frame: UIScreen.main.bounds)\n"
-       "        if let url = Bundle.main.url(forResource: \"index\", withExtension: \"html\") {\n"
-       "            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())\n"
+       "        if let bundleDir = Bundle.main.url(forResource: \"WebBundle\", withExtension: nil) {\n"
+       "            let indexURL = bundleDir.appendingPathComponent(\"index.html\")\n"
+       "            webView.loadFileURL(indexURL, allowingReadAccessTo: bundleDir)\n"
        "        }\n"
        "        let viewController = UIViewController()\n"
        "        viewController.view = webView\n"
@@ -890,10 +904,25 @@
     []))
 
 (defn web-assets-dest
-  "target ごとの web bundle 展開先(WKWebView/WebView が読む場所)。"
+  "target ごとの web bundle 展開先(WKWebView/WebView が読む場所)。
+
+  macOS/iOS は Resources 直下ではなく Resources/WebBundle という専用の
+  サブディレクトリにする — 実機確認: Xcode の Copy Bundle Resources は
+  group 参照(xcodegen-project-yml の `sources:` に列挙した通常のパス)の
+  下にある入れ子ディレクトリを保持せず、個々のファイルをバンドルの
+  ルートへフラット化してしまう(index.html が参照する `vendor/scittle.js`
+  等が `<bundle>/vendor/scittle.js` ではなく `<bundle>/scittle.js` に
+  展開され、`loadFileURL` が読み込む index.html からは全ての vendor
+  スクリプト/CSS が 404 相当で読み込めず、WKWebView が空白のまま止まる —
+  Safari Web Inspector 無しで再現・特定した実バグ、README の
+  \"Known WKWebView caveat\" は原因はこれだった)。WebBundle だけ xcodegen の
+  folder reference(ディレクトリ構造を保持してコピーする)にすることで
+  vendor/ 等のサブディレクトリを実機バンドルでも保つ(xcodegen-project-yml
+  参照)。Android の assets/ はそもそも Gradle 側がディレクトリ構造を保持
+  するので、この問題自体が発生しない。"
   [target root]
   (case target
-    (:macos :ios) (io/file root "Resources")
+    (:macos :ios) (io/file root "Resources" "WebBundle")
     :android (io/file root "app" "src" "main" "assets")
     root))
 
@@ -955,7 +984,14 @@
         ;; xcodebuild 実行時になって初めて壊れているとわかる事故を防ぐ。
         xcodeproj-paths (when (#{:macos :ios} target)
                           ["KotobaShell.xcodeproj/project.pbxproj"])
-        files (concat (mapv first (scaffold-files target manifest)) xcodeproj-paths)
+        ;; web-assets-into! が書く index.html も scaffold-files の一覧には
+        ;; 含まれない(別関数の副作用)ので、ここで見ておく — WebBundle/ 配下が
+        ;; folder reference で正しくバンドルへ入るかは xcodebuild を実行する
+        ;; までは分からないが、scaffold 側で書けているかは scaffold-check で
+        ;; 見える。
+        web-bundle-paths (when (#{:macos :ios} target)
+                           ["Resources/WebBundle/index.html"])
+        files (concat (mapv first (scaffold-files target manifest)) xcodeproj-paths web-bundle-paths)
         file-rows (mapv (fn [path]
                           {:path path
                            :present? (.isFile (io/file root path))})
