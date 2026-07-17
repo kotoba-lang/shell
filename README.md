@@ -23,8 +23,8 @@ integration did more than once).
   screenshotting real WKWebView-rendered content. CI (`.github/workflows/
   ci.yml`) runs a real `app scaffold` + `app build --execute` for both
   targets on every push, not just a file-presence check.
-- **`app scaffold`/`app build` (Android): now CI-verified for the build,
-  device/emulator install+launch still not exercised.** Generates a real
+- **`app scaffold`/`app build` (Android): real, verified end to end,
+  including a real booted emulator install+launch.** Generates a real
   WebView-hosting `MainActivity.java` and a Gradle project that `gradle
   assembleDebug` builds into a real `app-debug.apk`. CI now runs a real
   `app scaffold` + `app build --execute` for Android on every push (same
@@ -40,9 +40,23 @@ integration did more than once).
   locally) by pinning `JAVA_HOME` to a JDK 17 install before invoking
   `gradle` — AGP 8.5.0 is only tested up to `compileSdk` 34/JDK 17-ish, so
   don't assume "whatever JDK happens to be newest on this machine" works.
-  Installing+launching on a real device/emulator has still not been
-  exercised the way iOS has (no Android system image installed in this
-  environment yet — a real, not-yet-attempted gap, not a claim of success).
+  Beyond the build, also verified installing+launching on a real booted
+  Android Emulator (`system-images;android-34;google_apis;arm64-v8a` via
+  `avdmanager`/`emulator`, not just `gradle assembleDebug`): `adb install`
+  + `adb shell am start` on the generated `MainActivity` renders the
+  placeholder page correctly, confirmed via `adb exec-out screencap`.
+  Repeated with `local-manimani/mobile`'s real production bundle via
+  `:web/dist-dir` and got the same `Could not find namespace
+  kotoba-ui.theme.` error already found on macOS/iOS (see below) —
+  independent third-platform confirmation that this is a real
+  `local-manimani` bug, not a WKWebView-specific or kotoba-shell-specific
+  one. **Bonus finding**: unlike WKWebView's `loadFileURL`, Android's
+  `android.webkit.WebView` logs full JS console/error output — message,
+  source file, line, and even surrounding source context — to `adb logcat`
+  (tag `chromium`, `[INFO:CONSOLE(...)]`) by default, with no
+  `WebChromeClient.onConsoleMessage` override and no diagnostic bridge
+  needed. Android's default observability here is strictly better than
+  WKWebView's.
 - **`app scaffold`/`app build` (Windows): scaffolding only, unverified.** The
   generated `Package.appxmanifest`/`.wapproj` skeleton has never been run
   through `msbuild` — there is no Windows CI runner and no Windows
