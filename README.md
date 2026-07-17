@@ -117,6 +117,23 @@ integration did more than once).
   kotoba-shell's): `Could not find namespace kotoba-ui.theme.` — a missing
   scittle namespace script, filed separately as a `local-manimani` gap, not
   fixed here.
+- **`doctor check`/`e2e check`/`device-farm check`: real, verified against
+  real tools/devices on all three platforms, not just evidence-shaped
+  data.** These were previously undocumented here (a reader had no way to
+  tell whether they were live gates or aspirational scaffolding). Ran all
+  three with `--strict` against real hardware/toolchains: macOS (local
+  `pbcopy`/`pbpaste`/`curl`/`security`/`codesign`, `kotoba-shell-host-macos`
+  smoke), iOS (a real booted Simulator via `xcrun simctl`), and Android (a
+  real booted Emulator via `adb`, `system-images;android-34;google_apis;
+  arm64-v8a` — the same one installed for the app-build verification
+  above). All three targets came back `ready?: true` with zero missing
+  required tools and a real `host-smoke` process execution (not a stub).
+  `release dry-run`'s artifact/signature outputs are, by design, evidence
+  placeholders rather than real binaries (confirmed by inspecting the
+  output: a small text file, not a built `.app`) — that already matches
+  what this README's Commands section says (`release dry-run` "writes
+  target artifact evidence... without invoking platform stores"), so it
+  isn't a gap, just a distinction worth being explicit about here too.
 - **`contacts/list`/`calendar/list-events`: real, macOS-only.** Backed by
   AppleScript (`resources/kotoba/shell/selfhost/{contacts_list,
   calendar_list_events}.applescript`) through `bin/kotoba-shell-host-macos`,
