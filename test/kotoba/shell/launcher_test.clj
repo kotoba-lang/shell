@@ -465,6 +465,36 @@
     (is (false? (:kotoba.cli/ok? invalid)))
     (is (= :shell/app-scaffold-blocked (:kotoba.cli/code invalid)))))
 
+(deftest app-scaffold-macos-ios-load-web-bundle-via-custom-scheme-not-file-url
+  ;; 実機診断で判明した実バグ: WKWebView の loadFileURL(file:// origin)は
+  ;; window.onerror の message/filename/lineno/colno/error を無条件に
+  ;; redact して "Script error." にしてしまう(WKScriptMessageHandler
+  ;; ブリッジで隔離再現し、同一内容を http:// 経由でロードすると詳細が
+  ;; 復元することを確認済み)。file:// を避け、自前の WKURLSchemeHandler
+  ;; (KotobaWebBundleSchemeHandler)がバンドルを配信する経路に切り替えた
+  ;; ので、生成物がこの経路になっているかをテンプレート文字列で検証する。
+  (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\"}"
+        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
+                                             (str "kotoba-shell-schemehandler-" (System/nanoTime)))
+                                (.mkdirs)))
+        scaffold (launcher/dispatch ["app" "scaffold"
+                                     "--target" "macos"
+                                     "--target" "ios"
+                                     "--manifest-edn" manifest
+                                     "--output-dir" output-dir])]
+    (is (:kotoba.cli/ok? scaffold))
+    (doseq [target ["macos" "ios"]]
+      (let [handler-file (io/file output-dir target "Sources" "WebBundleSchemeHandler.swift")
+            delegate-file (io/file output-dir target "Sources" "AppDelegate.swift")
+            handler-src (slurp handler-file)
+            delegate-src (slurp delegate-file)]
+        (is (.isFile handler-file))
+        (is (str/includes? handler-src "WKURLSchemeHandler"))
+        (is (str/includes? handler-src "static let scheme = \"kotoba-webbundle\""))
+        (is (not (str/includes? delegate-src "loadFileURL")))
+        (is (str/includes? delegate-src "KotobaWebBundleSchemeHandler.scheme"))
+        (is (str/includes? delegate-src "setURLSchemeHandler"))))))
+
 (deftest app-build-plans_and_executes_native_project_builds
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
         output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
