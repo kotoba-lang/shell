@@ -450,10 +450,13 @@
     ;; UIApplicationDelegate ライフサイクルにしたため、もう存在しない(意図的)。
     (is (.isFile (io/file output-dir "macos" "Info.plist")))
     (is (.isFile (io/file output-dir "macos" "KotobaShell.xcodeproj" "project.pbxproj")))
-    (is (.isFile (io/file output-dir "macos" "Resources" "index.html")))
+    ;; Resources/WebBundle(Resources 直下ではない)— xcodegen の folder
+    ;; reference にして Xcode の Copy Bundle Resources によるサブディレクトリ
+    ;; フラット化(vendor/ 等が消える実バグ)を避けるための専用配置。
+    (is (.isFile (io/file output-dir "macos" "Resources" "WebBundle" "index.html")))
     (is (.isFile (io/file output-dir "ios" "Info.plist")))
     (is (.isFile (io/file output-dir "ios" "KotobaShell.xcodeproj" "project.pbxproj")))
-    (is (.isFile (io/file output-dir "ios" "Resources" "index.html")))
+    (is (.isFile (io/file output-dir "ios" "Resources" "WebBundle" "index.html")))
     (is (.isFile (io/file output-dir "android" "app" "build.gradle")))
     (is (.isFile (io/file output-dir "android" "app" "src" "main" "assets" "index.html")))
     (is (:kotoba.cli/ok? check))
