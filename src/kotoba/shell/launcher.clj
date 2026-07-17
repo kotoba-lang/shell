@@ -288,7 +288,7 @@
 
 (defn- unblob
   "resources/kotoba/shell/selfhost/*.edn is stored on disk as a Datomic/
-   Datascript tx-data vector (scripts/edn-datomize.bb): a single entity map
+   Datascript tx-data vector (scripts/edn-datomize.cljs): a single entity map
    whose non-scalar values (nested maps, vectors-of-maps) are pr-str'd blob
    strings so the file stays queryable at the entity+attribute granularity.
    unblob reverses that for one value: if it is a string that reads back to
@@ -300,7 +300,7 @@
     v))
 
 (defn- reconstitute-entity
-  "Reverses the scripts/edn-datomize.bb wrap-map transform: strips the
+  "Reverses the scripts/edn-datomize.cljs wrap-map transform: strips the
    :db/id and the namespace off every attribute key, and unblobs any pr-str'd
    nested value, so callers get back the exact same flat un-namespaced map
    the seed files used to contain (only the file's on-disk shape changed;
