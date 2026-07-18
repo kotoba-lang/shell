@@ -987,6 +987,19 @@
     (is (re-find #"urllib\.request\.urlopen" command))
     (is (re-find #"npm run smoke:webgpu" command))))
 
+(deftest stack-e2e-closes-language-policy-tender-shell-and-store-loop
+  (let [result (launcher/dispatch ["e2e" "stack"])
+        receipt (get-in result [:kotoba.cli/data :kotoba.shell/stack-e2e])]
+    (is (:kotoba.cli/ok? result))
+    (is (= :shell/stack-e2e-ready (:kotoba.cli/code result)))
+    (is (= "kotoba.shell.stack-e2e.v0" (:schema receipt)))
+    (is (true? (get-in receipt [:source :present?])))
+    (is (true? (get-in receipt [:app-source :present?])))
+    (is (true? (get-in receipt [:aiueos :granted?])))
+    (is (= 120 (get-in receipt [:kototama :result])))
+    (is (= 3 (get-in receipt [:shell :ops-count])))
+    (is (true? (get-in receipt [:kotobase :persisted?])))))
+
 (defn -main
   [& _]
   (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test)]

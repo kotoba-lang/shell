@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+output="${1:-$dir/../target/kotoba-shell-host-macos-window}"
+mkdir -p "$(dirname "$output")"
+swiftc "$dir/kotoba-shell-host-macos-window.swift" -o "$output" -framework AppKit
+printf 'built: %s\n' "$output"

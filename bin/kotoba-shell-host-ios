@@ -27,7 +27,8 @@ if [[ -n "$provider_command" && ${#args[@]} -eq 0 ]]; then
 fi
 
 if [[ ${#args[@]} -eq 0 ]]; then
-  xcrun simctl list devices booted
+  devices=$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/ {gsub(/^[ \t]+|[ \t]+$/, "", $1); printf "%s%s", comma, "\"" $2 "\""; comma=","}')
+  printf '{"event":"device/inventory","target":"ios","devices":[%s]}\n' "$devices"
 else
   xcrun simctl spawn booted "${args[@]}"
 fi

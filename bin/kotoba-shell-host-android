@@ -27,7 +27,8 @@ if [[ -n "$provider_command" && ${#args[@]} -eq 0 ]]; then
 fi
 
 if [[ ${#args[@]} -eq 0 ]]; then
-  adb devices
+  devices=$(adb devices | awk 'NR>1 && $2=="device" {printf "%s%s", comma, $1; comma=","}')
+  printf '{"event":"device/inventory","target":"android","devices":[%s]}\n' "$(printf '%s' "$devices" | sed 's/[^,]*/"&"/g')"
 else
   adb shell "${args[@]}"
 fi

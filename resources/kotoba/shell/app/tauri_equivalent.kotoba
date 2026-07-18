@@ -1,0 +1,15 @@
+;; Canonical Kotoba-owned application readiness program.  The first vertical
+;; slice is host-free and AOT-compilable; native effects remain explicit shell
+;; provider capabilities and are never ambient language functions.
+(defn gate [language tender policy surface store]
+  (if language
+    (if tender
+      (if policy
+        (if surface
+          (if store 31 15)
+          7)
+        3)
+      1)
+    0))
+
+(defn main [] (gate 1 1 1 1 1))
