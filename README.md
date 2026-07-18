@@ -43,6 +43,7 @@ bin/kotoba-shell device-farm check --target ios --target android --strict --json
 bin/kotoba-shell device-farm schedule --target ios --target android --provider firebase-test-lab --cadence hourly --device-farm-command gcloud --device-farm-command-arg firebase --device-farm-command-arg test --device-farm-command-arg android --schedule target/kotoba-shell/device-farm/schedule.edn --run-log target/kotoba-shell/device-farm/run.edn --write --execute --json
 bin/kotoba-shell doctor check --target ios --target android --strict --json
 bin/kotoba-shell e2e check --target macos --json
+bin/kotoba-shell e2e stack --json
 bin/kotoba-shell e2e check --target ios --target android --strict --json
 bin/kotoba-shell ui check --strict --json
 bin/kotoba-shell ui smoke --strict --json
@@ -127,6 +128,24 @@ as warnings, while `--strict` is intended for CI/device-farm gates.
 `device-farm check` is the continuous real-device E2E gate. It combines local
 iOS/Android device readiness with an optional external device-farm command and
 only runs that command when `--execute` is present.
+
+`e2e stack` closes the load-bearing reference loop: aiueos makes a real grant
+decision, kototama executes a checked-in Kotoba-compiled Wasm guest, shell
+commits `kotoba:dom` operations, and kotobase appends then reads back one
+correlated receipt. `resources/kotoba/shell/app/tauri_equivalent.kotoba` is the
+Kotoba-owned application readiness source. Native window execution of that
+source is the next T1 gate and is not claimed by this command.
+
+The macOS T1 native boundary is provided by
+`bin/kotoba-shell-host-macos-window.swift`. It is a thin AppKit process: it
+owns window/input/resize/lifecycle events while Kotoba owns app semantics.
+Build and smoke it on macOS with `bin/kotoba-shell-build-macos-window` and
+`target/kotoba-shell-host-macos-window --smoke`.
+
+Windows has an explicit PowerShell host boundary at
+`bin/kotoba-shell-host-windows.cmd` (delegating to `.ps1`); it emits a structured readiness event and
+never falls back to a macOS or JVM process. Production Win32/WinUI providers
+remain behind the same host contract.
 
 `ui check` verifies that `kotoba-lang/dom-gpu` (internally keyed `:wasm-ui`,
 unchanged to keep the `--substrate wasm-ui` CLI value stable) and
