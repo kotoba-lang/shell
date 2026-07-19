@@ -3,11 +3,13 @@
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [kotoba.shell.stack-e2e :as stack-e2e]))
 
 (def supported-shell-targets #{:macos :ios :android :windows})
 
-(declare run-native-host-command run-native-host-command-in-dir execute-requested? external-step step-run-result)
+(declare run-native-host-command run-native-host-command-in-dir
+         execute-requested? external-step step-run-result)
 
 (def host-runner-specs
   {:macos {:kind :process
@@ -53,10 +55,18 @@
                          "keychain/read-text"
                          "keychain/write-text"
                          "keychain/delete"]}
-   :windows {:kind :external
-             :command nil
-             :connection "external-host-command"
-             :providers []}})
+   :windows {:kind :process
+             :command "bin/kotoba-shell-host-windows.cmd"
+             :connection "powershell-process"
+             :providers ["clipboard/read-text"
+                         "clipboard/write-text"
+                         "fs/read-text"
+                         "fs/write-text"
+                         "fs/append-text"
+                         "http/fetch"
+                         "notify/show"
+                         "keychain/read-text"
+                         "keychain/write-text"]}})
 
 ;; :ui-substrate/:browser-engine は長期目標のアーキテクチャ(kotoba-lang/dom-gpu +
 ;; kotoba-lang/browser、ADR-2607081015)を表す。ADR-2607081015 時点でその2 repo は
@@ -191,15 +201,22 @@
               ["app" "scaffold"]
               ["app" "check"]
               ["app" "build"]
+              ["app" "run"]
+              ["app" "visual-test"]
+              ["app" "kaizen"]
               ["api" "check"]
               ["api" "freeze"]
               ["api" "compat"]
               ["plugin" "check"]
               ["plugin" "tauri-check"]
+              ["plugin" "abi-smoke"]
               ["doctor" "check"]
               ["device-farm" "check"]
               ["device-farm" "schedule"]
               ["e2e" "check"]
+              ["e2e" "stack"]
+              ["e2e" "native-window"]
+              ["e2e" "runtime-parity"]
               ["ui" "check"]
               ["ui" "smoke"]
               ["native-host" "check"]
@@ -1222,6 +1239,211 @@
                                        :audit/execute? execute?
                                        :audit/ready-count (count (filter :ok? rows))})})}))
 
+(defn- app-runtime-plan
+  [argv manifest target]
+  (let [manifest-file (or (option-value argv "--manifest") "app.kotoba.edn")
+        app-dir (or (some-> manifest-file io/file .getCanonicalFile .getParent)
+                    (.getCanonicalPath (io/file ".")))
+        runtime (:runtime manifest)
+        runtime-ns (or (:namespace runtime) (:runtime/namespace runtime))
+        start-fn (or (:start runtime) (:runtime/start runtime) 'start)
+        binary (or (option-value argv "--window-command")
+                   (if (= :ios target)
+                     (sibling-path "bin/kotoba-shell-run-ios-app")
+                     (sibling-path "target/kotoba-shell-host-macos-window")))]
+    {:app-dir app-dir
+     :runtime runtime
+     :runtime-namespace (some-> runtime-ns str)
+     :start-function (str start-fn)
+     :window-command binary
+     :window (get runtime :window)
+     :screenshot (option-value argv "--screenshot")
+     :smoke? (boolean (some #{"--smoke"} argv))}))
+
+(defn- evaluate-app-entry
+  [{:keys [app-dir runtime-namespace start-function]}]
+  (if (or (str/blank? runtime-namespace) (str/blank? start-function))
+    {:exit 2 :stdout "" :timed-out? false
+     :error "manifest runtime requires :namespace and :start"}
+    (let [form (str "(require '" runtime-namespace ")"
+                    "(prn (" runtime-namespace "/" start-function "))")
+          run (run-native-host-command-in-dir app-dir "clojure" ["-M" "-e" form] 120)]
+      (if (and (zero? (or (:exit run) 1)) (not (:timed-out? run)))
+        (try
+          (assoc run :app-result (edn/read-string (last (remove str/blank? (str/split-lines (:stdout run))))))
+          (catch Exception e
+            (assoc run :error (str "invalid app entry output: " (.getMessage e)))))
+        run))))
+
+(defn app-run-result
+  "Evaluate a pure Kotoba app entry and hand its kotoba:dom ops to the native
+  host. Execution is explicit; without --execute this returns an auditable plan."
+  [argv]
+  (let [target (target-option argv)
+        manifest (app-manifest argv)
+        plan (app-runtime-plan argv manifest target)
+        execute? (execute-requested? argv)
+        supported? (contains? #{:macos :ios} target)
+        runtime-valid? (and (= :kotoba-wasm (get-in manifest [:runtime :kind]))
+                            (= :kotoba/dom (get-in manifest [:runtime :surface]))
+                            (not (str/blank? (:runtime-namespace plan))))
+        evaluation (when (and execute? supported? runtime-valid?) (evaluate-app-entry plan))
+        ops (get-in evaluation [:app-result :kotoba.app/surface-ops])
+        ops-valid? (and (sequential? ops) (seq ops))
+        builder (when (= :macos target) (sibling-path "bin/kotoba-shell-build-macos-window"))
+        rebuild? (boolean (some #{"--rebuild-window"} argv))
+        build (when (and (= :macos target) execute? supported? runtime-valid? ops-valid?
+                         (or rebuild? (not (.canExecute (io/file (:window-command plan))))))
+                (run-native-host-command builder [(:window-command plan)] nil 120))
+        binary-ready? (or (.canExecute (io/file (:window-command plan)))
+                          (and build (zero? (or (:exit build) 1))))
+        host-args (cond-> (if (= :ios target)
+                           ["--bundle-id" (str (:ios/bundle-id manifest))
+                            "--title" (str (:app/name manifest))
+                            "--ops-json" (json/write-str (json-ready ops))]
+                           ["--title" (str (:app/name manifest))
+                            "--ops-json" (json/write-str (json-ready ops))])
+                    (get-in plan [:window :width]) (conj "--width" (str (get-in plan [:window :width])))
+                    (get-in plan [:window :height]) (conj "--height" (str (get-in plan [:window :height])))
+                    (get-in plan [:window :min-width]) (conj "--min-width" (str (get-in plan [:window :min-width])))
+                    (get-in plan [:window :min-height]) (conj "--min-height" (str (get-in plan [:window :min-height])))
+                    (:screenshot plan) (conj "--screenshot" (:screenshot plan))
+                    (:smoke? plan) (conj "--smoke"))
+        host-run (when (and execute? supported? runtime-valid? ops-valid? binary-ready?)
+                   (run-native-host-command (:window-command plan) host-args nil
+                                            (if (:smoke? plan) 15 86400)))
+        ran? (boolean (and host-run (zero? (or (:exit host-run) 1)) (not (:timed-out? host-run))))
+        planned? (and supported? runtime-valid?)
+        ok? (if execute? ran? planned?)]
+    {:kotoba.cli/ok? ok?
+     :kotoba.cli/code (cond
+                        (not supported?) :shell/app-run-target-unsupported
+                        (not runtime-valid?) :shell/app-runtime-invalid
+                        (not execute?) :shell/app-run-planned
+                        ran? :shell/app-ran
+                        :else :shell/app-run-failed)
+     :kotoba.cli/data (merge
+                       (shell-authority-data)
+                       {:kotoba.shell/app-run-schema "kotoba.shell.app-run.v0"
+                        :kotoba.shell/target target
+                        :kotoba.shell/manifest manifest
+                        :kotoba.shell/execute? execute?
+                        :kotoba.shell/runtime-plan plan
+                        :kotoba.shell/evaluation evaluation
+                        :kotoba.shell/ops-count (count (or ops []))
+                        :kotoba.shell/build build
+                        :kotoba.shell/host-run host-run
+                        :kotoba.shell/audit
+                        (audit-record (cond
+                                        ran? :app/ran
+                                        execute? :app/run-failed
+                                        :else :app/run-planned)
+                                      {:audit/target target
+                                       :audit/app-id (:app/id manifest)
+                                       :audit/execute? execute?
+                                       :audit/ops-count (count (or ops []))})})}))
+
+(defn app-surface-result
+  "Evaluate an app entry without launching a host and write its kotoba:dom ops
+  as JSON. This is the read-only producer used by native live reload."
+  [argv]
+  (let [manifest (app-manifest argv)
+        plan (app-runtime-plan argv manifest (target-option argv))
+        output (option-value argv "--output")
+        evaluation (evaluate-app-entry plan)
+        ops (get-in evaluation [:app-result :kotoba.app/surface-ops])
+        valid? (and (sequential? ops) (seq ops) (not (str/blank? output)))]
+    (when valid?
+      (io/make-parents output)
+      (spit output (json/write-str (json-ready ops))))
+    {:kotoba.cli/ok? (boolean valid?)
+     :kotoba.cli/code (if valid? :shell/app-surface-rendered :shell/app-surface-failed)
+     :kotoba.cli/data {:kotoba.shell/app-run-schema "kotoba.shell.app-surface.v0"
+                       :kotoba.shell/output output
+                       :kotoba.shell/ops-count (count (or ops []))
+                       :kotoba.shell/evaluation evaluation}}))
+
+(defn- image-diff
+  [baseline-file actual-file]
+  (let [baseline (javax.imageio.ImageIO/read (io/file baseline-file))
+        actual (javax.imageio.ImageIO/read (io/file actual-file))
+        bw (.getWidth baseline) bh (.getHeight baseline)
+        aw (.getWidth actual) ah (.getHeight actual)]
+    (if (not= [bw bh] [aw ah])
+      {:comparable? false :baseline-size [bw bh] :actual-size [aw ah]
+       :difference-ratio 1.0 :mean-channel-delta 1.0}
+      (let [pixels (* bw bh)
+            totals (reduce
+                    (fn [[different delta] [x y]]
+                      (let [a (.getRGB baseline x y) b (.getRGB actual x y)
+                            channels (map #(Math/abs (- (bit-and (bit-shift-right a %) 0xff)
+                                                         (bit-and (bit-shift-right b %) 0xff)))
+                                          [0 8 16 24])
+                            d (reduce + channels)]
+                        [(if (> d 32) (inc different) different) (+ delta d)]))
+                    [0 0]
+                    (for [y (range bh) x (range bw)] [x y]))]
+        {:comparable? true
+         :baseline-size [bw bh]
+         :actual-size [aw ah]
+         :difference-ratio (/ (double (first totals)) pixels)
+         :mean-channel-delta (/ (double (second totals)) (* pixels 4 255))}))))
+
+(defn app-visual-test-result
+  [argv]
+  (let [baseline (or (option-value argv "--baseline") "test/visual/manimani-macos.png")
+        actual (or (option-value argv "--actual") "target/kotoba-shell/visual/manimani-macos.png")
+        threshold (Double/parseDouble (or (option-value argv "--threshold") "0.01"))
+        update? (boolean (some #{"--update-baseline"} argv))
+        run-argv (into (vec argv) ["--execute" "--smoke" "--rebuild-window" "--screenshot" actual])
+        app-run (app-run-result run-argv)
+        captured? (and (:kotoba.cli/ok? app-run) (.isFile (io/file actual)))
+        baseline-existed? (.isFile (io/file baseline))
+        _ (when (and captured? update?)
+            (io/make-parents baseline)
+            (java.nio.file.Files/copy (.toPath (io/file actual)) (.toPath (io/file baseline))
+                                      (into-array java.nio.file.CopyOption
+                                                  [java.nio.file.StandardCopyOption/REPLACE_EXISTING])))
+        diff (when (and captured? (.isFile (io/file baseline))) (image-diff baseline actual))
+        passed? (and captured? diff (:comparable? diff)
+                     (<= (:difference-ratio diff) threshold))]
+    {:kotoba.cli/ok? (boolean passed?)
+     :kotoba.cli/code (cond
+                        (not captured?) :shell/visual-capture-failed
+                        (and (not baseline-existed?) (not update?)) :shell/visual-baseline-missing
+                        passed? :shell/visual-test-passed
+                        :else :shell/visual-test-failed)
+     :kotoba.cli/data (merge
+                       (shell-authority-data)
+                       {:kotoba.shell/visual-test-schema "kotoba.shell.visual-test.v0"
+                        :kotoba.shell/baseline baseline
+                        :kotoba.shell/actual actual
+                        :kotoba.shell/threshold threshold
+                        :kotoba.shell/baseline-updated? update?
+                        :kotoba.shell/diff diff
+                        :kotoba.shell/app-run app-run
+                        :kotoba.shell/audit
+                        (audit-record (if passed? :visual/passed :visual/failed)
+                                      {:audit/baseline baseline :audit/actual actual
+                                       :audit/difference-ratio (:difference-ratio diff)})})}))
+
+(defn app-kaizen-result
+  [argv]
+  (let [visual (app-visual-test-result argv)
+        passed? (:kotoba.cli/ok? visual)
+        baseline (get-in visual [:kotoba.cli/data :kotoba.shell/baseline])
+        actual (get-in visual [:kotoba.cli/data :kotoba.shell/actual])]
+    {:kotoba.cli/ok? passed?
+     :kotoba.cli/code (if passed? :shell/kaizen-complete :shell/kaizen-needs-change)
+     :kotoba.cli/data (merge
+                       (shell-authority-data)
+                       {:kotoba.shell/kaizen-schema "kotoba.shell.kaizen.v0"
+                        :kotoba.shell/visual-result visual
+                        :kotoba.shell/next-action (if passed? :done :inspect-diff)
+                        :kotoba.shell/next-command (when-not passed?
+                                                     (str "kotoba-shell app kaizen --manifest app.kotoba.edn --baseline "
+                                                          baseline " --actual " actual " --execute --json"))})}))
+
 (defn executable-file?
   [path]
   (let [file (io/file path)]
@@ -1420,8 +1642,11 @@
   [argv]
   (let [target (target-option argv)
         target-known? (contains? supported-shell-targets target)
+        custom-command (option-value argv "--host-command")
+        windows-host? (str/starts-with? (str/lower-case (System/getProperty "os.name" "")) "windows")
         command (or (option-value argv "--host-command")
-                    (default-host-command target))
+                    (when (or (not= :windows target) windows-host?)
+                      (default-host-command target)))
         args (vec (option-values argv "--host-arg"))]
     (cond
       (not target-known?)
@@ -1449,7 +1674,7 @@
                              (shell-authority-data)
                              {:kotoba.shell/target target
                               :kotoba.shell/native-host-connected? true
-                              :kotoba.shell/default-host-runner? (nil? (option-value argv "--host-command"))
+                              :kotoba.shell/default-host-runner? (nil? custom-command)
                               :kotoba.shell/host-command command
                               :kotoba.shell/host-args args
                               :kotoba.shell/exit exit
@@ -1660,6 +1885,25 @@
   (let [targets (or (seq (map keyword (option-values argv "--target")))
                     [:macos :ios :android])
         manifest (app-manifest argv)
+        artifact (option-value argv "--artifact")
+        artifact-file (when artifact (io/file artifact))
+        artifact-ready? (or (nil? artifact) (.isFile artifact-file))
+        rollback-from (option-value argv "--rollback-from")
+        rollback-to (option-value argv "--rollback-to")
+        rollback-ready? (or (and (nil? rollback-from) (nil? rollback-to))
+                            (and rollback-from rollback-to
+                                 (not= rollback-from rollback-to)
+                                 (.isFile (io/file rollback-from))
+                                 (.isFile (io/file rollback-to))))
+        artifact-sha256 (when artifact-ready?
+                          (when artifact-file
+                            (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
+                              (with-open [in (io/input-stream artifact-file)]
+                                (let [buf (byte-array 65536)]
+                                  (loop []
+                                    (let [n (.read in buf)]
+                                      (when (pos? n) (.update digest buf 0 n) (recur))))))
+                              (format "%064x" (BigInteger. 1 (.digest digest))))))
         rows (mapv (fn [target]
                      (let [missing (missing-manifest-keys target manifest)
                            ok? (and (contains? supported-shell-targets target)
@@ -1669,7 +1913,7 @@
                         :artifact (get-in release-target-specs [target :artifact])
                         :missing-manifest-keys missing}))
                    targets)
-        ok? (every? :ok? rows)]
+        ok? (and artifact-ready? rollback-ready? (every? :ok? rows))]
     {:kotoba.cli/ok? ok?
      :kotoba.cli/code (if ok? :shell/release-evidence-ready :shell/release-evidence-blocked)
      :kotoba.cli/data (merge
@@ -1679,6 +1923,12 @@
                         :kotoba.shell/release-rows rows
                         :kotoba.shell/release-ready-count (count (filter :ok? rows))
                         :kotoba.shell/release-target-count (count rows)
+                        :kotoba.shell/artifact artifact
+                        :kotoba.shell/artifact-present? artifact-ready?
+                        :kotoba.shell/artifact-sha256 artifact-sha256
+                        :kotoba.shell/rollback {:from rollback-from
+                                                :to rollback-to
+                                                :ready? rollback-ready?}
                         :kotoba.shell/audit
                         (audit-record (if ok?
                                         :release/evidence-ready
@@ -2586,6 +2836,29 @@
        :tauri/version "0.1.0"
        :tauri/commands []}))
 
+(defn plugin-abi-smoke-result
+  [argv]
+  (let [manifest (or (read-edn-file-option argv "--plugin-edn")
+                     {:plugin/id "kotoba.shell.abi-smoke"
+                      :plugin/version "0.1.0"
+                      :plugin/api-version 1
+                      :plugin/providers [{:id "clipboard"
+                                          :capability "clipboard/text"
+                                          :commands ["clipboard/read-text"]}]})
+        result (plugin-check-result ["plugin" "check" "--plugin-edn" (pr-str manifest)])
+        ok? (boolean (and (:kotoba.cli/ok? result)
+                          (= 1 (:plugin/api-version manifest))
+                          (seq (:plugin/providers manifest))))]
+    {:kotoba.cli/ok? ok?
+     :kotoba.cli/code (if ok? :shell/plugin-abi-ready :shell/plugin-abi-blocked)
+     :kotoba.cli/data (merge (shell-authority-data)
+                             {:kotoba.shell/plugin-abi
+                              {:schema "kotoba.shell.plugin-abi-smoke.v0"
+                               :manifest manifest
+                               :host-abi (:host-abi plugin-api-spec)
+                               :provider-count (count (:plugin/providers manifest))
+                               :plugin-check result}})}))
+
 (defn tauri-command-supported?
   [command]
   (or (contains? #{"clipboard/read-text"
@@ -2787,6 +3060,108 @@
                                         :else :e2e/warnings)
                                       {:audit/targets targets
                                        :audit/ready-count (count (filter :ready? rows))})})}))
+
+(defn stack-e2e-result
+  [argv]
+  (let [source-path (or (option-value argv "--source")
+                        (sibling-path "../kototama/test/kototama/fixtures/kotoba-compiled-fact.kotoba"))
+        app-source-path (or (option-value argv "--app-source")
+                            (sibling-path "resources/kotoba/shell/app/tauri_equivalent.kotoba"))
+        wasm-path (or (option-value argv "--wasm")
+                      (sibling-path "../kototama/test/kototama/fixtures/kotoba-compiled-fact.wasm"))
+        receipt (stack-e2e/run
+                 {:source-path source-path
+                  :app-source-path app-source-path
+                  :wasm-path wasm-path
+                  :aiueos-dir (sibling-path "../aiueos")
+                  :kototama-dir (sibling-path "../kototama")
+                  :kotobase-dir (sibling-path "../kotobase")
+                  :correlation-id (or (option-value argv "--correlation-id")
+                                      "kotoba-shell-stack-e2e")
+                  :shell-commit #(surface-commit-result
+                                   ["surface" "commit" "--target" "macos"
+                                    "--ops-edn" (pr-str %)])})]
+    {:kotoba.cli/ok? (:ready? receipt)
+     :kotoba.cli/code (if (:ready? receipt) :shell/stack-e2e-ready :shell/stack-e2e-blocked)
+     :kotoba.cli/data (merge (shell-authority-data)
+                             {:kotoba.shell/stack-e2e receipt})}))
+
+(defn native-window-e2e-result
+  "Static T1 gate for the native AppKit boundary. Execution is opt-in because
+  CI/headless hosts cannot promise an interactive macOS session."
+  [argv]
+  (let [source (sibling-path "bin/kotoba-shell-host-macos-window.swift")
+        builder (sibling-path "bin/kotoba-shell-build-macos-window")
+        app-source (sibling-path "resources/kotoba/shell/app/tauri_equivalent.kotoba")
+        execute? (execute-requested? argv)
+        binary (or (option-value argv "--window-command")
+                   (sibling-path "target/kotoba-shell-host-macos-window"))
+        wasm-output (or (option-value argv "--wasm-output")
+                        (str (sibling-path "target/tauri-equivalent.wasm")))
+        kotoba-command (or (option-value argv "--kotoba-command")
+                           (sibling-path "../kotoba/bin/kotoba-clj"))
+        package-lock (or (option-value argv "--package-lock")
+                         (sibling-path "../kotoba/kotoba.lock.edn"))
+        compile-run (when execute?
+                      (run-native-host-command kotoba-command
+                                               ["wasm" "emit" app-source
+                                                "--package-lock" package-lock
+                                                "--output" wasm-output "--json"]
+                                               nil 120))
+        run (when (and execute? compile-run (= 0 (:exit compile-run)))
+              (run-native-host-command binary ["--smoke"] nil 15))
+        source-ready? (and (.exists (io/file source)) (.exists (io/file builder))
+                           (.exists (io/file app-source)))
+        compile-ready? (and execute? compile-run (= 0 (:exit compile-run))
+                            (.exists (io/file wasm-output)))
+        smoke-ready? (boolean (and execute? run (= 0 (:exit run))
+                                   (re-find #"lifecycle/smoke-ready" (:stdout run ""))
+                                   (re-find #"lifecycle/terminate" (:stdout run ""))))
+        ready? (and source-ready? (if execute? (and compile-ready? smoke-ready?) false))]
+    {:kotoba.cli/ok? ready?
+     :kotoba.cli/code (if ready? :shell/native-window-ready :shell/native-window-blocked)
+     :kotoba.cli/data (merge (shell-authority-data)
+                             {:kotoba.shell/native-window
+                              {:schema "kotoba.shell.native-window.v0"
+                               :source source
+                               :builder builder
+                               :app-source app-source
+                               :kotoba-command kotoba-command
+                               :package-lock package-lock
+                               :wasm-output wasm-output
+                               :execute? execute?
+                               :source-ready? source-ready?
+                               :compile-ready? compile-ready?
+                               :smoke-ready? smoke-ready?
+                               :compile-run compile-run
+                               :run run}})}))
+
+(defn runtime-parity-result
+  [argv]
+  (let [profile (keyword (or (option-value argv "--profile") "host-free"))
+        wasm (or (option-value argv "--wasm")
+                 (sibling-path "../kototama/web/host-free-fact.wasm"))
+        expected (or (option-value argv "--expected") "120")
+        runner (or (option-value argv "--runner")
+                   (sibling-path "bin/kotoba-shell-native-wasm-parity.mjs"))
+        profile-command (case profile
+                          :kgraph (sibling-path "../kototama/web/verify-kgraph.mjs")
+                          :actor (sibling-path "../kototama/web/verify-actor-host.mjs")
+                          nil)
+        run (if profile-command
+              (run-native-host-command "node" [profile-command] nil 60)
+              (run-native-host-command "node" [runner wasm expected] nil 15))
+        ready? (boolean (and (= 0 (:exit run))
+                             (if profile-command
+                               (re-find #"browser-native WebAssembly engine ran" (:stdout run ""))
+                               (re-find #"native-wasm/parity" (:stdout run "")))))]
+    {:kotoba.cli/ok? ready?
+     :kotoba.cli/code (if ready? :shell/runtime-parity-ready :shell/runtime-parity-blocked)
+     :kotoba.cli/data (merge (shell-authority-data)
+                             {:kotoba.shell/runtime-parity
+                              {:schema "kotoba.shell.runtime-parity.v0"
+                               :profile profile :wasm wasm :expected (Long/parseLong expected)
+                               :runner runner :run run}})}))
 
 (defn device-farm-row
   [argv target]
@@ -3066,15 +3441,23 @@
     ["app" "scaffold"] (app-scaffold-result argv)
     ["app" "check"] (app-check-result argv)
     ["app" "build"] (app-build-result argv)
+    ["app" "run"] (app-run-result argv)
+    ["app" "surface"] (app-surface-result argv)
+    ["app" "visual-test"] (app-visual-test-result argv)
+    ["app" "kaizen"] (app-kaizen-result argv)
     ["api" "check"] (api-check-result argv)
     ["api" "freeze"] (api-freeze-result argv)
     ["api" "compat"] (api-compat-result argv)
     ["plugin" "check"] (plugin-check-result argv)
     ["plugin" "tauri-check"] (tauri-plugin-check-result argv)
+    ["plugin" "abi-smoke"] (plugin-abi-smoke-result argv)
     ["doctor" "check"] (doctor-check-result argv)
     ["device-farm" "check"] (device-farm-check-result argv)
     ["device-farm" "schedule"] (device-farm-schedule-result argv)
     ["e2e" "check"] (e2e-check-result argv)
+    ["e2e" "stack"] (stack-e2e-result argv)
+    ["e2e" "native-window"] (native-window-e2e-result argv)
+    ["e2e" "runtime-parity"] (runtime-parity-result argv)
     ["ui" "check"] (ui-check-result argv)
     ["ui" "smoke"] (ui-smoke-result argv)
     ["native-host" "check"] (native-host-check-result argv)
@@ -3104,15 +3487,22 @@
                                                 ["app" "scaffold"]
                                                 ["app" "check"]
                                                 ["app" "build"]
+                                                ["app" "run"]
+                                                ["app" "visual-test"]
+                                                ["app" "kaizen"]
                                                 ["api" "check"]
                                                 ["api" "freeze"]
                                                 ["api" "compat"]
                                                 ["plugin" "check"]
                                                 ["plugin" "tauri-check"]
+                                                ["plugin" "abi-smoke"]
                                                 ["doctor" "check"]
                                                 ["device-farm" "check"]
                                                 ["device-farm" "schedule"]
                                                 ["e2e" "check"]
+                                                ["e2e" "stack"]
+                                                ["e2e" "native-window"]
+                                                ["e2e" "runtime-parity"]
                                                 ["ui" "check"]
                                                 ["ui" "smoke"]
                                                 ["native-host" "check"]

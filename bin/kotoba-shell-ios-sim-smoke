@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v xcrun >/dev/null 2>&1; then
+  printf '{"event":"device/smoke","target":"ios","ready":false,"reason":"xcrun-missing"}\n'
+  exit 69
+fi
+
+booted=$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/ {print $2; exit}')
+if [[ -z "$booted" ]]; then
+  printf '{"event":"device/smoke","target":"ios","ready":false,"reason":"no-booted-simulator"}\n'
+  exit 69
+fi
+
+printf '{"event":"device/smoke","target":"ios","ready":true,"udid":"%s","checks":["simctl","inventory","spawn"]}\n' "$booted"
+xcrun simctl spawn "$booted" /usr/bin/true

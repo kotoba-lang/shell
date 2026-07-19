@@ -2,7 +2,34 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [kotoba.shell.connector :as connector]
+            [kotoba.shell.experience :as experience]
+            [kotoba.shell.sealed-line :as sealed]
             [kotoba.shell.launcher :as launcher]))
+
+(deftest connector-argv-contract
+  (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
+  (is (= ["tool" "--json"]
+         (connector/argv "TEST_CONNECTOR" "[\"tool\" \"--json\"]" read-string)))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (connector/argv "TEST_CONNECTOR" "\"tool --json\"" read-string))))
+
+(deftest local-experience-score-is-bounded-and-actionable
+  (is (= 100 (:comfort-score (experience/summarize []))))
+  (let [summary (experience/summarize
+                 [{:ui/ok? true :ui/duration-ms 100 :ui/feeling :calm}
+                  {:ui/ok? false :ui/duration-ms 1000 :ui/feeling :heavy}])]
+    (is (<= 0 (:comfort-score summary) 100))
+    (is (contains? #{:simplify :reduce-load} (:signal summary)))))
+
+(deftest sealed-line-authenticates-content-and-ledger-name
+  (let [key (byte-array (range 32))
+        envelope (sealed/seal key "{:work/id \"w1\"}" "unified-work")]
+    (is (= "{:work/id \"w1\"}" (sealed/open key envelope "unified-work")))
+    (is (thrown? Exception (sealed/open key envelope "decisions")))
+    (is (thrown? Exception
+                 (sealed/open key (update envelope :sealed/ciphertext #(str "A" (subs % 1)))
+                              "unified-work")))))
 
 (defn with-test-http-server
   [handler f]
@@ -528,6 +555,29 @@
     (is (= "built\n"
            (get-in executed [:kotoba.cli/data :kotoba.shell/app-rows 0 :build-step :stdout])))))
 
+(deftest app-run-requires-kotoba-runtime-and-explicit_execution
+  (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :runtime {:kind :kotoba-wasm :surface :kotoba/dom :namespace demo.app :start start}}"
+        plan (launcher/dispatch ["app" "run" "--target" "macos"
+                                 "--manifest-edn" manifest])
+        invalid (launcher/dispatch ["app" "run" "--target" "macos"
+                                    "--manifest-edn" "{:app/id \"web\" :app/name \"Web\" :app/version \"0.1.0\"}"])
+        ios-plan (launcher/dispatch ["app" "run" "--target" "ios"
+                                     "--manifest-edn" manifest])
+        unsupported (launcher/dispatch ["app" "run" "--target" "android"
+                                        "--manifest-edn" manifest])]
+    (is (:kotoba.cli/ok? plan))
+    (is (= :shell/app-run-planned (:kotoba.cli/code plan)))
+    (is (false? (get-in plan [:kotoba.cli/data :kotoba.shell/execute?])))
+    (is (= "demo.app" (get-in plan [:kotoba.cli/data :kotoba.shell/runtime-plan :runtime-namespace])))
+    (is (false? (:kotoba.cli/ok? invalid)))
+    (is (= :shell/app-runtime-invalid (:kotoba.cli/code invalid)))
+    (is (:kotoba.cli/ok? ios-plan))
+    (is (= :shell/app-run-planned (:kotoba.cli/code ios-plan)))
+    (is (.endsWith (get-in ios-plan [:kotoba.cli/data :kotoba.shell/runtime-plan :window-command])
+                   "bin/kotoba-shell-run-ios-app"))
+    (is (false? (:kotoba.cli/ok? unsupported)))
+    (is (= :shell/app-run-target-unsupported (:kotoba.cli/code unsupported)))))
+
 (deftest release-connect-gates-production-signing-updater-and_store_credentials
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
         app (doto (java.io.File/createTempFile "kotoba-shell" ".app") (.deleteOnExit))
@@ -986,6 +1036,19 @@
     (is (re-find #"http://127\.0\.0\.1:8702/" command))
     (is (re-find #"urllib\.request\.urlopen" command))
     (is (re-find #"npm run smoke:webgpu" command))))
+
+(deftest stack-e2e-closes-language-policy-tender-shell-and-store-loop
+  (let [result (launcher/dispatch ["e2e" "stack"])
+        receipt (get-in result [:kotoba.cli/data :kotoba.shell/stack-e2e])]
+    (is (:kotoba.cli/ok? result))
+    (is (= :shell/stack-e2e-ready (:kotoba.cli/code result)))
+    (is (= "kotoba.shell.stack-e2e.v0" (:schema receipt)))
+    (is (true? (get-in receipt [:source :present?])))
+    (is (true? (get-in receipt [:app-source :present?])))
+    (is (true? (get-in receipt [:aiueos :granted?])))
+    (is (= 120 (get-in receipt [:kototama :result])))
+    (is (= 3 (get-in receipt [:shell :ops-count])))
+    (is (true? (get-in receipt [:kotobase :persisted?])))))
 
 (defn -main
   [& _]

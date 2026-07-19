@@ -175,6 +175,9 @@ bin/kotoba-shell surface commit --target macos --ops-edn '[[:dom/create-element 
 bin/kotoba-shell app scaffold --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
 bin/kotoba-shell app check --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
 bin/kotoba-shell app build --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
+bin/kotoba-shell app run --target macos --manifest path/to/app.kotoba.edn --execute --json
+bin/kotoba-shell app visual-test --target macos --manifest path/to/app.kotoba.edn --baseline test/visual/macos.png --actual target/visual/macos.png --execute --json
+bin/kotoba-shell app kaizen --target macos --manifest path/to/app.kotoba.edn --baseline test/visual/macos.png --actual target/visual/macos.png --execute --json
 bin/kotoba-shell policy check --target macos --provider-command clipboard/write-text --policy-edn '{:allow ["clipboard/text"] :deny []}' --json
 bin/kotoba-shell release check --target macos --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0"}' --json
 bin/kotoba-shell release evidence --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --json
@@ -199,6 +202,7 @@ bin/kotoba-shell device-farm check --target ios --target android --strict --json
 bin/kotoba-shell device-farm schedule --target ios --target android --provider firebase-test-lab --cadence hourly --device-farm-command gcloud --device-farm-command-arg firebase --device-farm-command-arg test --device-farm-command-arg android --schedule target/kotoba-shell/device-farm/schedule.edn --run-log target/kotoba-shell/device-farm/run.edn --write --execute --json
 bin/kotoba-shell doctor check --target ios --target android --strict --json
 bin/kotoba-shell e2e check --target macos --json
+bin/kotoba-shell e2e stack --json
 bin/kotoba-shell e2e check --target ios --target android --strict --json
 bin/kotoba-shell ui check --strict --json
 bin/kotoba-shell ui smoke --strict --json
@@ -283,6 +287,26 @@ as warnings, while `--strict` is intended for CI/device-farm gates.
 `device-farm check` is the continuous real-device E2E gate. It combines local
 iOS/Android device readiness with an optional external device-farm command and
 only runs that command when `--execute` is present.
+
+`e2e stack` closes the load-bearing reference loop: aiueos makes a real grant
+decision, kototama executes a checked-in Kotoba-compiled Wasm guest, shell
+commits `kotoba:dom` operations, and kotobase appends then reads back one
+correlated receipt. `resources/kotoba/shell/app/tauri_equivalent.kotoba` is the
+Kotoba-owned application readiness source. `app run --execute` is the macOS T1
+path for manifest applications: it evaluates the declared pure app entry,
+passes its `kotoba:dom` operations to the shell-owned AppKit host, and records
+the native lifecycle result. `--smoke` draws and closes the window for CI.
+
+The macOS T1 native boundary is provided by
+`bin/kotoba-shell-host-macos-window.swift`. It is a thin AppKit process: it
+owns window/input/resize/lifecycle events while Kotoba owns app semantics.
+Build and smoke it on macOS with `bin/kotoba-shell-build-macos-window` and
+`target/kotoba-shell-host-macos-window --smoke`.
+
+Windows has an explicit PowerShell host boundary at
+`bin/kotoba-shell-host-windows.cmd` (delegating to `.ps1`); it emits a structured readiness event and
+never falls back to a macOS or JVM process. Production Win32/WinUI providers
+remain behind the same host contract.
 
 `ui check` verifies that `kotoba-lang/dom-gpu` (internally keyed `:wasm-ui`,
 unchanged to keep the `--substrate wasm-ui` CLI value stable) and
