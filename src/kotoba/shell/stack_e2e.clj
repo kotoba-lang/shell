@@ -54,8 +54,11 @@
         granted? (and (not (:timed-out? ai-run))
                       (zero? (:exit ai-run))
                       (= :grant (:aiueos/decision ai-result)))
+        ;; A cold kototama/Clojure dependency cache can exceed one minute on
+        ;; CI and fresh workstations. Keep the generic participant timeout
+        ;; tight, but give the compiler-backed tender boundary three minutes.
         tender-run (when granted?
-                     (subprocess kototama-dir ["clojure" "-M:cli" "run" wasm-path]))
+                     (subprocess kototama-dir ["clojure" "-M:cli" "run" wasm-path] 180000))
         guest-ok? (and tender-run (not (:timed-out? tender-run))
                        (zero? (:exit tender-run))
                        (re-find #":result 120" (:output tender-run)))

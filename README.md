@@ -19,6 +19,9 @@ bin/kotoba-shell surface commit --target macos --ops-edn '[[:dom/create-element 
 bin/kotoba-shell app scaffold --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
 bin/kotoba-shell app check --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
 bin/kotoba-shell app build --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
+bin/kotoba-shell app run --target macos --manifest path/to/app.kotoba.edn --execute --json
+bin/kotoba-shell app visual-test --target macos --manifest path/to/app.kotoba.edn --baseline test/visual/macos.png --actual target/visual/macos.png --execute --json
+bin/kotoba-shell app kaizen --target macos --manifest path/to/app.kotoba.edn --baseline test/visual/macos.png --actual target/visual/macos.png --execute --json
 bin/kotoba-shell policy check --target macos --provider-command clipboard/write-text --policy-edn '{:allow ["clipboard/text"] :deny []}' --json
 bin/kotoba-shell release check --target macos --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0"}' --json
 bin/kotoba-shell release evidence --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --json
@@ -133,8 +136,10 @@ only runs that command when `--execute` is present.
 decision, kototama executes a checked-in Kotoba-compiled Wasm guest, shell
 commits `kotoba:dom` operations, and kotobase appends then reads back one
 correlated receipt. `resources/kotoba/shell/app/tauri_equivalent.kotoba` is the
-Kotoba-owned application readiness source. Native window execution of that
-source is the next T1 gate and is not claimed by this command.
+Kotoba-owned application readiness source. `app run --execute` is the macOS T1
+path for manifest applications: it evaluates the declared pure app entry,
+passes its `kotoba:dom` operations to the shell-owned AppKit host, and records
+the native lifecycle result. `--smoke` draws and closes the window for CI.
 
 The macOS T1 native boundary is provided by
 `bin/kotoba-shell-host-macos-window.swift`. It is a thin AppKit process: it

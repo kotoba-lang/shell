@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+bundle_id=""
+title="Kotoba"
+ops_json="[]"
+ops_file=""
+output_dir="$repo_dir/target/ios-simulator"
+
+run_with_timeout() {
+  local seconds="$1"; shift
+  "$@" & local command_pid=$!
+  (sleep "$seconds"; kill -TERM "$command_pid" 2>/dev/null || true; sleep 2; kill -KILL "$command_pid" 2>/dev/null || true) & local watcher_pid=$!
+  local status=0
+  wait "$command_pid" || status=$?
+  kill "$watcher_pid" 2>/dev/null || true
+  wait "$watcher_pid" 2>/dev/null || true
+  return "$status"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bundle-id) bundle_id="${2:-}"; shift 2 ;;
+    --title) title="${2:-Kotoba}"; shift 2 ;;
+    --ops-json) ops_json="${2:-[]}"; shift 2 ;;
+    --ops-file) ops_file="${2:-}"; shift 2 ;;
+    --output-dir) output_dir="${2:-}"; shift 2 ;;
+    --smoke) shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ -z "$bundle_id" ]]; then printf 'missing --bundle-id\n' >&2; exit 64; fi
+udid="$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/ {print $2; exit}')"
+if [[ -z "$udid" ]]; then printf 'no booted iOS simulator\n' >&2; exit 69; fi
+sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+app="$output_dir/$title.app"
+mkdir -p "$app"
+if [[ -n "$ops_file" ]]; then
+  cp "$ops_file" "$app/surface.json"
+else
+  printf '%s' "$ops_json" > "$app/surface.json"
+fi
+cat > "$app/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>KotobaShell</string>
+<key>CFBundleIdentifier</key><string>$bundle_id</string>
+<key>CFBundleName</key><string>$title</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>UILaunchScreen</key><dict/>
+<key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+</dict></plist>
+PLIST
+xcrun --sdk iphonesimulator swiftc -sdk "$sdk" -target arm64-apple-ios17.0-simulator -O \
+  "$repo_dir/bin/kotoba-shell-host-ios-app.swift" -o "$app/KotobaShell"
+codesign --force --sign - --timestamp=none "$app"
+run_with_timeout 45 xcrun simctl install "$udid" "$app"
+run_with_timeout 20 xcrun simctl launch --terminate-running-process "$udid" "$bundle_id"
+printf '{"event":"app/ran","target":"ios","bundle":"%s","udid":"%s"}\n' "$app" "$udid"
