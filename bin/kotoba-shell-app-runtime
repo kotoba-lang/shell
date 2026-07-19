@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shell_dir="$(cd "$(dirname "$0")/.." && pwd)"
+app_dir="${KOTOBA_SHELL_APP_DIR:?KOTOBA_SHELL_APP_DIR is required}"
+manifest="${KOTOBA_SHELL_MANIFEST:-$app_dir/app.kotoba.edn}"
+action_bin="${KOTOBA_SHELL_ACTION_BIN:-}"
+watch_enabled="${KOTOBA_SHELL_WATCH:-0}"
+shell_cli="$shell_dir/bin/kotoba-shell"
+host="$shell_dir/target/kotoba-shell-host-macos-window"
+stamp="$(mktemp -t kotoba-shell-runtime.XXXXXX)"
+ops="$(mktemp -t kotoba-shell-ops.XXXXXX.json)"
+control_pipe="$(mktemp -u -t kotoba-shell-control.XXXXXX)"
+event_pipe="$(mktemp -u -t kotoba-shell-events.XXXXXX)"
+render_lock="$(mktemp -u -t kotoba-shell-render-lock.XXXXXX)"
+log="${KOTOBA_SHELL_LOG:-$app_dir/target/kotoba-shell/runtime.log}"
+child=""
+reader=""
+
+stop_child() {
+  if [[ -n "$child" ]] && kill -0 "$child" 2>/dev/null; then
+    kill "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  fi
+}
+cleanup() {
+  stop_child
+  [[ -n "$reader" ]] && kill "$reader" 2>/dev/null || true
+  exec 3>&- 2>/dev/null || true
+  rm -f "$stamp" "$ops" "$control_pipe" "$event_pipe"
+  rmdir "$render_lock" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+render_surface() {
+  while ! mkdir "$render_lock" 2>/dev/null; do sleep 0.1; done
+  local status=0
+  "$shell_cli" app surface --manifest "$manifest" --output "$ops" >/dev/null || status=$?
+  rmdir "$render_lock"
+  return "$status"
+}
+commit_surface() {
+  render_surface
+  jq -cn --slurpfile ops "$ops" '{command:"surface/commit",ops:$ops[0]}' >&3
+}
+handle_events() {
+  while IFS= read -r event; do
+    printf '%s\n' "$event" >>"$log"
+    action="$(printf '%s' "$event" | jq -r 'select(.event == "input/action") | .action // empty' 2>/dev/null || true)"
+    if [[ -n "$action" && -n "$action_bin" ]]; then
+      if receipt="$(printf '%s' "$event" | "$action_bin" 2>&1)"; then
+        printf 'action receipt: %s\n' "$receipt" >>"$log"
+      else
+        printf 'action rejected: %s\n' "$receipt" >>"$log"
+      fi
+      commit_surface
+    fi
+  done
+}
+launch() {
+  "$shell_dir/bin/kotoba-shell-build-macos-window" "$host" >/dev/null
+  render_surface
+  [[ -p "$control_pipe" ]] || mkfifo "$control_pipe"
+  [[ -p "$event_pipe" ]] || mkfifo "$event_pipe"
+  exec 3<>"$control_pipe"
+  handle_events <"$event_pipe" & reader=$!
+  "$host" --title "${KOTOBA_SHELL_TITLE:-Kotoba}" \
+    --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}" \
+    --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}" \
+    --ops-json "$(<"$ops")" <"$control_pipe" >"$event_pipe" 2>>"$log" &
+  child=$!
+  touch "$stamp"
+  printf 'kotoba shell runtime: pid=%s watch=%s\n' "$child" "$watch_enabled"
+}
+
+mkdir -p "$(dirname "$log")"
+: >"$log"
+launch
+while kill -0 "$child" 2>/dev/null; do
+  if [[ "$watch_enabled" != "1" ]]; then sleep 0.5; continue; fi
+  renderer_change="$(find "$shell_dir/bin/kotoba-shell-host-macos-window.swift" -newer "$stamp" -print -quit 2>/dev/null || true)"
+  app_change="$(find "$app_dir/src" "$manifest" ${KOTOBA_SHELL_EXTRA_WATCH_ROOTS:-} -type f -newer "$stamp" -print -quit 2>/dev/null || true)"
+  if [[ -n "$renderer_change" ]]; then
+    stop_child; [[ -n "$reader" ]] && kill "$reader" 2>/dev/null || true
+    exec 3>&- 2>/dev/null || true
+    rm -f "$control_pipe" "$event_pipe"
+    launch
+  elif [[ -n "$app_change" ]]; then
+    commit_surface
+    touch "$stamp"
+    printf 'P2 commit: %s\n' "$app_change"
+  fi
+  sleep 0.5
+done
+wait "$child" 2>/dev/null || true
