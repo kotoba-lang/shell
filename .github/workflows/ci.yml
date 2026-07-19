@@ -26,6 +26,21 @@ jobs:
         with:
           repository: kotoba-lang/browser
           path: browser
+      # `e2e stack` closes the actual aiueos -> kototama -> shell -> kotobase
+      # receipt loop. Keep its sibling repos present in CI instead of silently
+      # weakening the test when running outside the west superproject.
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/aiueos
+          path: aiueos
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/kototama
+          path: kototama
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/kotobase
+          path: kotobase
       - uses: DeLaGuardo/setup-clojure@13.4
         with:
           cli: latest
