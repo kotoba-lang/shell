@@ -9,7 +9,15 @@ struct SurfaceNode {
   var attrs: [String: String] = [:]
 }
 
-final class KotobaActionTarget: NSObject {
+final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
+  var inputValues: [String: String] = [:]
+
+  func controlTextDidChange(_ notification: Notification) {
+    guard let field = notification.object as? NSTextField,
+          let id = field.identifier?.rawValue else { return }
+    inputValues[id] = field.stringValue
+  }
+
   @objc func perform(_ sender: NSButton) {
     let action = sender.identifier?.rawValue ?? "unknown"
     if action == "ingest/pick-file" {
@@ -18,12 +26,17 @@ final class KotobaActionTarget: NSObject {
       panel.canChooseDirectories = false
       panel.allowedContentTypes = [.data]
       if panel.runModal() == .OK, let path = panel.url?.path {
-        print("{\"event\":\"input/action\",\"action\":\"ingest/file-selected\",\"path\":\"\(path)\"}"); fflush(stdout)
+        emit(["event": "input/action", "action": "ingest/file-selected", "path": path])
       } else {
         print("{\"event\":\"input/action-cancelled\",\"action\":\"\(action)\"}"); fflush(stdout)
       }
     } else {
-      print("{\"event\":\"input/action\",\"action\":\"\(action)\"}"); fflush(stdout)
+      var event: [String: Any] = ["event": "input/action", "action": action]
+      if let inputId = sender.cell?.representedObject as? String {
+        event["value"] = inputValues[inputId] ?? ""
+        event["input-id"] = inputId
+      }
+      emit(event)
     }
   }
 }
@@ -87,6 +100,7 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
   if node.tag == "button" {
     let button = NSButton(title: directText, target: actionTarget, action: #selector(KotobaActionTarget.perform(_:)))
     button.identifier = NSUserInterfaceItemIdentifier(node.attrs["data-action"] ?? "unknown")
+    button.cell?.representedObject = node.attrs["data-input-id"]
     button.bezelStyle = .rounded
     button.controlSize = .large
     button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -99,6 +113,19 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
       button.contentTintColor = .labelColor
     }
     return button
+  }
+  if node.tag == "input" || node.tag == "textarea" {
+    let field = NSTextField(string: node.attrs["value"] ?? "")
+    let inputId = node.attrs["id"] ?? "input-\(id)"
+    field.identifier = NSUserInterfaceItemIdentifier(inputId)
+    field.placeholderString = node.attrs["placeholder"]
+    field.delegate = actionTarget
+    field.font = NSFont.systemFont(ofSize: 14)
+    field.bezelStyle = .roundedBezel
+    field.focusRingType = .default
+    actionTarget.inputValues[inputId] = field.stringValue
+    field.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+    return field
   }
   if ["h1", "h2", "h3", "p", "label"].contains(node.tag), !directText.isEmpty {
     let label = NSTextField(wrappingLabelWithString: directText)
@@ -122,7 +149,9 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
   stack.setHuggingPriority(.required, for: .vertical)
   stack.spacing = node.tag == "main" ? 20 : (["nav", "summary"].contains(node.tag) ? 10 : 8)
   let inset: CGFloat = ["article", "section"].contains(node.tag) ? 16 : 4
-  stack.edgeInsets = NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+  stack.edgeInsets = node.tag == "main"
+    ? NSEdgeInsets(top: 24, left: inset, bottom: inset, right: inset)
+    : NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
   for child in node.children { stack.addArrangedSubview(nativeView(id: child, nodes: nodes)) }
   if ["article", "section"].contains(node.tag) || className.contains("liquid-glass__panel") {
     stack.wantsLayer = true
