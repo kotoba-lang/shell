@@ -696,6 +696,10 @@
   [target manifest]
   (let [platform (case target :macos "macOS" :ios "iOS")
         deployment (case target :macos "13.0" :ios "16.0")
+        product-name (or (case target
+                           :macos (:macos/product-name manifest)
+                           :ios (:ios/product-name manifest))
+                         "KotobaShell")
         bundle-id (case target
                     :macos (or (:macos/bundle-id manifest) (:app/id manifest))
                     :ios (:ios/bundle-id manifest))
@@ -710,11 +714,11 @@
                           :ios (str "        UILaunchScreen: {}\n"
                                     "        UISupportedInterfaceOrientations:\n"
                                     "          - UIInterfaceOrientationPortrait\n"))]
-    (str "name: KotobaShell\n"
+    (str "name: " product-name "\n"
          "options:\n"
          "  createIntermediateGroups: true\n"
          "targets:\n"
-         "  KotobaShell:\n"
+         "  " product-name ":\n"
          "    type: application\n"
          "    platform: " platform "\n"
          "    deploymentTarget: \"" deployment "\"\n"
@@ -736,14 +740,17 @@
          info-properties
          "    settings:\n"
          "      base:\n"
-         "        PRODUCT_NAME: KotobaShell\n"
+         "        PRODUCT_NAME: " product-name "\n"
          "        PRODUCT_BUNDLE_IDENTIFIER: " bundle-id "\n"
          "        MARKETING_VERSION: \"" (:app/version manifest) "\"\n"
          "        CODE_SIGNING_ALLOWED: NO\n"
          "        CODE_SIGNING_REQUIRED: NO\n"
          "        ENABLE_HARDENED_RUNTIME: NO\n"
          "    dependencies:\n"
-         "      - sdk: WebKit.framework\n")))
+         "      - sdk: WebKit.framework\n"
+         (when (and (= target :macos) (= :keychain-cacao (:macos/auth-bridge manifest)))
+           (str "      - sdk: LocalAuthentication.framework\n"
+                "      - sdk: Security.framework\n")))))
 
 (def ^:private web-bundle-scheme-handler-swift
   "macOS/iOS 共通。`loadFileURL` は file:// origin をロードするため、WebKit の
@@ -809,7 +816,7 @@
        "    }\n"
        "}\n"))
 
-(def ^:private macos-app-delegate-swift
+(def ^:private default-macos-app-delegate-swift
   (str "import Cocoa\n"
        "import WebKit\n\n"
        "final class AppDelegate: NSObject, NSApplicationDelegate {\n"
@@ -841,6 +848,20 @@
        "        true\n"
        "    }\n"
        "}\n"))
+
+(defn- macos-app-delegate-swift [manifest]
+  (if (= :keychain-cacao (:macos/auth-bridge manifest))
+    (let [template (slurp (io/resource "kotoba/shell/macos/keychain_cacao_app_delegate.swift"))
+          replacements {"{{APP_NAME}}" (str (:app/name manifest))
+                        "{{WINDOW_WIDTH}}" (str (or (:macos/window-width manifest) 393))
+                        "{{WINDOW_HEIGHT}}" (str (or (:macos/window-height manifest) 852))
+                        "{{AUTH_MESSAGE_NAME}}" (str (or (:macos/auth-message-name manifest) "itonamiAuth"))
+                        "{{KEYCHAIN_SERVICE}}" (str (or (:macos/keychain-service manifest)
+                                                         (:macos/bundle-id manifest)
+                                                         (:app/id manifest)))
+                        "{{KEYCHAIN_ACCOUNT}}" (str (or (:macos/keychain-account manifest) "session"))}]
+      (reduce-kv str/replace template replacements))
+    default-macos-app-delegate-swift))
 
 (def ^:private macos-main-swift
   (str "import Cocoa\n\n"
@@ -911,7 +932,7 @@
     :macos [["project.yml" (xcodegen-project-yml target manifest)]
             ["Sources/main.swift" macos-main-swift]
             ["Sources/WebBundleSchemeHandler.swift" web-bundle-scheme-handler-swift]
-            ["Sources/AppDelegate.swift" macos-app-delegate-swift]
+            ["Sources/AppDelegate.swift" (macos-app-delegate-swift manifest)]
             ["Resources/kotoba-shell.edn"
              (pr-str {:schema "kotoba.shell.app.v0"
                       :target target

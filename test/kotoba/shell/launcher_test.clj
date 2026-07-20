@@ -495,6 +495,25 @@
         (is (str/includes? delegate-src "KotobaWebBundleSchemeHandler.scheme"))
         (is (str/includes? delegate-src "setURLSchemeHandler"))))))
 
+(deftest app-scaffold-macos-keychain-cacao-webview-bridge
+  (let [manifest "{:app/id \"dev.kotoba.itonami\" :app/name \"itonami\" :app/version \"0.1.0\" :macos/product-name \"itonami\" :macos/auth-bridge :keychain-cacao :macos/window-width 393 :macos/window-height 852 :macos/keychain-service \"dev.kotoba.itonami.auth\"}"
+        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
+                                             (str "kotoba-shell-auth-bridge-" (System/nanoTime)))
+                                (.mkdirs)))
+        scaffold (launcher/dispatch ["app" "scaffold" "--target" "macos"
+                                     "--manifest-edn" manifest "--output-dir" output-dir])
+        delegate-src (slurp (io/file output-dir "macos" "Sources" "AppDelegate.swift"))
+        project-yml (slurp (io/file output-dir "macos" "project.yml"))]
+    (is (:kotoba.cli/ok? scaffold))
+    (is (str/includes? delegate-src "WKScriptMessageHandler"))
+    (is (str/includes? delegate-src "LocalAuthentication"))
+    (is (str/includes? delegate-src "kSecClassGenericPassword"))
+    (is (str/includes? delegate-src "width: 393"))
+    (is (str/includes? delegate-src "window.level = .floating"))
+    (is (str/includes? project-yml "name: itonami"))
+    (is (str/includes? project-yml "LocalAuthentication.framework"))
+    (is (str/includes? project-yml "Security.framework"))))
+
 (deftest app-build-plans_and_executes_native_project_builds
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
         output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
