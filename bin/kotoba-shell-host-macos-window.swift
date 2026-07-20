@@ -218,7 +218,50 @@ func writePNG(view: NSView, path: String) -> Bool {
 // this process owns only AppKit windowing, input, resize, and lifecycle.
 final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
   let smoke: Bool
+  weak var window: NSWindow?
+  var statusItem: NSStatusItem?
   init(smoke: Bool) { self.smoke = smoke }
+
+  func configure(window: NSWindow, title: String) {
+    self.window = window
+    guard !smoke else { return }
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    if let button = item.button {
+      button.image = NSImage(systemSymbolName: "bubble.left.and.bubble.right.fill",
+                             accessibilityDescription: title)
+      button.toolTip = "\(title) — click to open"
+    }
+    let menu = NSMenu()
+    let open = NSMenuItem(title: "Open \(title)", action: #selector(showWindow), keyEquivalent: "")
+    open.target = self
+    menu.addItem(open)
+    menu.addItem(.separator())
+    let quit = NSMenuItem(title: "Quit \(title)", action: #selector(quitApp), keyEquivalent: "q")
+    quit.target = self
+    menu.addItem(quit)
+    item.menu = menu
+    statusItem = item
+  }
+
+  @objc func showWindow() {
+    NSApp.setActivationPolicy(.regular)
+    window?.deminiaturize(nil)
+    window?.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    emit(["event": "lifecycle/restore", "source": "status-bar"])
+  }
+
+  @objc func quitApp() {
+    emit(["event": "lifecycle/terminate", "source": "status-bar"])
+    NSApp.terminate(nil)
+  }
+
+  private func hideToStatusBar() {
+    window?.orderOut(nil)
+    NSApp.setActivationPolicy(.accessory)
+    emit(["event": "lifecycle/status-bar"])
+  }
+
   func windowDidBecomeKey(_ notification: Notification) {
     print("{\"event\":\"lifecycle/activate\"}"); fflush(stdout)
   }
@@ -226,11 +269,27 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
     guard let window = notification.object as? NSWindow else { return }
     print("{\"event\":\"input/resize\",\"width\":\(Int(window.frame.width)),\"height\":\(Int(window.frame.height))}"); fflush(stdout)
   }
+  func windowDidMiniaturize(_ notification: Notification) {
+    guard !smoke else { return }
+    DispatchQueue.main.async { [weak self] in
+      self?.window?.deminiaturize(nil)
+      self?.hideToStatusBar()
+    }
+  }
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    if smoke { return true }
+    hideToStatusBar()
+    return false
+  }
   func windowWillClose(_ notification: Notification) {
     print("{\"event\":\"lifecycle/terminate\"}"); fflush(stdout)
     if smoke { NSApp.stop(nil) }
   }
 }
+
+// AppKit delegate/target references are weak. Keep the lifecycle controller
+// alive for status-menu actions after the launch stack has unwound.
+var retainedWindowDelegate: KotobaWindowDelegate?
 
 let smoke = CommandLine.arguments.contains("--smoke")
 let title = argument("--title") ?? "Kotoba"
@@ -243,11 +302,15 @@ let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let delegate = KotobaWindowDelegate(smoke: smoke)
+retainedWindowDelegate = delegate
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
 window.title = title
 window.minSize = NSSize(width: minWidth, height: minHeight)
+window.level = .floating
+window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 window.delegate = delegate
 window.isReleasedWhenClosed = false
+delegate.configure(window: window, title: title)
 let scroll = NSScrollView(frame: window.contentView?.bounds ?? .zero)
 scroll.autoresizingMask = [.width, .height]
 scroll.hasVerticalScroller = true
