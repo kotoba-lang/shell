@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UniformTypeIdentifiers
+import WebKit
 
 struct SurfaceNode {
   var tag = "div"
@@ -299,6 +300,7 @@ let windowHeight = Double(argument("--height") ?? "480") ?? 480
 let minWidth = Double(argument("--min-width") ?? "390") ?? 390
 let minHeight = Double(argument("--min-height") ?? "320") ?? 320
 let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
+let webURL = argument("--web-url").flatMap(URL.init(string:))
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let delegate = KotobaWindowDelegate(smoke: smoke)
@@ -337,16 +339,24 @@ func commitSurface(_ surface: (nodes: [Int: SurfaceNode], root: Int?), reason: S
   emit(["event": "surface/committed", "reason": reason, "ops": surface.nodes.count])
 }
 commitSurface(surface, reason: "launch")
-window.contentView?.addSubview(scroll)
+let webView: WKWebView? = webURL.map { url in
+  let configuration = WKWebViewConfiguration()
+  configuration.websiteDataStore = .default()
+  let view = WKWebView(frame: window.contentView?.bounds ?? .zero, configuration: configuration)
+  view.autoresizingMask = [.width, .height]
+  view.load(URLRequest(url: url))
+  return view
+}
+window.contentView?.addSubview(webView ?? scroll)
 window.center()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
-if let document = scroll.documentView {
+if webView == nil, let document = scroll.documentView {
   scroll.contentView.scroll(to: NSPoint(x: 0,
                                         y: max(0, document.frame.height - scroll.contentView.bounds.height - 16)))
   scroll.reflectScrolledClipView(scroll.contentView)
 }
-print("{\"event\":\"lifecycle/launch\",\"surface\":\"kotoba:dom\",\"runtime\":\"native-appkit\",\"ops\":\(surface.nodes.count)}"); fflush(stdout)
+print("{\"event\":\"lifecycle/launch\",\"surface\":\"\(webView == nil ? "kotoba:dom" : "webview")\",\"runtime\":\"native-appkit\",\"ops\":\(surface.nodes.count)}"); fflush(stdout)
 
 // Newline-delimited JSON control plane. A live reload only replaces the native
 // surface; the NSWindow and its focus, geometry and scroll identity stay alive.
