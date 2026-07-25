@@ -1,5 +1,6 @@
 (ns kotoba.shell.tamaki-web-data
   (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
@@ -21,8 +22,38 @@
 
 (defn- run-context [events run]
   (let [receipts (filter #(= (:agent.run/id run) (:tamaki.event/run %)) events)]
-    {:issue (some #(get-in % [:tamaki.event/data :issue/id]) receipts)
+    {:issue (or (some #(get-in % [:tamaki.event/data :issue/id]) receipts)
+                (some->> (:agent.run/goal run)
+                         (re-find #"[0-9a-f]{40}")))
      :loop (some #(get-in % [:tamaki.event/data :loop/id]) receipts)}))
+
+(defn- discover-project-topologies [registry]
+  (let [root (io/file (observer/workspace-root))
+        candidates (->> (:repos registry)
+                        (map #(io/file root (:path %) "docs"
+                                      "revenue-growth-project.edn"))
+                        (filter #(.isFile %))
+                        (take 20))]
+    (mapv
+     (fn [file]
+       (let [project (edn/read-string (slurp file))]
+         {:id (str (:project/id project))
+          :objective (:project/objective project)
+          :metric (str (:project/metric project))
+          :reverse-topology
+          (mapv #(mapv str %) (:project/reverse-topology project))
+          :execution-waves
+          (mapv #(mapv str %) (:project/execution-waves project))
+          :issues
+          (mapv (fn [issue]
+                  {:key (str (:issue/key issue))
+                   :rad (:issue/rad issue)
+                   :repo (:issue/repo issue)
+                   :blockers (mapv str (:issue/blockers issue))})
+                (:project/issues project))}))
+     candidates)))
+
+(defonce project-topologies (atom nil))
 
 (defn- repo-stats [events runs campaigns]
   (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)
@@ -85,6 +116,9 @@
                                    :local? :sync])
                   (:repos registry))
      :dependencies (:dependencies registry)
+     :projects (or @project-topologies
+                   (reset! project-topologies
+                           (discover-project-topologies registry)))
      :agents agents
      :loops (mapv (fn [campaign]
                     {:id (:tamaki.loop/id campaign)

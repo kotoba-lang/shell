@@ -180,6 +180,43 @@
                                   :transparent true :opacity 0.8}))]
       (.add root line))))
 
+(defn add-project-topologies! [root positions projects]
+  (doseq [project projects
+          :let [issues (into {} (map (juxt :key identity)) (:issues project))
+                issue-positions (atom {})]]
+    (doseq [[level keys] (map-indexed vector (:reverse-topology project))
+            [column key] (map-indexed vector keys)
+            :let [issue (get issues key)
+                  base (get positions (:repo issue))]
+            :when (and issue base)]
+      (let [x (+ (:x base) (* (- column (/ (dec (count keys)) 2)) 0.9))
+            y (+ (:height base) 1.2 (* level 0.85))
+            z (+ (:z base) 0.7)
+            node (three/mesh
+                  (THREE/OctahedronGeometry. 0.28)
+                  (three/standard-material
+                   {:color 0xffd45a :emissive 1.5 :roughness 0.25}))]
+        (three/set-position! node x y z)
+        (set! (.. node -userData -repo)
+              (clj->js {:path (:repo issue) :issue (:rad issue)
+                        :project (:id project) :issue-key key}))
+        (swap! issue-positions assoc key {:x x :y y :z z})
+        (.add root node)))
+    (doseq [[key issue] issues
+            blocker (:blockers issue)
+            :let [a (get @issue-positions key)
+                  b (get @issue-positions blocker)]
+            :when (and a b)]
+      (let [geometry (doto (THREE/BufferGeometry.)
+                       (.setFromPoints
+                        #js [(THREE/Vector3. (:x a) (:y a) (:z a))
+                             (THREE/Vector3. (:x b) (:y b) (:z b))]))
+            line (THREE/Line.
+                  geometry
+                  (THREE/LineBasicMaterial.
+                   #js {:color 0xffd45a :transparent true :opacity 0.85}))]
+        (.add root line)))))
+
 (defn rebuild-scene! [snapshot group-mode]
   (when-let [{:keys [repo-root]} @runtime]
     (clear! repo-root)
@@ -258,6 +295,7 @@
         (.setAttribute geometry "position" attribute)
         (.add repo-root points))
       (add-dependency-lines! repo-root @positions (:dependencies snapshot))
+      (add-project-topologies! repo-root @positions (:projects snapshot))
       (doseq [[agent-index agent] (map-indexed vector (queried-agents))
               :let [position (get @positions (:agent.run/project agent))]
               :when position]
@@ -351,7 +389,8 @@
    (mapv (juxt :path :issue) (:active-repos snapshot))
    (frequencies (map :sync (:repos snapshot)))
    (:dependencies snapshot)
-   (:agents snapshot) (:loops snapshot) (:repo-stats snapshot)])
+   (:projects snapshot) (:agents snapshot) (:loops snapshot)
+   (:repo-stats snapshot)])
 
 (defn apply-state! []
   (let [snapshot @(rf/subscribe [:snapshot])
