@@ -32,6 +32,8 @@ let actionTarget = KotobaActionTarget()
 let floatingWindow = CommandLine.arguments.contains("--floating")
 
 final class RepoTopologyView: NSView {
+  static var persistentZoom: CGFloat = 1
+  static var persistentPan = NSPoint.zero
   struct Island {
     let name: String
     let total: Int
@@ -52,8 +54,8 @@ final class RepoTopologyView: NSView {
   let repos: [Repo]
   let dependencies: [(String, String)]
   let blockers: String
-  var zoom: CGFloat = 1
-  var pan = NSPoint.zero
+  var zoom: CGFloat = RepoTopologyView.persistentZoom
+  var pan = RepoTopologyView.persistentPan
   init(encoded: String, encodedRepos: String, encodedDeps: String, blockers: String) {
     islands = encoded.split(separator: ";").compactMap { item in
       let fields = item.split(separator: ",", omittingEmptySubsequences: false)
@@ -78,24 +80,79 @@ final class RepoTopologyView: NSView {
     self.blockers = blockers
     super.init(frame: NSRect(x: 0, y: 0, width: 920, height: 500))
     wantsLayer = true
+    addGestureRecognizer(NSMagnificationGestureRecognizer(
+      target: self, action: #selector(handleMagnification(_:))))
+    addGestureRecognizer(NSPanGestureRecognizer(
+      target: self, action: #selector(handlePan(_:))))
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   override var acceptsFirstResponder: Bool { true }
   override var intrinsicContentSize: NSSize { NSSize(width: 920, height: 500) }
-  override func magnify(with event: NSEvent) {
-    zoom = min(2.5, max(0.55, zoom * (1 + event.magnification)))
+  let zoomOutRect = NSRect(x: 742, y: 454, width: 42, height: 30)
+  let resetRect = NSRect(x: 788, y: 454, width: 78, height: 30)
+  let zoomInRect = NSRect(x: 870, y: 454, width: 42, height: 30)
+  func setZoom(_ value: CGFloat) {
+    zoom = min(2.5, max(0.55, value))
+    RepoTopologyView.persistentZoom = zoom
     needsDisplay = true
+  }
+  @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
+    if gesture.state == .began || gesture.state == .changed {
+      setZoom(zoom * (1 + gesture.magnification))
+      gesture.magnification = 0
+    }
+  }
+  @objc func handlePan(_ gesture: NSPanGestureRecognizer) {
+    let translation = gesture.translation(in: self)
+    pan.x += translation.x
+    pan.y += translation.y
+    RepoTopologyView.persistentPan = pan
+    gesture.setTranslation(.zero, in: self)
+    needsDisplay = true
+  }
+  override func magnify(with event: NSEvent) {
+    setZoom(zoom * (1 + event.magnification))
   }
   override func scrollWheel(with event: NSEvent) {
     pan.x += event.scrollingDeltaX
     pan.y -= event.scrollingDeltaY
+    RepoTopologyView.persistentPan = pan
     needsDisplay = true
+  }
+  override func mouseDown(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    if zoomOutRect.contains(point) {
+      setZoom(zoom / 1.25)
+    } else if zoomInRect.contains(point) {
+      setZoom(zoom * 1.25)
+    } else if resetRect.contains(point) {
+      zoom = 1; pan = .zero
+      RepoTopologyView.persistentZoom = zoom
+      RepoTopologyView.persistentPan = pan
+      needsDisplay = true
+    } else if event.clickCount == 2 {
+      setZoom(zoom < 1.5 ? 2 : 1)
+    } else {
+      window?.makeFirstResponder(self)
+      super.mouseDown(with: event)
+    }
+  }
+  override func keyDown(with event: NSEvent) {
+    switch event.charactersIgnoringModifiers {
+    case "+", "=": setZoom(zoom * 1.25)
+    case "-": setZoom(zoom / 1.25)
+    case "0":
+      zoom = 1; pan = .zero
+      RepoTopologyView.persistentZoom = zoom
+      RepoTopologyView.persistentPan = pan
+      needsDisplay = true
+    default: super.keyDown(with: event)
+    }
   }
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
     NSColor.clear.setFill(); dirtyRect.fill()
     NSGraphicsContext.saveGraphicsState()
-    defer { NSGraphicsContext.restoreGraphicsState() }
     let sceneTransform = NSAffineTransform()
     sceneTransform.translateX(by: bounds.midX + pan.x, yBy: bounds.midY + pan.y)
     sceneTransform.scale(by: zoom)
@@ -191,6 +248,53 @@ final class RepoTopologyView: NSView {
       text.draw(at: NSPoint(x: 24, y: 18),
                 withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold),
                                  .foregroundColor: NSColor.systemOrange])
+    }
+    // Controls are drawn after restoring the scene transform so they remain
+    // fixed, readable, and clickable at every semantic zoom level.
+    NSGraphicsContext.restoreGraphicsState()
+    for (rect, title) in [(zoomOutRect, "−"), (resetRect, "\(Int(zoom * 100))%"),
+                          (zoomInRect, "+")] {
+      let button = NSBezierPath(roundedRect: rect, xRadius: 8, yRadius: 8)
+      NSColor.controlBackgroundColor.withAlphaComponent(0.94).setFill(); button.fill()
+      NSColor.separatorColor.setStroke(); button.stroke()
+      let value = title as NSString
+      let size = value.size(withAttributes: [.font: NSFont.systemFont(ofSize: 13,
+                                                                      weight: .semibold)])
+      value.draw(at: NSPoint(x: rect.midX - size.width / 2,
+                             y: rect.midY - size.height / 2),
+                 withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                                  .foregroundColor: NSColor.labelColor])
+    }
+    ("pinch / drag · double-click to zoom" as NSString).draw(
+      at: NSPoint(x: 24, y: 466),
+      withAttributes: [.font: NSFont.systemFont(ofSize: 10),
+                       .foregroundColor: NSColor.secondaryLabelColor])
+  }
+}
+
+func findRepoTopology(in view: NSView) -> RepoTopologyView? {
+  if let topology = view as? RepoTopologyView { return topology }
+  for child in view.subviews {
+    if let topology = findRepoTopology(in: child) { return topology }
+  }
+  return nil
+}
+
+final class TopologyZoomTarget: NSObject {
+  weak var window: NSWindow?
+  init(window: NSWindow) { self.window = window }
+  @objc func zoom(_ sender: NSButton) {
+    guard let content = window?.contentView,
+          let topology = findRepoTopology(in: content) else { return }
+    switch sender.identifier?.rawValue {
+    case "zoom/in": topology.setZoom(topology.zoom * 1.25)
+    case "zoom/out": topology.setZoom(topology.zoom / 1.25)
+    default:
+      topology.zoom = 1
+      topology.pan = .zero
+      RepoTopologyView.persistentZoom = 1
+      RepoTopologyView.persistentPan = .zero
+      topology.needsDisplay = true
     }
   }
 }
@@ -422,6 +526,23 @@ func commitSurface(_ surface: (nodes: [Int: SurfaceNode], root: Int?), reason: S
 }
 commitSurface(surface, reason: "launch")
 window.contentView?.addSubview(scroll)
+let topologyZoomTarget = TopologyZoomTarget(window: window)
+if let content = window.contentView {
+  let controls: [(String, String, CGFloat)] = [
+    ("−", "zoom/out", 0), ("100%", "zoom/reset", 42), ("+", "zoom/in", 112)
+  ]
+  for (title, identifier, offset) in controls {
+    let width: CGFloat = identifier == "zoom/reset" ? 66 : 38
+    let button = NSButton(title: title, target: topologyZoomTarget,
+                          action: #selector(TopologyZoomTarget.zoom(_:)))
+    button.identifier = NSUserInterfaceItemIdentifier(identifier)
+    button.bezelStyle = .rounded
+    button.frame = NSRect(x: content.bounds.width - 164 + offset,
+                          y: content.bounds.height - 40, width: width, height: 28)
+    button.autoresizingMask = [.minXMargin, .minYMargin]
+    content.addSubview(button)
+  }
+}
 window.center()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
