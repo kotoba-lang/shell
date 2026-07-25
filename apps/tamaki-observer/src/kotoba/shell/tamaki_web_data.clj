@@ -1,6 +1,7 @@
 (ns kotoba.shell.tamaki-web-data
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
+            [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.store :as store]))
 
@@ -120,7 +121,35 @@
                                   [:tamaki.event/data :activity/state])
                    :text (get-in event [:tamaki.event/data :activity/text])
                    :issue (get-in event [:tamaki.event/data :issue/id])
-                   :patch (get-in event [:tamaki.event/data :patch/id])})))}))
+                   :patch (get-in event [:tamaki.event/data :patch/id])})))
+     :model-usage
+     (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)]
+       (->> events
+            (filter #(= :agent/activity (:tamaki.event/kind %)))
+            (keep (fn [event]
+                    (let [data (:tamaki.event/data event)
+                          run (get run-by-id (:tamaki.event/run event))]
+                      (when (some #(contains? data %)
+                                  [:usage/input :usage/output
+                                   :usage/cache-read :usage/cache-write])
+                        {:provider (or (:agent.run/runner run)
+                                       (some-> (:agent.run/model run)
+                                               (clojure.string/split #":")
+                                               first)
+                                       "unknown")
+                         :input (or (:usage/input data) 0)
+                         :output (or (:usage/output data) 0)
+                         :cache-read (or (:usage/cache-read data) 0)
+                         :cache-write (or (:usage/cache-write data) 0)}))))
+            (group-by :provider)
+            (map (fn [[provider rows]]
+                   {:provider provider
+                    :input (reduce + (map :input rows))
+                    :output (reduce + (map :output rows))
+                    :cache-read (reduce + (map :cache-read rows))
+                    :cache-write (reduce + (map :cache-write rows))
+                    :remaining :unknown}))
+            vec))}))
 
 (defn write-snapshot! [target]
   (let [target-file (io/file target)

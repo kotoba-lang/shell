@@ -7,6 +7,11 @@ h1 { font-size: 18px; margin: 0 0 5px; } h2 { font-size: 15px; margin: 0 0 10px;
 #metrics { color: #bcb2cc; }
 header label { display: block; margin-top: 9px; color: #9f94af; }
 select { margin-left: 7px; color: #eee; background: #241733; border: 1px solid #57416e; border-radius: 7px; padding: 3px 7px; }
+#model-usage { display: flex; gap: 6px; margin-top: 10px; }
+.usage-card { min-width: 92px; padding: 6px 8px; border: 1px solid #ffffff17; border-radius: 8px; background: #09061188; }
+.usage-card b { display: block; color: #bda7d8; font: 11px ui-monospace, monospace; }
+.usage-card span { display: block; color: #d8cfdf; font: 10px ui-monospace, monospace; margin-top: 2px; }
+.usage-card em { color: #82778e; font-style: normal; }
 aside { right: 16px; top: 16px; width: 290px; max-height: calc(100% - 32px); overflow: auto; padding: 16px; }
 #details { color: #c8bfd5; line-height: 1.55; word-break: break-word; }
 .activity-title { margin-top: 20px; }

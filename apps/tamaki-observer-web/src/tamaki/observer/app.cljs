@@ -295,6 +295,7 @@
         metrics (.getElementById js/document "metrics")
         details (.getElementById js/document "details")
         activity (.getElementById js/document "activity")
+        model-usage (.getElementById js/document "model-usage")
         grouping (.getElementById js/document "grouping")
         repo (or selected active)
         path (or (:path repo) (:agent.run/project repo))
@@ -331,7 +332,19 @@
                         (.toLocaleTimeString (js/Date. at))
                         "</time><b>" (label kind "event") "</b><small>"
                         (or text issue patch run "workspace")
-                        "</small></div>"))))))
+                        "</small></div>"))))
+    (let [usage-by-provider (into {} (map (juxt :provider identity))
+                                  (:model-usage snapshot))]
+      (set! (.-innerHTML model-usage)
+            (apply str
+                   (for [provider ["codex" "claude" "claude-zai" "grok"]
+                         :let [usage (get usage-by-provider provider)]]
+                     (str "<div class=\"usage-card\"><b>" provider "</b>"
+                          "<span>in " (or (:input usage) 0)
+                          " · out " (or (:output usage) 0) "</span>"
+                          "<span><em>remaining "
+                          (or (:remaining usage) "unknown")
+                          "</em></span></div>")))))))
 
 (defn scene-signature [snapshot]
   [(count (:repos snapshot))
