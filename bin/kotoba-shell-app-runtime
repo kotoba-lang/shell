@@ -6,6 +6,7 @@ app_dir="${KOTOBA_SHELL_APP_DIR:?KOTOBA_SHELL_APP_DIR is required}"
 manifest="${KOTOBA_SHELL_MANIFEST:-$app_dir/app.kotoba.edn}"
 action_bin="${KOTOBA_SHELL_ACTION_BIN:-}"
 watch_enabled="${KOTOBA_SHELL_WATCH:-0}"
+action_refresh_seconds="${KOTOBA_SHELL_ACTION_REFRESH_SECONDS:-0.5}"
 shell_cli="$shell_dir/bin/kotoba-shell"
 host="$shell_dir/target/kotoba-shell-host-macos-window"
 stamp="$(mktemp -t kotoba-shell-runtime.XXXXXX)"
@@ -40,34 +41,68 @@ render_surface() {
   return "$status"
 }
 commit_surface() {
+  # Web surfaces own their render loop. Re-evaluating the native kotoba:dom
+  # entry here would start the legacy JVM launcher after every web action.
+  if [[ -n "${KOTOBA_SHELL_WEB_URL:-}" ]]; then
+    return 0
+  fi
   render_surface
   jq -cn --slurpfile ops "$ops" '{command:"surface/commit",ops:$ops[0]}' >&3
+}
+run_action() {
+  local event="$1" action="$2" receipt_file action_pid receipt status=0
+  receipt_file="$(mktemp -t kotoba-shell-action.XXXXXX)"
+  printf '%s' "$event" | "$action_bin" >"$receipt_file" 2>&1 & action_pid=$!
+  if [[ "$action_refresh_seconds" != "0" ]]; then
+    while kill -0 "$action_pid" 2>/dev/null; do
+      sleep "$action_refresh_seconds"
+      if kill -0 "$action_pid" 2>/dev/null; then
+        if commit_surface; then
+          printf 'action pulse: %s\n' "$action" >>"$log"
+        else
+          printf 'action pulse failed: %s\n' "$action" >>"$log"
+        fi
+      fi
+    done
+  fi
+  wait "$action_pid" || status=$?
+  receipt="$(<"$receipt_file")"
+  rm -f "$receipt_file"
+  if [[ "$status" -eq 0 ]]; then
+    printf 'action receipt: %s\n' "$receipt" >>"$log"
+  else
+    printf 'action rejected: %s\n' "$receipt" >>"$log"
+  fi
+  commit_surface
 }
 handle_events() {
   while IFS= read -r event; do
     printf '%s\n' "$event" >>"$log"
     action="$(printf '%s' "$event" | jq -r 'select(.event == "input/action") | .action // empty' 2>/dev/null || true)"
     if [[ -n "$action" && -n "$action_bin" ]]; then
-      if receipt="$(printf '%s' "$event" | "$action_bin" 2>&1)"; then
-        printf 'action receipt: %s\n' "$receipt" >>"$log"
-      else
-        printf 'action rejected: %s\n' "$receipt" >>"$log"
-      fi
-      commit_surface
+      run_action "$event" "$action"
     fi
   done
 }
 launch() {
   "$shell_dir/bin/kotoba-shell-build-macos-window" "$host" >/dev/null
-  render_surface
+  if [[ -n "${KOTOBA_SHELL_WEB_URL:-}" ]]; then
+    printf '[]' >"$ops"
+  else
+    render_surface
+  fi
   [[ -p "$control_pipe" ]] || mkfifo "$control_pipe"
   [[ -p "$event_pipe" ]] || mkfifo "$event_pipe"
   exec 3<>"$control_pipe"
   handle_events <"$event_pipe" & reader=$!
-  "$host" --title "${KOTOBA_SHELL_TITLE:-Kotoba}" \
+  host_args=(--title "${KOTOBA_SHELL_TITLE:-Kotoba}" \
     --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}" \
     --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}" \
-    --ops-json "$(<"$ops")" <"$control_pipe" >"$event_pipe" 2>>"$log" &
+    --ops-json "$(<"$ops")")
+  if [[ -n "${KOTOBA_SHELL_WEB_URL:-}" ]]; then
+    host_args+=(--web-url "$KOTOBA_SHELL_WEB_URL")
+  fi
+  "$host" "${host_args[@]}" <"$control_pipe" >"$event_pipe" 2>>"$log" &
   child=$!
   touch "$stamp"
   printf 'kotoba shell runtime: pid=%s watch=%s\n' "$child" "$watch_enabled"
@@ -85,7 +120,7 @@ while kill -0 "$child" 2>/dev/null; do
     exec 3>&- 2>/dev/null || true
     rm -f "$control_pipe" "$event_pipe"
     launch
-  elif [[ -n "$app_change" ]]; then
+  elif [[ -n "$app_change" && -z "${KOTOBA_SHELL_WEB_URL:-}" ]]; then
     commit_surface
     touch "$stamp"
     printf 'P2 commit: %s\n' "$app_change"

@@ -3,7 +3,10 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
+            [kotoba.shell.connector-test]
             [kotoba.shell.experience :as experience]
+            [kotoba.shell.input-test]
+            [kotoba.shell.mangaka-app-test]
             [kotoba.shell.sealed-line :as sealed]
             [kotoba.shell.launcher :as launcher]))
 
@@ -57,17 +60,12 @@
            (get-in macos-result [:kotoba.cli/data :kotoba.shell/authority])))
     (is (false? (get-in macos-result [:kotoba.cli/data :kotoba.shell/deprecated-shim?])))
     (is (= :shell/native-host-ready (:kotoba.cli/code macos-result)))
-    (is (= 15 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
+    (is (= 16 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
     (is (string? (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-command])))
     (is (= :process (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :simctl (get-in ios-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :adb (get-in android-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
-    ;; 9 catalog providers total; contacts/calendar are macOS-only (real
-    ;; AppleScript-backed providers, bin/kotoba-shell-host-macos) so iOS sees
-    ;; 6, not the other 8 (was incorrectly 8 before contacts/calendar were
-    ;; narrowed to :required-targets [:macos] to match what's actually
-    ;; implemented -- they used to falsely claim iOS/Android support too).
-    (is (= 6 (get-in ios-result [:kotoba.cli/data :kotoba.shell/capability-gate-count])))
+    (is (= 8 (get-in ios-result [:kotoba.cli/data :kotoba.shell/capability-gate-count])))
     (is (= 53766 (get-in android-result [:kotoba.cli/data :kotoba.shell/native-host-exports
                                          "native-command-surface-digest"])))
     (is (false? (:kotoba.cli/ok? unknown-result)))
@@ -131,8 +129,7 @@
     (let [result (launcher/dispatch ["adapter" "check" "--target" "android" "--json"])]
       (is (:kotoba.cli/ok? result))
       (is (= :android (get-in result [:kotoba.cli/data :kotoba.shell/target])))
-      ;; contacts/calendar are macOS-only (see native-host-check-uses-shell-owned-contracts)
-      (is (= 6 (get-in result [:kotoba.cli/data :kotoba.shell/provider-count]))))))
+      (is (= 8 (get-in result [:kotoba.cli/data :kotoba.shell/provider-count]))))))
 
 (deftest surface-host-uses-browser-and-wasm-ui-without-webview
   (let [check-result (launcher/dispatch ["surface" "check" "--target" "macos" "--json"])
@@ -277,77 +274,6 @@
   (is (= launcher/default-provider-timeout-seconds
          (launcher/provider-timeout-seconds :macos "unknown/command"))))
 
-(deftest macos-contacts-calendar-providers-are-macos-only-and-gated-by-default
-  ;; Contacts.app/Calendar.app access needs a real TCC grant a fresh CI
-  ;; runner won't have (and shouldn't be asked to grant interactively), so
-  ;; this only verifies the dispatch/catalog/policy plumbing -- same
-  ;; approach as the webauthn tests above. A fake --host-command stands in
-  ;; for the real osascript-backed provider
-  ;; (resources/kotoba/shell/selfhost/{contacts_list,calendar_list_events}.applescript,
-  ;; manually verified against real Contacts/Calendar data during
-  ;; development: 128 contacts in ~8s, real calendar events with correct
-  ;; JSON escaping).
-  (let [contacts-allow-policy "{:allow [\"contacts/read\"] :deny []}"
-        calendar-allow-policy "{:allow [\"calendar/read\"] :deny []}"
-        contacts-with-fake-host
-        (launcher/dispatch ["native-host" "provider"
-                            "--target" "macos"
-                            "--provider-command" "contacts/list"
-                            "--host-command" "/bin/echo"
-                            "--host-arg" "fake-contacts-ok"
-                            "--policy-edn" contacts-allow-policy])
-        calendar-with-fake-host
-        (launcher/dispatch ["native-host" "provider"
-                            "--target" "macos"
-                            "--provider-command" "calendar/list-events"
-                            "--host-command" "/bin/echo"
-                            "--host-arg" "fake-calendar-ok"
-                            "--policy-edn" calendar-allow-policy])
-        ios-unknown (launcher/dispatch ["native-host" "provider"
-                                        "--target" "ios"
-                                        "--provider-command" "contacts/list"
-                                        "--host-command" "/bin/echo"
-                                        "--policy-edn" contacts-allow-policy])
-        android-unknown (launcher/dispatch ["native-host" "provider"
-                                            "--target" "android"
-                                            "--provider-command" "calendar/list-events"
-                                            "--host-command" "/bin/echo"
-                                            "--policy-edn" calendar-allow-policy])
-        contacts-default-policy-denied
-        (launcher/dispatch ["native-host" "provider"
-                            "--target" "macos"
-                            "--provider-command" "contacts/list"
-                            "--host-command" "/bin/echo"])]
-    (is (:kotoba.cli/ok? contacts-with-fake-host))
-    (is (= :shell/provider-ran (:kotoba.cli/code contacts-with-fake-host)))
-    (is (= "contacts/read"
-           (get-in contacts-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
-    (is (str/includes? (get-in contacts-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
-                       "fake-contacts-ok"))
-    (is (:kotoba.cli/ok? calendar-with-fake-host))
-    (is (= :shell/provider-ran (:kotoba.cli/code calendar-with-fake-host)))
-    (is (= "calendar/read"
-           (get-in calendar-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
-    (is (str/includes? (get-in calendar-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
-                       "fake-calendar-ok"))
-    (is (false? (:kotoba.cli/ok? ios-unknown)))
-    (is (= :shell/provider-command-unknown (:kotoba.cli/code ios-unknown))
-        "contacts/calendar require :macos in :required-targets -- there is no CLI-invokable
-        iOS/Android equivalent (would need native Contacts/EventKit or
-        ContactsContract/CalendarContract bridges compiled into an app, not a bash host
-        script), so the catalog must not claim they do")
-    (is (false? (:kotoba.cli/ok? android-unknown)))
-    (is (= :shell/provider-command-unknown (:kotoba.cli/code android-unknown)))
-    (is (false? (:kotoba.cli/ok? contacts-default-policy-denied))
-        "contacts/calendar must not be in the default allow-list, same as keychain/*/webauthn/*")
-    (is (= :shell/provider-denied (:kotoba.cli/code contacts-default-policy-denied)))))
-
-(deftest contacts-calendar-providers-declare-longer-timeouts-than-instant-providers
-  ;; Real AppleScript/Apple Events round trips scale with data volume (128
-  ;; contacts took ~8s in manual testing) -- not "instant" like clipboard/fs.
-  (is (= 60 (launcher/provider-timeout-seconds :macos "contacts/list")))
-  (is (= 30 (launcher/provider-timeout-seconds :macos "calendar/list-events"))))
-
 (deftest release-check-and-evidence-cover-packaging-signing-updater
   (let [macos-manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\"}"
         mobile-manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
@@ -469,77 +395,14 @@
     (is (= 3 (get-in scaffold [:kotoba.cli/data :kotoba.shell/ready-count])))
     (is (every? pos-int?
                 (map :file-count (get-in scaffold [:kotoba.cli/data :kotoba.shell/app-rows]))))
-    ;; macOS/iOS: project.pbxproj を手書きせず xcodegen generate に作らせる方式
-    ;; (native-render-pipeline、ADR-2607081015 の WKWebView 実用優先決定)。
-    ;; Info.plist もその生成物(xcodegen の info.path 出力) — scaffold-files が
-    ;; 直接書くファイル一覧には含まれないが、scaffold-target-row のパイプライン
-    ;; 全体を通せば実在するようになる。SceneDelegate.swift は scene 無しの単純な
-    ;; UIApplicationDelegate ライフサイクルにしたため、もう存在しない(意図的)。
     (is (.isFile (io/file output-dir "macos" "Info.plist")))
-    (is (.isFile (io/file output-dir "macos" "KotobaShell.xcodeproj" "project.pbxproj")))
-    ;; Resources/WebBundle(Resources 直下ではない)— xcodegen の folder
-    ;; reference にして Xcode の Copy Bundle Resources によるサブディレクトリ
-    ;; フラット化(vendor/ 等が消える実バグ)を避けるための専用配置。
-    (is (.isFile (io/file output-dir "macos" "Resources" "WebBundle" "index.html")))
-    (is (.isFile (io/file output-dir "ios" "Info.plist")))
-    (is (.isFile (io/file output-dir "ios" "KotobaShell.xcodeproj" "project.pbxproj")))
-    (is (.isFile (io/file output-dir "ios" "Resources" "WebBundle" "index.html")))
+    (is (.isFile (io/file output-dir "ios" "Sources" "SceneDelegate.swift")))
     (is (.isFile (io/file output-dir "android" "app" "build.gradle")))
-    (is (.isFile (io/file output-dir "android" "app" "src" "main" "assets" "index.html")))
     (is (:kotoba.cli/ok? check))
     (is (= :shell/app-ready (:kotoba.cli/code check)))
     (is (every? :ok? (get-in check [:kotoba.cli/data :kotoba.shell/app-rows])))
     (is (false? (:kotoba.cli/ok? invalid)))
     (is (= :shell/app-scaffold-blocked (:kotoba.cli/code invalid)))))
-
-(deftest app-scaffold-macos-ios-load-web-bundle-via-custom-scheme-not-file-url
-  ;; 実機診断で判明した実バグ: WKWebView の loadFileURL(file:// origin)は
-  ;; window.onerror の message/filename/lineno/colno/error を無条件に
-  ;; redact して "Script error." にしてしまう(WKScriptMessageHandler
-  ;; ブリッジで隔離再現し、同一内容を http:// 経由でロードすると詳細が
-  ;; 復元することを確認済み)。file:// を避け、自前の WKURLSchemeHandler
-  ;; (KotobaWebBundleSchemeHandler)がバンドルを配信する経路に切り替えた
-  ;; ので、生成物がこの経路になっているかをテンプレート文字列で検証する。
-  (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\"}"
-        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
-                                             (str "kotoba-shell-schemehandler-" (System/nanoTime)))
-                                (.mkdirs)))
-        scaffold (launcher/dispatch ["app" "scaffold"
-                                     "--target" "macos"
-                                     "--target" "ios"
-                                     "--manifest-edn" manifest
-                                     "--output-dir" output-dir])]
-    (is (:kotoba.cli/ok? scaffold))
-    (doseq [target ["macos" "ios"]]
-      (let [handler-file (io/file output-dir target "Sources" "WebBundleSchemeHandler.swift")
-            delegate-file (io/file output-dir target "Sources" "AppDelegate.swift")
-            handler-src (slurp handler-file)
-            delegate-src (slurp delegate-file)]
-        (is (.isFile handler-file))
-        (is (str/includes? handler-src "WKURLSchemeHandler"))
-        (is (str/includes? handler-src "static let scheme = \"kotoba-webbundle\""))
-        (is (not (str/includes? delegate-src "loadFileURL")))
-        (is (str/includes? delegate-src "KotobaWebBundleSchemeHandler.scheme"))
-        (is (str/includes? delegate-src "setURLSchemeHandler"))))))
-
-(deftest app-scaffold-macos-keychain-cacao-webview-bridge
-  (let [manifest "{:app/id \"dev.kotoba.itonami\" :app/name \"itonami\" :app/version \"0.1.0\" :macos/product-name \"itonami\" :macos/auth-bridge :keychain-cacao :macos/window-width 393 :macos/window-height 852 :macos/keychain-service \"dev.kotoba.itonami.auth\"}"
-        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
-                                             (str "kotoba-shell-auth-bridge-" (System/nanoTime)))
-                                (.mkdirs)))
-        scaffold (launcher/dispatch ["app" "scaffold" "--target" "macos"
-                                     "--manifest-edn" manifest "--output-dir" output-dir])
-        delegate-src (slurp (io/file output-dir "macos" "Sources" "AppDelegate.swift"))
-        project-yml (slurp (io/file output-dir "macos" "project.yml"))]
-    (is (:kotoba.cli/ok? scaffold))
-    (is (str/includes? delegate-src "WKScriptMessageHandler"))
-    (is (str/includes? delegate-src "LocalAuthentication"))
-    (is (str/includes? delegate-src "kSecClassGenericPassword"))
-    (is (str/includes? delegate-src "width: 393"))
-    (is (str/includes? delegate-src "window.level = .floating"))
-    (is (str/includes? project-yml "name: itonami"))
-    (is (str/includes? project-yml "LocalAuthentication.framework"))
-    (is (str/includes? project-yml "Security.framework"))))
 
 (deftest app-build-plans_and_executes_native_project_builds
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
@@ -1007,6 +870,24 @@
   (is (launcher/host-smoke-ok? :android "List of devices attached\nserial1 device\n" 0 false))
   (is (false? (launcher/host-smoke-ok? :android "List of devices attached\n" 0 false))))
 
+(deftest native-window-smoke-uses-terminal-appkit-shutdown
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (re-find #"if smoke \{ NSApp\.terminate\(nil\) \}" source))
+    (is (not (re-find #"if smoke \{ NSApp\.stop\(nil\) \}" source)))
+    (is (str/includes? source "NSStatusBar.system.statusItem"))
+    (is (str/includes? source "window.level = .floating"))
+    (is (str/includes? source "func windowDidMiniaturize"))
+    (is (str/includes? source "lifecycle/status-bar"))))
+
+(deftest macos-calendar-provider-is-backed-by-eventkit
+  (let [host (slurp "bin/kotoba-shell-host-macos")
+        helper (slurp "bin/kotoba-shell-calendar-macos.swift")]
+    (is (str/includes? host "calendar/list-events)"))
+    (is (str/includes? host "--from and --to"))
+    (is (str/includes? helper "EKEventStore"))
+    (is (str/includes? helper "requestFullAccessToEvents"))
+    (is (not (str/includes? helper "Application('Calendar')")))))
+
 (deftest ui-check-connects-browser-and-wasm-ui-substrates
   (let [result (launcher/dispatch ["ui" "check"])
         strict-result (launcher/dispatch ["ui" "check" "--strict"])]
@@ -1069,7 +950,34 @@
     (is (= 3 (get-in receipt [:shell :ops-count])))
     (is (true? (get-in receipt [:kotobase :persisted?])))))
 
+(deftest macos-visual-capture-isolated-from-focus-and-ime
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (str/includes? source "node.attrs[\"readonly\"] == \"true\""))
+    (is (str/includes? source "field.isEditable = false"))
+    (is (str/includes? source "window.makeFirstResponder(nil)"))
+    (is (str/includes? source "window.displayIfNeeded()"))))
+
+(deftest action-runtime-streams-checkpoint-surfaces
+  (let [source (slurp "bin/kotoba-shell-app-runtime")]
+    (is (str/includes? source "KOTOBA_SHELL_ACTION_REFRESH_SECONDS"))
+    (is (str/includes? source "while kill -0 \"$action_pid\""))
+    (is (str/includes? source "action pulse:"))
+    (is (str/includes? source "commit_surface"))))
+
 (defn -main
   [& _]
-  (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test)]
+  (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test
+                                                      'kotoba.shell.connector-test
+                                                      'kotoba.shell.input-test
+                                                      'kotoba.shell.mangaka-app-test)]
     (System/exit (if (zero? (+ fail error)) 0 1))))
+(deftest provider-can-read-secret-text-from-stdin
+  (let [result (with-in-str "not-on-argv"
+                 (launcher/dispatch ["native-host" "provider"
+                                     "--target" "macos"
+                                     "--provider-command" "keychain/write-text"
+                                     "--policy-edn" "{:allow [\"keychain/write-text\"]}"
+                                     "--host-command" "/bin/echo"
+                                     "--text-stdin"]))]
+    (is (:kotoba.cli/ok? result))
+    (is (= "not-on-argv" (get-in result [:kotoba.cli/data :kotoba.shell/provider-output])))))

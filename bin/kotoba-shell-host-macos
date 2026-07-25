@@ -15,6 +15,8 @@ salt=""
 user_name=""
 user_id=""
 credential_id=""
+calendar_from=""
+calendar_to=""
 args=()
 
 while [[ $# -gt 0 ]]; do
@@ -33,6 +35,8 @@ while [[ $# -gt 0 ]]; do
     --user-name) user_name="${2:-}"; shift 2 ;;
     --user-id) user_id="${2:-}"; shift 2 ;;
     --credential-id) credential_id="${2:-}"; shift 2 ;;
+    --from) calendar_from="${2:-}"; shift 2 ;;
+    --to) calendar_to="${2:-}"; shift 2 ;;
     --) shift; args+=("$@"); break ;;
     *) args+=("$1"); shift ;;
   esac
@@ -68,6 +72,13 @@ case "$provider_command" in
     test -n "$url"
     /usr/bin/curl -fsSL "$url"
     ;;
+  browser/open-url)
+    test -n "$url"
+    case "$url" in
+      https://*|http://*) /usr/bin/open "$url" ;;
+      *) printf 'browser/open-url requires an http(s) URL\n' >&2; exit 64 ;;
+    esac
+    ;;
   notify/show)
     text="${message:-$stdin}"
     /usr/bin/osascript -e "display notification \"${text//\"/\\\"}\" with title \"${title//\"/\\\"}\""
@@ -81,11 +92,16 @@ case "$provider_command" in
   keychain/delete)
     /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null
     ;;
-  contacts/list)
-    /usr/bin/osascript "$(dirname "$0")/../resources/kotoba/shell/selfhost/contacts_list.applescript"
-    ;;
   calendar/list-events)
-    /usr/bin/osascript "$(dirname "$0")/../resources/kotoba/shell/selfhost/calendar_list_events.applescript"
+    if [[ -z "$calendar_from" || -z "$calendar_to" ]]; then
+      printf 'calendar/list-events requires --from and --to\n' >&2
+      exit 64
+    fi
+    calendar_helper="${KOTOBA_SHELL_CALENDAR_HELPER:-$(dirname "$0")/../target/kotoba-shell-calendar-macos}"
+    if [[ ! -x "$calendar_helper" ]]; then
+      "$(dirname "$0")/kotoba-shell-build-macos-calendar" >/dev/null
+    fi
+    "$calendar_helper" "$calendar_from" "$calendar_to"
     ;;
   webauthn/register)
     if [[ -z "$rp_id" || -z "$challenge" || -z "$salt" || -z "$user_name" ]]; then
