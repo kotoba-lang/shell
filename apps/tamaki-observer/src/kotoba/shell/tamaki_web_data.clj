@@ -5,8 +5,18 @@
             [kotoba.tamaki.store :as store]))
 
 (def active-statuses #{:queued :leased :running})
+
+(defn- workspace-path [path]
+  (let [root (some-> (System/getenv "KOTOBA_WORKSPACE_ROOT")
+                     io/file .getAbsolutePath)
+        absolute (some-> path io/file .getAbsolutePath)]
+    (if (and root absolute (.startsWith absolute (str root java.io.File/separator)))
+      (subs absolute (inc (count root)))
+      path)))
+
 (defn- run-project [run]
-  (or (:agent.run/source-project run) (:agent.run/project run)))
+  (workspace-path
+   (or (:agent.run/source-project run) (:agent.run/project run))))
 
 (defn- run-context [events run]
   (let [receipts (filter #(= (:agent.run/id run) (:tamaki.event/run %)) events)]
@@ -38,7 +48,9 @@
                 {:path project
                  :issues-open (count (remove solved issues))
                  :patches-open (max 0 (- patches integrated))
-                 :loops (count (filter #(= project (:tamaki.loop/project %))
+                 :loops (count (filter #(= project
+                                          (workspace-path
+                                           (:tamaki.loop/project %)))
                                        campaigns))
                  :wip (count (filter
                               #(and (= project (run-project %))
@@ -56,12 +68,14 @@
                     (filter #(active-statuses (:agent.run/status %)))
                     (mapv (fn [run]
                             (merge
-                             (select-keys
-                              run [:agent.run/id :agent.run/status
-                                   :agent.run/model :agent.run/runner
-                                   :agent.run/project :agent.run/source-project
-                                   :agent.run/goal
-                                   :agent.run/parent])
+                             {:id (:agent.run/id run)
+                              :status (:agent.run/status run)
+                              :model (:agent.run/model run)
+                              :runner (:agent.run/runner run)
+                              :project (run-project run)
+                              :execution-project (:agent.run/project run)
+                              :goal (:agent.run/goal run)
+                              :parent (:agent.run/parent run)}
                              (run-context events run)))))]
     {:observed-at (:observed-at state)
      :counts (select-keys registry [:total :west :github :rad :local])
@@ -71,12 +85,15 @@
                   (:repos registry))
      :dependencies (:dependencies registry)
      :agents agents
-     :loops (mapv #(select-keys
-                    % [:tamaki.loop/id :tamaki.loop/status
-                       :tamaki.loop/project :tamaki.loop/objective
-                       :tamaki.loop/model :tamaki.loop/runner
-                       :tamaki.loop/cycles
-                       :tamaki.loop/max-cycles])
+     :loops (mapv (fn [campaign]
+                    {:id (:tamaki.loop/id campaign)
+                     :status (:tamaki.loop/status campaign)
+                     :project (workspace-path (:tamaki.loop/project campaign))
+                     :objective (:tamaki.loop/objective campaign)
+                     :model (:tamaki.loop/model campaign)
+                     :runner (:tamaki.loop/runner campaign)
+                     :cycles (:tamaki.loop/cycles campaign)
+                     :max-cycles (:tamaki.loop/max-cycles campaign)})
                   campaigns)
      :repo-stats (repo-stats events runs campaigns)
      :active-repos
@@ -88,7 +105,22 @@
            (:active-repos registry))
      :decisions (:decisions state)
      :campaigns (:campaigns state)
-     :activity (:activity state)}))
+     :activity
+     (->> events
+          (sort-by :tamaki.event/at >)
+          (take 80)
+          (mapv (fn [event]
+                  {:id (:tamaki.event/id event)
+                   :at (:tamaki.event/at event)
+                   :run (:tamaki.event/run event)
+                   :kind (or (get-in event
+                                     [:tamaki.event/data :activity/kind])
+                             (:tamaki.event/kind event))
+                   :state (get-in event
+                                  [:tamaki.event/data :activity/state])
+                   :text (get-in event [:tamaki.event/data :activity/text])
+                   :issue (get-in event [:tamaki.event/data :issue/id])
+                   :patch (get-in event [:tamaki.event/data :patch/id])})))}))
 
 (defn write-snapshot! [target]
   (let [target-file (io/file target)

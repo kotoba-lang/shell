@@ -46,24 +46,28 @@
            (:repos snapshot))
       (map (fn [{:keys [from to]}] {:dep/from from :dep/to to})
            (:dependencies snapshot))
-      (map (fn [agent]
-             {:agent/id (or (:agent.run/id agent) (:id agent))
-              :agent/project (or (:agent.run/source-project agent)
-                                 (:source-project agent)
-                                 (:agent.run/project agent) (:project agent))
-              :agent/model (or (:agent.run/model agent) (:model agent) "default")
-              :agent/runner (or (:agent.run/runner agent) (:runner agent) "default")
-              :agent/goal (or (:agent.run/goal agent) (:goal agent) "")
-              :agent/issue (or (:issue agent) "")})
-           (:agents snapshot))
-      (map (fn [loop]
-             {:loop/id (or (:tamaki.loop/id loop) (:id loop))
-              :loop/project (or (:tamaki.loop/project loop) (:project loop))
-              :loop/runner (or (:tamaki.loop/runner loop) (:runner loop) "default")
-              :loop/model (or (:tamaki.loop/model loop) (:model loop) "default")
-              :loop/status (label (or (:tamaki.loop/status loop) (:status loop))
-                                  "unknown")})
-           (:loops snapshot))))))
+      (keep (fn [agent]
+              (let [id (or (:agent.run/id agent) (:id agent))
+                    project (or (:agent.run/source-project agent)
+                                (:source-project agent)
+                                (:agent.run/project agent) (:project agent))]
+                (when (and id project)
+                  {:agent/id id :agent/project project
+                   :agent/model (or (:agent.run/model agent) (:model agent) "default")
+                   :agent/runner (or (:agent.run/runner agent) (:runner agent) "default")
+                   :agent/goal (or (:agent.run/goal agent) (:goal agent) "")
+                   :agent/issue (or (:issue agent) "")})))
+            (:agents snapshot))
+      (keep (fn [loop]
+              (let [id (or (:tamaki.loop/id loop) (:id loop))
+                    project (or (:tamaki.loop/project loop) (:project loop))]
+                (when (and id project)
+                  {:loop/id id :loop/project project
+                   :loop/runner (or (:tamaki.loop/runner loop) (:runner loop) "default")
+                   :loop/model (or (:tamaki.loop/model loop) (:model loop) "default")
+                   :loop/status (label (or (:tamaki.loop/status loop)
+                                          (:status loop)) "unknown")})))
+            (:loops snapshot))))))
 
 (defn queried-repos []
   (->> (d/q '[:find ?path ?name ?org ?sync ?issues ?patches ?wip
@@ -100,7 +104,7 @@
 
 (def colors
   {:active 0x35ff8a :different 0xff922e :synced 0x208cff
-   :remote 0x514b63 :platform 0x28143c :edge 0x48dcff})
+   :remote 0x76658f :platform 0x28143c :edge 0x48dcff})
 
 (defn material [kind]
   (three/standard-material
@@ -164,6 +168,8 @@
           ranks (dependency-ranks (:dependencies snapshot))
           grouped (group-by #(group-key group-mode %) repos)
           groups (sort (keys grouped))
+          group-columns (min 3 (max 1 (js/Math.ceil
+                                        (js/Math.sqrt (count groups)))))
           active-by-path (into {} (map (juxt :path identity) (:active-repos snapshot)))
           active-paths (set (keys active-by-path))
           positions (atom {})]
@@ -176,11 +182,11 @@
                                             (fn [i repo] [(:path repo) i])
                                             group-repos))
                     columns (max 1 (js/Math.ceil (js/Math.sqrt (count group-repos))))
-                    col (mod group-index 3)
-                    row (quot group-index 3)
-                    origin-x (- (* col 14) 14)
-                    origin-z (- (* row 12) 6)
-                    extent (+ 1 (* columns 0.22))
+                    col (mod group-index group-columns)
+                    row (quot group-index group-columns)
+                    origin-x (* (- col (/ (dec group-columns) 2)) 22)
+                    origin-z (* row 20)
+                    extent (+ 1 (* columns 0.32))
                     platform (three/mesh
                               (THREE/BoxGeometry. extent 0.32 extent)
                               (material :platform))]]
@@ -195,7 +201,7 @@
                 :let [height (if (= kind :active)
                                0.8
                                (+ 0.18 (* congestion 0.12)))
-                      geometry (THREE/BoxGeometry. 0.16 height 0.16)
+                      geometry (THREE/BoxGeometry. 0.25 height 0.25)
                       mesh (THREE/InstancedMesh. geometry (material kind)
                                                  (count kind-repos))
                       matrix (THREE/Matrix4.)
@@ -203,9 +209,9 @@
           (doseq [[instance-id repo] (map-indexed vector kind-repos)
                   :let [repo-index (get index-by-path (:path repo))
                         x (+ origin-x (* (- (mod repo-index columns)
-                                             (/ (dec columns) 2)) 0.22))
+                                             (/ (dec columns) 2)) 0.32))
                         z (+ origin-z (* (- (quot repo-index columns)
-                                             (/ (dec columns) 2)) 0.22))
+                                             (/ (dec columns) 2)) 0.32))
                         y (/ height 2)]]
             (.setPosition matrix x y z)
             (.setMatrixAt mesh instance-id matrix)
@@ -214,6 +220,24 @@
           (set! (.. mesh -userData -repos) repo-array)
           (set! (.. mesh -instanceMatrix -needsUpdate) true)
           (.add repo-root mesh)))
+      ;; A bright point-cloud layer keeps every repository legible even when
+      ;; thousands of very small instanced bars are viewed from far away.
+      (let [geometry (THREE/BufferGeometry.)
+            vertices (->> repos
+                          (mapcat (fn [repo]
+                                    (when-let [{:keys [x z height]}
+                                               (get @positions (:path repo))]
+                                      [x (+ height 0.08) z])))
+                          (into-array))
+            attribute (THREE/Float32BufferAttribute. vertices 3)
+            points (THREE/Points.
+                    geometry
+                    (THREE/PointsMaterial.
+                     #js {:color 0x9b7bc4 :size 0.22
+                          :sizeAttenuation true :transparent true
+                          :opacity 0.95}))]
+        (.setAttribute geometry "position" attribute)
+        (.add repo-root points))
       (add-dependency-lines! repo-root @positions (:dependencies snapshot))
       (doseq [[agent-index agent] (map-indexed vector (queried-agents))
               :let [position (get @positions (:agent.run/project agent))]
@@ -229,7 +253,7 @@
               line (THREE/Line. line-geometry
                                 (THREE/LineBasicMaterial.
                                  #js {:color 0x35ff8a}))]
-          (three/set-scale! node 0.22 0.22 0.22)
+          (three/set-scale! node 0.48 0.48 0.48)
           (three/set-position! node (:x position) y (:z position))
           (set! (.. node -userData -repo) (clj->js agent))
           (.add repo-root line)
@@ -251,14 +275,17 @@
         active (first (:active-repos snapshot))
         metrics (.getElementById js/document "metrics")
         details (.getElementById js/document "details")
+        activity (.getElementById js/document "activity")
         grouping (.getElementById js/document "grouping")
         repo (or selected active)
         path (or (:path repo) (:agent.run/project repo))
         stat (some #(when (= path (:path %)) %) (:repo-stats snapshot))]
     (set! (.-value grouping) (label group-mode "org"))
     (set! (.-textContent metrics)
-          (str total " repos · WEST " west " · GitHub " github
-               " · Radicle " rad " · " (count (:active-repos snapshot)) " LIVE"))
+          (str (count (queried-repos)) "/" total " repo tiles · "
+               (count (:agents snapshot)) " agents · "
+               (count (:loops snapshot)) " loops · WEST " west
+               " · GitHub " github " · Radicle " rad))
     (set! (.-innerHTML details)
           (if repo
             (str "<strong>" path "</strong><br>"
@@ -276,7 +303,16 @@
                    (str "agent " (get run :agent.run/id) "<br>"
                         "model " (or (get run :agent.run/model) "default") "<br>"
                         (get run :agent.run/goal))))
-            "Select a repository tile"))))
+            "Select a repository tile"))
+    (set! (.-innerHTML activity)
+          (apply str
+                 (for [{:keys [at kind run issue patch text]}
+                       (take 12 (:activity snapshot))]
+                   (str "<div class=\"event\"><time>"
+                        (.toLocaleTimeString (js/Date. at))
+                        "</time><b>" (label kind "event") "</b><small>"
+                        (or text issue patch run "workspace")
+                        "</small></div>"))))))
 
 (defn scene-signature [snapshot]
   [(count (:repos snapshot))

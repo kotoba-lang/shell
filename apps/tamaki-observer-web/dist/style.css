@@ -9,5 +9,10 @@ header label { display: block; margin-top: 9px; color: #9f94af; }
 select { margin-left: 7px; color: #eee; background: #241733; border: 1px solid #57416e; border-radius: 7px; padding: 3px 7px; }
 aside { right: 16px; top: 16px; width: 290px; max-height: calc(100% - 32px); overflow: auto; padding: 16px; }
 #details { color: #c8bfd5; line-height: 1.55; word-break: break-word; }
+.activity-title { margin-top: 20px; }
+.event { display: grid; grid-template-columns: 64px 1fr; gap: 2px 8px; padding: 7px 0; border-top: 1px solid #ffffff12; }
+.event time { color: #81778e; font: 11px ui-monospace, monospace; }
+.event b { color: #79ffa8; font: 11px ui-monospace, monospace; }
+.event small { grid-column: 2; color: #9f94af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #legend { left: 16px; bottom: 16px; padding: 10px 14px; color: #aaa0b8; }
 .live { color: #4cff91; }.sync { color: #309bff; }.diff { color: #ff9d2e; }.loop { color: #c956ff; }
