@@ -52,6 +52,17 @@
                  (filter :agent.run/id)
                  (remove #(str/starts-with? (:agent.run/id %) "loop-"))
                  (sort-by :agent.run/updated-at >) vec)
+      :active-loops (count (filter #(= :active (:tamaki.loop/status %))
+                                   (vals campaigns)))
+      :active-agents (count (filter #(contains? #{:queued :leased :running}
+                                                (:agent.run/status %))
+                                    (vals runs)))
+      :model-activity
+      (->> (vals runs)
+           (filter #(contains? #{:queued :leased :running}
+                               (:agent.run/status %)))
+           (map #(or (:agent.run/model %) "default"))
+           frequencies)
       :patches (get kinds :patch/created 0)
      :integrations (get kinds :patch/integrated 0)
       :decisions (->> events
@@ -101,6 +112,8 @@
                     (label :p (truncate (:tamaki.loop/objective campaign) 120))
                     (label :p
                            (str "status " (name (:tamaki.loop/status campaign))
+                                "  ·  model "
+                                (or (:tamaki.loop/model campaign) "default")
                                 "  ·  cycles " (:tamaki.loop/cycles campaign)
                                 "/" (:tamaki.loop/max-cycles campaign)
                                 "  ·  failures " (:tamaki.loop/failures campaign)
@@ -112,6 +125,10 @@
           (element :article {}
                    [(label :h3 (str (name (:agent.run/status run)) "  "
                                     (:agent.run/id run)))
+                    (label :p
+                           (str "model " (or (:agent.run/model run) "default")
+                                (when-let [parent (:agent.run/parent run)]
+                                  (str " · child review of " parent))))
                     (label :p (truncate (:agent.run/goal run) 150))]))
         header (element :header {}
                         [(element :section {}
@@ -124,7 +141,17 @@
                          [(metric "Events" (:events state))
                           (metric "Patches" (:patches state))
                           (metric "Integrated" (:integrations state))
-                          (metric "Failures" (:failures state))])
+                          (metric "Failures" (:failures state))
+                          (metric "Active loops" (:active-loops state))
+                          (metric "Active agents" (:active-agents state))])
+        model-section
+        (element :section {"class" "liquid-glass__panel"}
+                 (into [(label :h2 "Model activity")]
+                       (if (seq (:model-activity state))
+                         (mapv (fn [[model count]]
+                                 (label :p (str model " · " count " running")))
+                               (sort-by key (:model-activity state)))
+                         [(label :p "No model is currently sampling.")])) )
         campaign-section
         (element :section {}
                  (into [(label :h2 "Growth campaigns")]
@@ -184,7 +211,7 @@
                      (:decisions state))
                     [(label :p "Waiting for an issue ranking decision…")])))
         root (element :main {}
-                      [header metrics activity-section decision-section
+                      [header metrics model-section activity-section decision-section
                        campaign-section run-section])]
     (finish root)))
 
