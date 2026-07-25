@@ -9,6 +9,133 @@
 (defn state-dir []
   (or (System/getenv "TAMAKI_STATE_DIR") "../../../tamaki/.tamaki"))
 
+(defn workspace-root []
+  (or (System/getenv "KOTOBA_WORKSPACE_ROOT")
+      (-> (io/file (state-dir)) .getCanonicalFile .getParentFile
+          .getParentFile .getParentFile .getParentFile .getPath)))
+
+(defn west-manifest []
+  (or (System/getenv "KOTOBA_WEST_MANIFEST")
+      (str (workspace-root) "/manifest/west.yml")))
+
+(defn- yaml-value [line key]
+  (some-> (re-find (re-pattern (str "^\\s+" key ":\\s*(.+)\\s*$")) line)
+          second
+          (str/replace #"^['\"]|['\"]$" "")))
+
+(defn read-west-projects
+  "Reads the generated west manifest without adding a YAML dependency. The
+  project stanza is deliberately flat except for userdata/rad-rid."
+  ([] (read-west-projects (west-manifest) (workspace-root)))
+  ([manifest root]
+   (if-not (.isFile (io/file manifest))
+     []
+     (let [finish #(when (:path %) (assoc % :west? true :github? (boolean (:remote %))))
+           projects
+           (reduce
+            (fn [{:keys [current projects] :as acc} line]
+              (if-let [name (some-> (re-find #"^\s{4}- name:\s*(.+)\s*$" line) second)]
+                {:current {:name name}
+                 :projects (cond-> projects current (conj (finish current)))}
+                (let [field (cond
+                              (yaml-value line "remote") :remote
+                              (yaml-value line "revision") :revision
+                              (yaml-value line "path") :path
+                              (yaml-value line "rad-rid") :rad-rid)]
+                  (if field
+                    (assoc acc :current
+                           (assoc current field
+                                  (yaml-value line (clojure.core/name field))))
+                    acc))))
+            {:current nil :projects []}
+            (-> (slurp manifest)
+                (str/split #"\n  projects:\n" 2)
+                last
+                str/split-lines))
+           all (cond-> (:projects projects)
+                 (:current projects) (conj (finish (:current projects))))]
+       (->> all
+            (keep identity)
+            (mapv (fn [project]
+                    (assoc project
+                           :rad? (boolean (:rad-rid project))
+                           :local? (.isDirectory
+                                    (io/file root (:path project) ".git"))))))))))
+
+(defn- git-remotes [root path]
+  (let [config (io/file root path ".git/config")
+        text (if (.isFile config) (slurp config) "")]
+    {:github? (str/includes? text "github.com")
+     :rad-rid (some-> (re-find #"rad://([^\s]+)" text) second (->> (str "rad:")))
+     :rad? (str/includes? text "rad://")}))
+
+(defn read-repository-inventory []
+  (let [west (read-west-projects)
+        index-file (System/getenv "KOTOBA_REPO_INDEX")
+        local-paths (if (and index-file (.isFile (io/file index-file)))
+                      (->> (str/split-lines (slurp index-file))
+                           (remove str/blank?)
+                           set)
+                      #{})
+        west-by-path (into {} (map (juxt :path identity)) west)
+        local-only (remove west-by-path local-paths)]
+    (->> (concat
+          west
+          (map (fn [path]
+                 (merge {:name (last (str/split path #"/"))
+                         :path path
+                         :remote (second (str/split path #"/"))
+                         :west? false
+                         :local? true}
+                        (git-remotes (workspace-root) path)))
+               local-only))
+         (sort-by :path)
+         vec)))
+
+(defn- project-path [root project]
+  (when project
+    (let [canonical (try (.getCanonicalPath (io/file project))
+                         (catch Exception _ (str project)))
+          prefix (str (try (.getCanonicalPath (io/file root))
+                           (catch Exception _ root)) "/")]
+      (cond
+        (str/starts-with? canonical prefix) (subs canonical (count prefix))
+        (str/starts-with? (str project) "orgs/") (str project)
+        :else (str project)))))
+
+(defn registry-summary [projects runs]
+  (let [active-statuses #{:queued :leased :running}
+        active-runs (filter #(contains? active-statuses (:agent.run/status %)) runs)
+        by-path (into {} (map (juxt :path identity)) projects)
+        active-repos
+        (->> active-runs
+             (group-by #(project-path (workspace-root) (:agent.run/project %)))
+             (map (fn [[path repo-runs]]
+                    {:path path
+                     :registry (get by-path path)
+                     :runs (sort-by :agent.run/updated-at > repo-runs)}))
+             (sort-by #(apply max 0 (keep :agent.run/updated-at (:runs %))) >)
+             vec)
+        orgs (->> projects
+                  (group-by :remote)
+                  (map (fn [[org repos]]
+                         {:org org
+                          :total (count repos)
+                          :rad (count (filter :rad? repos))
+                          :local (count (filter :local? repos))
+                          :active (count (filter
+                                          (set (keep :path active-repos))
+                                          (map :path repos)))}))
+                  (sort-by :total >)
+                  vec)]
+    {:total (count projects)
+     :west (count (filter :west? projects))
+     :github (count (filter :github? projects))
+     :rad (count (filter :rad? projects))
+     :local (count (filter :local? projects))
+     :orgs orgs
+     :active-repos active-repos}))
+
 (defn- newest-loop-log []
   (->> (or (.listFiles (io/file (state-dir))) (make-array java.io.File 0))
        (filter #(re-matches #"loop-.*\.log" (.getName %)))
@@ -44,14 +171,16 @@
   ([events]
    (let [campaigns (agent-loop/campaigns events)
          runs (model/fold-events events)
-         kinds (frequencies (map :tamaki.event/kind events))]
+         kinds (frequencies (map :tamaki.event/kind events))
+         run-list (->> (vals runs)
+                       (filter :agent.run/id)
+                       (remove #(str/starts-with? (:agent.run/id %) "loop-"))
+                       (sort-by :agent.run/updated-at >) vec)]
      {:events (count events)
+      :registry (registry-summary (read-repository-inventory) run-list)
       :campaigns (->> (vals campaigns)
                       (sort-by :tamaki.loop/updated-at >) vec)
-      :runs (->> (vals runs)
-                 (filter :agent.run/id)
-                 (remove #(str/starts-with? (:agent.run/id %) "loop-"))
-                 (sort-by :agent.run/updated-at >) vec)
+      :runs run-list
       :active-loops (count (filter #(= :active (:tamaki.loop/status %))
                                    (vals campaigns)))
       :active-agents (count (filter #(contains? #{:queued :leased :running}
@@ -105,6 +234,32 @@
         metric (fn [name value]
                  (element :article {"class" "liquid-glass__panel"}
                           [(label :h3 name) (label :h1 value)]))
+        registry (:registry state)
+        badge-line
+        (fn [repo]
+          (str (when (:west? repo) "WEST  ")
+               (when (:github? repo) "GITHUB  ")
+               (when (:rad? repo) "RAD  ")
+               (when (:local? repo) "LOCAL")))
+        active-repo-card
+        (fn [{:keys [path registry runs]}]
+          (element :article {"class" "liquid-glass__panel"}
+                   (into
+                    [(label :h2 (or path "unmapped workspace"))
+                     (label :p (if registry
+                                 (badge-line registry)
+                                 "UNREGISTERED · AgentRun only"))]
+                    (mapcat
+                     (fn [run]
+                       [(label :h3
+                               (str "● " (name (:agent.run/status run))
+                                    " · " (or (:agent.run/model run) "default")))
+                        (label :p
+                               (str (:agent.run/id run)
+                                    (when-let [parent (:agent.run/parent run)]
+                                      (str " · reviewer of " parent))))
+                        (label :p (truncate (:agent.run/goal run) 130))])
+                     runs))))
         campaign-card
         (fn [campaign]
           (element :section {"class" "liquid-glass__panel"}
@@ -138,12 +293,39 @@
                                       "● event stream online"
                                       "○ waiting for events"))])
         metrics (element :summary {}
-                         [(metric "Events" (:events state))
-                          (metric "Patches" (:patches state))
-                          (metric "Integrated" (:integrations state))
-                          (metric "Failures" (:failures state))
-                          (metric "Active loops" (:active-loops state))
+                         [(metric "All repos" (:total registry))
+                          (metric "West" (:west registry))
+                          (metric "GitHub" (:github registry))
+                          (metric "Radicle" (:rad registry))
+                          (metric "Active repos" (count (:active-repos registry)))
                           (metric "Active agents" (:active-agents state))])
+        topology
+        (element :figure
+                 {"class" "repo-topology"
+                  "data-orgs"
+                  (str/join
+                   ";"
+                   (map (fn [{:keys [org total rad local active]}]
+                          (str org "," total "," rad "," local "," active))
+                        (:orgs registry)))}
+                 [])
+        active-repo-section
+        (element :section {}
+                 (into [(label :h2 "Active now · repo × agent × model")]
+                       (if (seq (:active-repos registry))
+                         (mapv active-repo-card (:active-repos registry))
+                         [(label :p "No active AgentRun is mapped to a repository.")])) )
+        registry-section
+        (element :section {"class" "liquid-glass__panel"}
+                 (into
+                  [(label :h2 "Repository registry · complete workspace")
+                   (label :p "org · west/github total · rad · local checkout · active")]
+                  (mapv
+                   (fn [{:keys [org total rad local active]}]
+                     (label :p
+                            (format "%-18s  %,4d · RAD %,4d · LOCAL %,4d · ACTIVE %d"
+                                    (or org "unknown") total rad local active)))
+                   (:orgs registry))))
         model-section
         (element :section {"class" "liquid-glass__panel"}
                  (into [(label :h2 "Model activity")]
@@ -211,7 +393,8 @@
                      (:decisions state))
                     [(label :p "Waiting for an issue ranking decision…")])))
         root (element :main {}
-                      [header metrics model-section activity-section decision-section
+                      [header metrics topology active-repo-section registry-section
+                       model-section activity-section decision-section
                        campaign-section run-section])]
     (finish root)))
 

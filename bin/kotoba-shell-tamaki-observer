@@ -4,13 +4,26 @@ set -euo pipefail
 shell_dir="$(cd "$(dirname "$0")/.." && pwd)"
 app_dir="$shell_dir/apps/tamaki-observer"
 tamaki_dir="${TAMAKI_PROJECT_DIR:-$(cd "$shell_dir/../tamaki" && pwd)}"
+workspace_root="${KOTOBA_WORKSPACE_ROOT:-$(cd "$shell_dir/../../.." && pwd)}"
 
 export TAMAKI_STATE_DIR="${TAMAKI_STATE_DIR:-$tamaki_dir/.tamaki}"
+export KOTOBA_WORKSPACE_ROOT="$workspace_root"
+export KOTOBA_WEST_MANIFEST="${KOTOBA_WEST_MANIFEST:-$workspace_root/manifest/west.yml}"
+export KOTOBA_REPO_INDEX="${KOTOBA_REPO_INDEX:-$TAMAKI_STATE_DIR/workspace-repos.txt}"
+repo_index_next="$KOTOBA_REPO_INDEX.next.$$"
+(
+  find "$workspace_root/orgs" "$workspace_root/projects" "$workspace_root/packages" \
+    -type d \( -name node_modules -o -name target -o -name .cache \) -prune -o \
+    -type d -name .git -print -prune 2>/dev/null |
+    sed "s#^$workspace_root/##; s#/.git\$##" |
+    sort -u > "$repo_index_next"
+  mv "$repo_index_next" "$KOTOBA_REPO_INDEX"
+) &
 export KOTOBA_SHELL_APP_DIR="$app_dir"
 export KOTOBA_SHELL_MANIFEST="$app_dir/app.kotoba.edn"
 export KOTOBA_SHELL_TITLE="Tamaki Observatory"
-export KOTOBA_SHELL_WIDTH="${KOTOBA_SHELL_WIDTH:-820}"
-export KOTOBA_SHELL_HEIGHT="${KOTOBA_SHELL_HEIGHT:-760}"
+export KOTOBA_SHELL_WIDTH="${KOTOBA_SHELL_WIDTH:-980}"
+export KOTOBA_SHELL_HEIGHT="${KOTOBA_SHELL_HEIGHT:-820}"
 export KOTOBA_SHELL_MIN_WIDTH="${KOTOBA_SHELL_MIN_WIDTH:-640}"
 export KOTOBA_SHELL_MIN_HEIGHT="${KOTOBA_SHELL_MIN_HEIGHT:-560}"
 export KOTOBA_SHELL_WATCH=1

@@ -37,6 +37,30 @@
                     (= "Tamaki Observatory" (nth % 2)))
               ops))))
 
+(deftest tamaki-observer-joins-west-rad-github-and-agent-activity
+  (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                       "tamaki-registry" (make-array java.nio.file.attribute.FileAttribute 0)))
+        manifest (io/file root "west.yml")
+        repo-dir (io/file root "orgs/kotoba-lang/tamaki/.git")]
+    (.mkdirs repo-dir)
+    (spit manifest
+          (str "manifest:\n  projects:\n"
+               "    - name: tamaki\n"
+               "      remote: kotoba-lang\n"
+               "      path: orgs/kotoba-lang/tamaki\n"
+               "      userdata:\n"
+               "        rad-rid: rad:z123\n"
+               "    - name: shell\n"
+               "      remote: kotoba-lang\n"
+               "      path: orgs/kotoba-lang/shell\n"))
+    (let [projects (tamaki-observer/read-west-projects
+                    (.getPath manifest) (.getPath root))]
+      (is (= 2 (count projects)))
+      (is (every? :west? projects))
+      (is (every? :github? projects))
+      (is (= 1 (count (filter :rad? projects))))
+      (is (= 1 (count (filter :local? projects)))))))
+
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
   (is (= ["tool" "--json"]

@@ -31,6 +31,115 @@ final class KotobaActionTarget: NSObject {
 let actionTarget = KotobaActionTarget()
 let floatingWindow = CommandLine.arguments.contains("--floating")
 
+final class RepoTopologyView: NSView {
+  struct Island {
+    let name: String
+    let total: Int
+    let rad: Int
+    let local: Int
+    let active: Int
+  }
+  let islands: [Island]
+  var zoom: CGFloat = 1
+  var pan = NSPoint.zero
+  init(encoded: String) {
+    islands = encoded.split(separator: ";").compactMap { item in
+      let fields = item.split(separator: ",", omittingEmptySubsequences: false)
+      guard fields.count == 5 else { return nil }
+      return Island(name: String(fields[0]), total: Int(fields[1]) ?? 0,
+                    rad: Int(fields[2]) ?? 0, local: Int(fields[3]) ?? 0,
+                    active: Int(fields[4]) ?? 0)
+    }
+    super.init(frame: NSRect(x: 0, y: 0, width: 920, height: 500))
+    wantsLayer = true
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override var acceptsFirstResponder: Bool { true }
+  override var intrinsicContentSize: NSSize { NSSize(width: 920, height: 500) }
+  override func magnify(with event: NSEvent) {
+    zoom = min(2.5, max(0.55, zoom * (1 + event.magnification)))
+    needsDisplay = true
+  }
+  override func scrollWheel(with event: NSEvent) {
+    pan.x += event.scrollingDeltaX
+    pan.y -= event.scrollingDeltaY
+    needsDisplay = true
+  }
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    NSColor.clear.setFill(); dirtyRect.fill()
+    NSGraphicsContext.saveGraphicsState()
+    defer { NSGraphicsContext.restoreGraphicsState() }
+    let sceneTransform = NSAffineTransform()
+    sceneTransform.translateX(by: bounds.midX + pan.x, yBy: bounds.midY + pan.y)
+    sceneTransform.scale(by: zoom)
+    sceneTransform.translateX(by: -bounds.midX, yBy: -bounds.midY)
+    sceneTransform.concat()
+    let columns = 3
+    for (index, island) in islands.prefix(6).enumerated() {
+      let column = index % columns
+      let row = index / columns
+      let tileWidth: CGFloat = 240, tileHeight: CGFloat = 116, depth: CGFloat = 20
+      let origin = NSPoint(x: 145 + CGFloat(column) * 290 + CGFloat(row) * 70,
+                           y: bounds.height - 105 - CGFloat(row) * 190)
+      let top = NSPoint(x: origin.x, y: origin.y + tileHeight / 2)
+      let right = NSPoint(x: origin.x + tileWidth / 2, y: origin.y)
+      let bottom = NSPoint(x: origin.x, y: origin.y - tileHeight / 2)
+      let left = NSPoint(x: origin.x - tileWidth / 2, y: origin.y)
+      let side = NSBezierPath()
+      side.move(to: left); side.line(to: bottom)
+      side.line(to: NSPoint(x: bottom.x, y: bottom.y - depth))
+      side.line(to: NSPoint(x: left.x, y: left.y - depth)); side.close()
+      NSColor.systemPurple.withAlphaComponent(0.62).setFill(); side.fill()
+      let front = NSBezierPath()
+      front.move(to: right); front.line(to: bottom)
+      front.line(to: NSPoint(x: bottom.x, y: bottom.y - depth))
+      front.line(to: NSPoint(x: right.x, y: right.y - depth)); front.close()
+      NSColor.systemPurple.withAlphaComponent(0.38).setFill(); front.fill()
+      let card = NSBezierPath()
+      card.move(to: top); card.line(to: right); card.line(to: bottom)
+      card.line(to: left); card.close()
+      NSColor.windowBackgroundColor.withAlphaComponent(0.94).setFill(); card.fill()
+      (island.active > 0 ? NSColor.systemGreen : NSColor.systemPurple)
+        .withAlphaComponent(island.active > 0 ? 0.9 : 0.45).setStroke()
+      card.lineWidth = island.active > 0 ? 3 : 1.5; card.stroke()
+
+      let hub = NSPoint(x: origin.x, y: origin.y + 8)
+      let satellites = [
+        NSPoint(x: origin.x - 72, y: origin.y + 4),
+        NSPoint(x: origin.x + 72, y: origin.y + 4),
+        NSPoint(x: origin.x, y: origin.y + 40)
+      ]
+      for point in satellites {
+        let line = NSBezierPath(); line.move(to: hub); line.line(to: point)
+        NSColor.systemPurple.withAlphaComponent(0.38).setStroke()
+        line.lineWidth = 2; line.stroke()
+        let node = NSBezierPath(ovalIn: NSRect(x: point.x - 10, y: point.y - 10,
+                                               width: 20, height: 20))
+        NSColor.systemBlue.setFill(); node.fill()
+      }
+      let center = NSBezierPath(ovalIn: NSRect(x: hub.x - 15, y: hub.y - 15,
+                                               width: 30, height: 30))
+      (island.active > 0 ? NSColor.systemGreen : NSColor.systemPurple).setFill()
+      center.fill()
+      let title = island.name as NSString
+      title.draw(at: NSPoint(x: origin.x - 105, y: origin.y - 35),
+                 withAttributes: [.font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+                                  .foregroundColor: NSColor.labelColor])
+      let detail = "\(island.total) repos  ·  RAD \(island.rad)  ·  LOCAL \(island.local)" as NSString
+      detail.draw(at: NSPoint(x: origin.x - 105, y: origin.y - 52),
+                  withAttributes: [.font: NSFont.systemFont(ofSize: 11),
+                                   .foregroundColor: NSColor.secondaryLabelColor])
+      if island.active > 0 {
+        let live = "● \(island.active) LIVE" as NSString
+        live.draw(at: NSPoint(x: origin.x + 42, y: origin.y - 35),
+                  withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold),
+                                   .foregroundColor: NSColor.systemGreen])
+      }
+    }
+  }
+}
+
 func emit(_ value: [String: Any]) {
   guard let data = try? JSONSerialization.data(withJSONObject: value),
         let line = String(data: data, encoding: .utf8) else { return }
@@ -78,6 +187,9 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
     let marker = NSView(frame: .zero)
     marker.isHidden = true
     return marker
+  }
+  if className.contains("repo-topology") {
+    return RepoTopologyView(encoded: node.attrs["data-orgs"] ?? "")
   }
   if node.tag == "#text" {
     let label = NSTextField(wrappingLabelWithString: node.text ?? "")
