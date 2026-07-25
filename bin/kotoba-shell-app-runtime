@@ -6,6 +6,7 @@ app_dir="${KOTOBA_SHELL_APP_DIR:?KOTOBA_SHELL_APP_DIR is required}"
 manifest="${KOTOBA_SHELL_MANIFEST:-$app_dir/app.kotoba.edn}"
 action_bin="${KOTOBA_SHELL_ACTION_BIN:-}"
 watch_enabled="${KOTOBA_SHELL_WATCH:-0}"
+floating_enabled="${KOTOBA_SHELL_FLOATING:-0}"
 shell_cli="$shell_dir/bin/kotoba-shell"
 host="$shell_dir/target/kotoba-shell-host-macos-window"
 stamp="$(mktemp -t kotoba-shell-runtime.XXXXXX)"
@@ -64,10 +65,12 @@ launch() {
   [[ -p "$event_pipe" ]] || mkfifo "$event_pipe"
   exec 3<>"$control_pipe"
   handle_events <"$event_pipe" & reader=$!
-  "$host" --title "${KOTOBA_SHELL_TITLE:-Kotoba}" \
-    --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}" \
-    --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}" \
-    --ops-json "$(<"$ops")" <"$control_pipe" >"$event_pipe" 2>>"$log" &
+  host_args=(--title "${KOTOBA_SHELL_TITLE:-Kotoba}"
+    --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}"
+    --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}"
+    --ops-json "$(<"$ops")")
+  [[ "$floating_enabled" == "1" ]] && host_args+=(--floating)
+  "$host" "${host_args[@]}" <"$control_pipe" >"$event_pipe" 2>>"$log" &
   child=$!
   touch "$stamp"
   printf 'kotoba shell runtime: pid=%s watch=%s\n' "$child" "$watch_enabled"
