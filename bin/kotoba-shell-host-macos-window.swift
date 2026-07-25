@@ -38,18 +38,44 @@ final class RepoTopologyView: NSView {
     let rad: Int
     let local: Int
     let active: Int
+    let synced: Int
+    let different: Int
+  }
+  struct Repo {
+    let org: String
+    let name: String
+    let active: Bool
+    let issue: String
+    let sync: String
   }
   let islands: [Island]
+  let repos: [Repo]
+  let dependencies: [(String, String)]
+  let blockers: String
   var zoom: CGFloat = 1
   var pan = NSPoint.zero
-  init(encoded: String) {
+  init(encoded: String, encodedRepos: String, encodedDeps: String, blockers: String) {
     islands = encoded.split(separator: ";").compactMap { item in
       let fields = item.split(separator: ",", omittingEmptySubsequences: false)
-      guard fields.count == 5 else { return nil }
+      guard fields.count == 7 else { return nil }
       return Island(name: String(fields[0]), total: Int(fields[1]) ?? 0,
                     rad: Int(fields[2]) ?? 0, local: Int(fields[3]) ?? 0,
-                    active: Int(fields[4]) ?? 0)
+                    active: Int(fields[4]) ?? 0, synced: Int(fields[5]) ?? 0,
+                    different: Int(fields[6]) ?? 0)
     }
+    repos = encodedRepos.split(separator: ";").compactMap { item in
+      let fields = item.split(separator: ",", omittingEmptySubsequences: false)
+      guard fields.count == 5 else { return nil }
+      return Repo(org: String(fields[0]), name: String(fields[1]),
+                  active: fields[2] == "1", issue: String(fields[3]),
+                  sync: String(fields[4]))
+    }
+    dependencies = encodedDeps.split(separator: ";").compactMap { item in
+      let fields = item.split(separator: ",", omittingEmptySubsequences: false)
+      guard fields.count == 2 else { return nil }
+      return (String(fields[0]), String(fields[1]))
+    }
+    self.blockers = blockers
     super.init(frame: NSRect(x: 0, y: 0, width: 920, height: 500))
     wantsLayer = true
   }
@@ -76,6 +102,7 @@ final class RepoTopologyView: NSView {
     sceneTransform.translateX(by: -bounds.midX, yBy: -bounds.midY)
     sceneTransform.concat()
     let columns = 3
+    var repoPositions: [String: NSPoint] = [:]
     for (index, island) in islands.prefix(6).enumerated() {
       let column = index % columns
       let row = index / columns
@@ -104,29 +131,45 @@ final class RepoTopologyView: NSView {
         .withAlphaComponent(island.active > 0 ? 0.9 : 0.45).setStroke()
       card.lineWidth = island.active > 0 ? 3 : 1.5; card.stroke()
 
-      let hub = NSPoint(x: origin.x, y: origin.y + 8)
-      let satellites = [
-        NSPoint(x: origin.x - 72, y: origin.y + 4),
-        NSPoint(x: origin.x + 72, y: origin.y + 4),
-        NSPoint(x: origin.x, y: origin.y + 40)
-      ]
-      for point in satellites {
-        let line = NSBezierPath(); line.move(to: hub); line.line(to: point)
-        NSColor.systemPurple.withAlphaComponent(0.38).setStroke()
-        line.lineWidth = 2; line.stroke()
-        let node = NSBezierPath(ovalIn: NSRect(x: point.x - 10, y: point.y - 10,
-                                               width: 20, height: 20))
-        NSColor.systemBlue.setFill(); node.fill()
+      let islandRepos = repos.filter { $0.org == island.name }
+      let repoColumns = max(1, Int(ceil(sqrt(Double(max(1, islandRepos.count)) * 2))))
+      let repoRows = max(1, Int(ceil(Double(islandRepos.count) / Double(repoColumns))))
+      for (repoIndex, repo) in islandRepos.enumerated() {
+        let c = repoIndex % repoColumns, r = repoIndex / repoColumns
+        let u = CGFloat(c) / CGFloat(max(1, repoColumns - 1)) - 0.5
+        let v = CGFloat(r) / CGFloat(max(1, repoRows - 1)) - 0.5
+        let point = NSPoint(x: origin.x + (u - v) * 92,
+                            y: origin.y + (u + v) * 38 + 5)
+        repoPositions[repo.name] = point
+        let size: CGFloat = repo.active ? 8 : (zoom > 1.7 ? 3.4 : 2.2)
+        let tile = NSBezierPath()
+        tile.move(to: NSPoint(x: point.x, y: point.y + size / 2))
+        tile.line(to: NSPoint(x: point.x + size, y: point.y))
+        tile.line(to: NSPoint(x: point.x, y: point.y - size / 2))
+        tile.line(to: NSPoint(x: point.x - size, y: point.y)); tile.close()
+        switch repo.active ? "active" : repo.sync {
+        case "active": NSColor.systemGreen.setFill()
+        case "different": NSColor.systemOrange.setFill()
+        case "synced": NSColor.systemBlue.withAlphaComponent(0.8).setFill()
+        default: NSColor.systemGray.withAlphaComponent(0.45).setFill()
+        }
+        tile.fill()
+        if repo.active || zoom > 2.05 {
+          let caption = (repo.active && !repo.issue.isEmpty
+                         ? "\(repo.name) · issue \(repo.issue)"
+                         : repo.name) as NSString
+          caption.draw(at: NSPoint(x: point.x + 5, y: point.y + 3),
+                       withAttributes: [.font: NSFont.systemFont(
+                        ofSize: repo.active ? 10 : 6, weight: repo.active ? .bold : .regular),
+                                        .foregroundColor: repo.active
+                                          ? NSColor.systemGreen : NSColor.labelColor])
+        }
       }
-      let center = NSBezierPath(ovalIn: NSRect(x: hub.x - 15, y: hub.y - 15,
-                                               width: 30, height: 30))
-      (island.active > 0 ? NSColor.systemGreen : NSColor.systemPurple).setFill()
-      center.fill()
       let title = island.name as NSString
       title.draw(at: NSPoint(x: origin.x - 105, y: origin.y - 35),
                  withAttributes: [.font: NSFont.systemFont(ofSize: 14, weight: .semibold),
                                   .foregroundColor: NSColor.labelColor])
-      let detail = "\(island.total) repos  ·  RAD \(island.rad)  ·  LOCAL \(island.local)" as NSString
+      let detail = "\(island.total) repos · SYNC \(island.synced) · Δ \(island.different)" as NSString
       detail.draw(at: NSPoint(x: origin.x - 105, y: origin.y - 52),
                   withAttributes: [.font: NSFont.systemFont(ofSize: 11),
                                    .foregroundColor: NSColor.secondaryLabelColor])
@@ -136,6 +179,18 @@ final class RepoTopologyView: NSView {
                   withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold),
                                    .foregroundColor: NSColor.systemGreen])
       }
+    }
+    for (from, to) in dependencies {
+      guard let start = repoPositions[from], let end = repoPositions[to] else { continue }
+      let edge = NSBezierPath(); edge.move(to: start); edge.line(to: end)
+      NSColor.systemCyan.withAlphaComponent(0.8).setStroke()
+      edge.lineWidth = zoom > 1.5 ? 1.5 : 0.7; edge.stroke()
+    }
+    if zoom > 1.35, !blockers.isEmpty {
+      let text = "issue blockers → \(blockers)" as NSString
+      text.draw(at: NSPoint(x: 24, y: 18),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                                 .foregroundColor: NSColor.systemOrange])
     }
   }
 }
@@ -189,7 +244,10 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
     return marker
   }
   if className.contains("repo-topology") {
-    return RepoTopologyView(encoded: node.attrs["data-orgs"] ?? "")
+    return RepoTopologyView(encoded: node.attrs["data-orgs"] ?? "",
+                            encodedRepos: node.attrs["data-repos"] ?? "",
+                            encodedDeps: node.attrs["data-deps"] ?? "",
+                            blockers: node.attrs["data-blockers"] ?? "")
   }
   if node.tag == "#text" {
     let label = NSTextField(wrappingLabelWithString: node.text ?? "")

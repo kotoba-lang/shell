@@ -23,6 +23,16 @@
           second
           (str/replace #"^['\"]|['\"]$" "")))
 
+(defn- git-head [root path]
+  (let [git-dir (io/file root path ".git")
+        head-file (io/file git-dir "HEAD")]
+    (when (.isFile head-file)
+      (let [head (str/trim (slurp head-file))]
+        (if-let [ref (second (re-find #"^ref:\s+(.+)$" head))]
+          (let [ref-file (io/file git-dir ref)]
+            (when (.isFile ref-file) (str/trim (slurp ref-file))))
+          head)))))
+
 (defn read-west-projects
   "Reads the generated west manifest without adding a YAML dependency. The
   project stanza is deliberately flat except for userdata/rad-rid."
@@ -56,11 +66,22 @@
                  (:current projects) (conj (finish (:current projects))))]
        (->> all
             (keep identity)
-            (mapv (fn [project]
-                    (assoc project
-                           :rad? (boolean (:rad-rid project))
-                           :local? (.isDirectory
-                                    (io/file root (:path project) ".git"))))))))))
+            (mapv
+             (fn [project]
+               (let [local? (.isDirectory (io/file root (:path project) ".git"))
+                     head (when local? (git-head root (:path project)))]
+                 (assoc project
+                        :rad? (boolean (:rad-rid project))
+                        :local? local?
+                        :head head
+                        :sync (cond
+                                (not local?) :remote
+                                (or (= head (:revision project))
+                                    (not (re-matches #"[0-9a-f]{40}"
+                                                     (str (:revision project)))))
+                                :synced
+                                :else :different))))
+             ))))))
 
 (defn- git-remotes [root path]
   (let [config (io/file root path ".git/config")
@@ -103,6 +124,37 @@
         (str/starts-with? (str project) "orgs/") (str project)
         :else (str project)))))
 
+(defn- issue-label [run]
+  (let [goal (str (:agent.run/goal run))
+        radicle (some-> (re-find #"(?i)Radicle issue\s+([0-9a-f]{8,})" goal)
+                        second)]
+    (or (when radicle (subs radicle 0 (min 10 (count radicle))))
+        (some-> (re-find #"(?i)GitHub issue\s+#?(\d+)" goal) second (->> (str "#")))
+        (some-> (re-find #"(?i)issue\s+#?([0-9a-f]{6,}|\d+)" goal) second))))
+
+(defn- active-dependencies [projects active-repos]
+  (let [root (workspace-root)
+        candidates ["deps.edn" "package.json" "Cargo.toml" "pyproject.toml"]
+        by-name (group-by :name projects)]
+    (->> active-repos
+         (mapcat
+          (fn [{:keys [path]}]
+            (let [content (->> candidates
+                               (map #(io/file root path %))
+                               (filter #(.isFile %))
+                               (map slurp)
+                               (str/join "\n"))]
+              (when-not (str/blank? content)
+                (->> by-name
+                     (keep
+                      (fn [[repo-name matches]]
+                        (when (and (not= repo-name (last (str/split path #"/")))
+                                   (str/includes? content repo-name))
+                          {:from path :to (:path (first matches))}))))))))
+         distinct
+         (take 100)
+         vec)))
+
 (defn registry-summary [projects runs]
   (let [active-statuses #{:queued :leased :running}
         active-runs (filter #(contains? active-statuses (:agent.run/status %)) runs)
@@ -113,6 +165,7 @@
              (map (fn [[path repo-runs]]
                     {:path path
                      :registry (get by-path path)
+                     :issue (some issue-label repo-runs)
                      :runs (sort-by :agent.run/updated-at > repo-runs)}))
              (sort-by #(apply max 0 (keep :agent.run/updated-at (:runs %))) >)
              vec)
@@ -123,6 +176,8 @@
                           :total (count repos)
                           :rad (count (filter :rad? repos))
                           :local (count (filter :local? repos))
+                          :synced (count (filter #(= :synced (:sync %)) repos))
+                          :different (count (filter #(= :different (:sync %)) repos))
                           :active (count (filter
                                           (set (keep :path active-repos))
                                           (map :path repos)))}))
@@ -133,6 +188,8 @@
      :github (count (filter :github? projects))
      :rad (count (filter :rad? projects))
      :local (count (filter :local? projects))
+     :repos projects
+     :dependencies (active-dependencies projects active-repos)
      :orgs orgs
      :active-repos active-repos}))
 
@@ -305,9 +362,37 @@
                   "data-orgs"
                   (str/join
                    ";"
-                   (map (fn [{:keys [org total rad local active]}]
-                          (str org "," total "," rad "," local "," active))
-                        (:orgs registry)))}
+                   (map (fn [{:keys [org total rad local active synced different]}]
+                          (str org "," total "," rad "," local "," active ","
+                               synced "," different))
+                        (:orgs registry)))
+                  "data-repos"
+                  (let [active (into {} (map (juxt :path identity)
+                                             (:active-repos registry)))]
+                    (str/join
+                     ";"
+                     (map
+                      (fn [{:keys [path name remote sync]}]
+                        (let [activity (get active path)]
+                          (str (str/replace (or remote "unknown") #"[,;]" "_") ","
+                               (str/replace (or name path) #"[,;]" "_") ","
+                               (if activity "1" "0") ","
+                               (str/replace (or (:issue activity) "") #"[,;]" "_") ","
+                               (clojure.core/name (or sync :unmanaged)))))
+                      (:repos registry))))
+                  "data-deps"
+                  (str/join
+                   ";"
+                   (map (fn [{:keys [from to]}]
+                          (str (str/replace (last (str/split from #"/")) #"[,;]" "_") ","
+                               (str/replace (last (str/split to #"/")) #"[,;]" "_")))
+                        (:dependencies registry)))
+                  "data-blockers"
+                  (str/join
+                   ","
+                   (map str
+                        (get-in (last (:decisions state))
+                                [:issue/selection :issue :issue/blockers])))}
                  [])
         active-repo-section
         (element :section {}
@@ -321,10 +406,11 @@
                   [(label :h2 "Repository registry · complete workspace")
                    (label :p "org · west/github total · rad · local checkout · active")]
                   (mapv
-                   (fn [{:keys [org total rad local active]}]
+                   (fn [{:keys [org total rad local active synced different]}]
                      (label :p
-                            (format "%-18s  %,4d · RAD %,4d · LOCAL %,4d · ACTIVE %d"
-                                    (or org "unknown") total rad local active)))
+                            (format
+                             "%-18s %,4d · RAD %,4d · SYNC %,4d · Δ %,4d · ACTIVE %d"
+                             (or org "unknown") total rad synced different active)))
                    (:orgs registry))))
         model-section
         (element :section {"class" "liquid-glass__panel"}
