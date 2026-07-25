@@ -192,10 +192,14 @@
       (let [x (+ (:x base) (* (- column (/ (dec (count keys)) 2)) 0.9))
             y (+ (:height base) 1.2 (* level 0.85))
             z (+ (:z base) 0.7)
+            status-color (case (:status issue)
+                           "closed" 0x42f58d
+                           "in-progress" 0x42a5ff
+                           0xffd45a)
             node (three/mesh
                   (THREE/OctahedronGeometry. 0.28)
                   (three/standard-material
-                   {:color 0xffd45a :emissive 1.5 :roughness 0.25}))]
+                   {:color status-color :emissive 1.5 :roughness 0.25}))]
         (three/set-position! node x y z)
         (set! (.. node -userData -repo)
               (clj->js {:path (:repo issue) :issue (:rad issue)

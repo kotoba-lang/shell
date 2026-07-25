@@ -49,6 +49,7 @@
                   {:key (str (:issue/key issue))
                    :rad (:issue/rad issue)
                    :repo (:issue/repo issue)
+                   :status (some-> (:issue/status issue) name)
                    :blockers (mapv str (:issue/blockers issue))})
                 (:project/issues project))}))
      candidates)))
