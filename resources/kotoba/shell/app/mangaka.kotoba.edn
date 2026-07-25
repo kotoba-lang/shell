@@ -1,0 +1,15 @@
+{:app/id "kotoba.mangaka.local"
+ :app/name "Mangaka Local Studio"
+ :app/version "0.1.0"
+ :runtime {:kind :kotoba-wasm
+           :surface :kotoba/dom
+           :namespace kotoba.shell.apps.mangaka
+           :start start
+           :window {:width 1180 :height 820 :min-width 880 :min-height 640}}
+ :mangaka/api-base "http://127.0.0.1:8088"
+ :mangaka/contracts
+ {:document :canonical-edn
+  :art-layers [:background :characters :props]
+  :editorial-layers [:komawari :fukidashi :lettering :sfx]
+  :generation [:panel-model :layer-segmentation :genko-compose :visual-score]
+  :actions [:generate-panel :compose-page :review-page :export-genko]}}

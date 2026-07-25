@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+output="${KOTOBA_SHELL_CALENDAR_HELPER_OUTPUT:-$repo_dir/target/kotoba-shell-calendar-macos}"
+mkdir -p "$(dirname "$output")"
+/usr/bin/swiftc -O -framework EventKit "$repo_dir/bin/kotoba-shell-calendar-macos.swift" -o "$output"
+printf 'built: %s\n' "$output"
