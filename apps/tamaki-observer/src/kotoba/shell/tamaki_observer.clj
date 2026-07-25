@@ -53,7 +53,17 @@
                  (remove #(str/starts-with? (:agent.run/id %) "loop-"))
                  (sort-by :agent.run/updated-at >) vec)
       :patches (get kinds :patch/created 0)
-      :integrations (get kinds :patch/integrated 0)
+     :integrations (get kinds :patch/integrated 0)
+      :decisions (->> events
+                      (filter #(= :issue/prioritized (:tamaki.event/kind %)))
+                      (take-last 5)
+                      (mapv :tamaki.event/data))
+      :independent-reviews
+      (count (filter #(= :review/independent (:tamaki.event/kind %)) events))
+      :latest-effect
+      (some->> events
+               (filter #(= :effect/measured (:tamaki.event/kind %)))
+               last :tamaki.event/data)
       :failures (+ (get kinds :run/failed 0)
                    (get kinds :loop/cycle-failed 0))
       :latest-at (reduce max 0 (keep :tamaki.event/at events))})))
@@ -136,8 +146,46 @@
                        (if (seq (:activity state))
                          (mapv #(label :p (truncate % 180)) (:activity state))
                          [(label :p "Waiting for agent tool activity…")])))
+        decision-section
+        (element :section {"class" "liquid-glass__panel"}
+                 (into
+                  [(label :h2 "Issue dynamics")
+                   (label :p
+                          (str "independent reviews "
+                               (:independent-reviews state)
+                               " · latest improved "
+                               (boolean (get-in state
+                                                [:latest-effect
+                                                 :effect/improved?]))))]
+                  (if (seq (:decisions state))
+                    (mapv
+                     (fn [decision]
+                       (label
+                        :p
+                        (str (get-in decision [:issue/selection
+                                              :issue :issue/id])
+                             " · score "
+                             (format "%.3f"
+                                     (double
+                                      (or (get-in decision
+                                                  [:issue/selection :score])
+                                          0)))
+                             " · blockers "
+                             (pr-str
+                              (get-in decision [:issue/selection
+                                                :issue :issue/blockers]))
+                             " · feedback "
+                             (format "%.2f"
+                                     (double
+                                      (or (get-in decision
+                                                  [:issue/dynamics
+                                                   :feedback-pressure])
+                                          0))))))
+                     (:decisions state))
+                    [(label :p "Waiting for an issue ranking decision…")])))
         root (element :main {}
-                      [header metrics activity-section campaign-section run-section])]
+                      [header metrics activity-section decision-section
+                       campaign-section run-section])]
     (finish root)))
 
 (defn start []
