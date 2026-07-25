@@ -36,33 +36,39 @@
     (d/transact!
      topology-db
      (concat
-      (map (fn [repo]
-             (let [stat (get stats (:path repo))]
-               {:repo/path (:path repo) :repo/name (:name repo)
-                :repo/org (:remote repo) :repo/sync (or (:sync repo) "unmanaged")
-                :repo/issues (or (:issues-open stat) 0)
-                :repo/patches (or (:patches-open stat) 0)
-                :repo/wip (or (:wip stat) 0)}))
-           (:repos snapshot))
-      (map (fn [{:keys [from to]}] {:dep/from from :dep/to to})
-           (:dependencies snapshot))
-      (keep (fn [agent]
+      (map-indexed
+       (fn [index repo]
+         (let [stat (get stats (:path repo))]
+           {:db/id (- (inc index))
+            :repo/path (:path repo) :repo/name (:name repo)
+            :repo/org (:remote repo) :repo/sync (or (:sync repo) "unmanaged")
+            :repo/issues (or (:issues-open stat) 0)
+            :repo/patches (or (:patches-open stat) 0)
+            :repo/wip (or (:wip stat) 0)}))
+       (:repos snapshot))
+      (map-indexed
+       (fn [index {:keys [from to]}]
+         {:db/id (- (+ 1000001 index)) :dep/from from :dep/to to})
+       (:dependencies snapshot))
+      (keep-indexed (fn [index agent]
               (let [id (or (:agent.run/id agent) (:id agent))
                     project (or (:agent.run/source-project agent)
                                 (:source-project agent)
                                 (:agent.run/project agent) (:project agent))]
                 (when (and id project)
-                  {:agent/id id :agent/project project
+                  {:db/id (- (+ 2000001 index))
+                   :agent/id id :agent/project project
                    :agent/model (or (:agent.run/model agent) (:model agent) "default")
                    :agent/runner (or (:agent.run/runner agent) (:runner agent) "default")
                    :agent/goal (or (:agent.run/goal agent) (:goal agent) "")
                    :agent/issue (or (:issue agent) "")})))
             (:agents snapshot))
-      (keep (fn [loop]
+      (keep-indexed (fn [index loop]
               (let [id (or (:tamaki.loop/id loop) (:id loop))
                     project (or (:tamaki.loop/project loop) (:project loop))]
                 (when (and id project)
-                  {:loop/id id :loop/project project
+                  {:db/id (- (+ 3000001 index))
+                   :loop/id id :loop/project project
                    :loop/runner (or (:tamaki.loop/runner loop) (:runner loop) "default")
                    :loop/model (or (:tamaki.loop/model loop) (:model loop) "default")
                    :loop/status (label (or (:tamaki.loop/status loop)
