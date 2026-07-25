@@ -31,4 +31,35 @@ export KOTOBA_SHELL_FLOATING=1
 export KOTOBA_SHELL_REFRESH_SECONDS="${KOTOBA_SHELL_REFRESH_SECONDS:-1}"
 export KOTOBA_SHELL_EXTRA_WATCH_ROOTS="$TAMAKI_STATE_DIR"
 
-exec "$shell_dir/bin/kotoba-shell-app-runtime"
+web_dir="$shell_dir/apps/tamaki-observer-web"
+web_dist="$web_dir/dist"
+web_host="$shell_dir/target/kotoba-shell-host-macos-webview"
+data_pid=""
+
+cleanup() {
+  if [[ -n "$data_pid" ]] && kill -0 "$data_pid" 2>/dev/null; then
+    kill "$data_pid" 2>/dev/null || true
+    wait "$data_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ ! -d "$web_dir/node_modules" ]]; then
+  npm --prefix "$web_dir" install
+fi
+npm --prefix "$web_dir" run build
+"$shell_dir/bin/kotoba-shell-build-macos-webview" "$web_host" >/dev/null
+
+mkdir -p "$web_dir/target"
+(
+  cd "$app_dir"
+  exec clojure -M -m kotoba.shell.tamaki-web-data "$web_dist/snapshot.json"
+) >>"$web_dir/target/data.log" 2>&1 &
+data_pid=$!
+
+for _ in {1..50}; do
+  [[ -f "$web_dist/snapshot.json" ]] && break
+  sleep 0.1
+done
+
+"$web_host" "$web_dist"

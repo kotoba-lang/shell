@@ -1,0 +1,7 @@
+/node_modules/
+/.shadow-cljs/
+/.cpcache/
+/target/
+/dist/js/
+/dist/snapshot.json
+/dist/snapshot.json.next

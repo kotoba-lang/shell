@@ -1,2 +1,3 @@
 {:paths ["src"]
- :deps {tamaki/tamaki {:local/root "../../../tamaki"}}}
+ :deps {tamaki/tamaki {:local/root "../../../tamaki"}
+        org.clojure/data.json {:mvn/version "2.5.1"}}}

@@ -1,0 +1,6 @@
+{:paths ["src"]
+ :deps {org.clojure/clojurescript {:mvn/version "1.11.132"}
+        reagent/reagent {:mvn/version "1.2.0"}
+        re-frame/re-frame {:mvn/version "1.4.3"}
+        kotoba/org-threejs {:local/root "../../../org-threejs"}}
+ :aliases {:dev {:extra-deps {thheller/shadow-cljs {:mvn/version "2.28.20"}}}}}
