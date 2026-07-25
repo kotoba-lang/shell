@@ -323,6 +323,21 @@ then runs the selected WebGL/WebGPU smoke script.
 
 ## Relationship
 
+### Tamaki Observatory
+
+`apps/tamaki-observer` is a read-only native projection of Tamaki's durable
+event stream. It shows campaign bounds and status, patch/integration/failure
+counts, and recent AgentRuns. The shell runtime re-renders when
+`.tamaki/events.edn` changes:
+
+```sh
+bin/kotoba-shell-tamaki-observer
+```
+
+Set `TAMAKI_PROJECT_DIR` or `TAMAKI_STATE_DIR` when observing another checkout.
+The observer never controls or mutates the agent loop; authority remains with
+Tamaki and Radicle.
+
 - `kotoba-lang/shell`: authoritative shell adapter, provider catalog, native
   host contract, conformance tests.
 - `kotoba-lang/kotoba`: compiler/runtime/Wasm language repo. It no longer owns

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shell_dir="$(cd "$(dirname "$0")/.." && pwd)"
+app_dir="$shell_dir/apps/tamaki-observer"
+tamaki_dir="${TAMAKI_PROJECT_DIR:-$(cd "$shell_dir/../tamaki" && pwd)}"
+
+export TAMAKI_STATE_DIR="${TAMAKI_STATE_DIR:-$tamaki_dir/.tamaki}"
+export KOTOBA_SHELL_APP_DIR="$app_dir"
+export KOTOBA_SHELL_MANIFEST="$app_dir/app.kotoba.edn"
+export KOTOBA_SHELL_TITLE="Tamaki Observatory"
+export KOTOBA_SHELL_WIDTH="${KOTOBA_SHELL_WIDTH:-820}"
+export KOTOBA_SHELL_HEIGHT="${KOTOBA_SHELL_HEIGHT:-760}"
+export KOTOBA_SHELL_WATCH=1
+export KOTOBA_SHELL_EXTRA_WATCH_ROOTS="$TAMAKI_STATE_DIR"
+
+exec "$shell_dir/bin/kotoba-shell-app-runtime"

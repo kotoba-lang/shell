@@ -1,0 +1,10 @@
+{:app/id "kotoba.shell.tamaki-observer"
+ :app/name "Tamaki Observatory"
+ :app/version "0.1.0"
+ :runtime {:kind :kotoba-wasm
+           :surface :kotoba/dom
+           :namespace kotoba.shell.tamaki-observer
+           :start start
+           :window {:width 820 :height 760
+                    :min-width 640 :min-height 560
+                    :floating true}}}

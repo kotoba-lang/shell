@@ -5,7 +5,34 @@
             [kotoba.shell.connector :as connector]
             [kotoba.shell.experience :as experience]
             [kotoba.shell.sealed-line :as sealed]
+            [kotoba.shell.tamaki-observer :as tamaki-observer]
             [kotoba.shell.launcher :as launcher]))
+
+(deftest tamaki-observer-projects-durable-campaigns
+  (let [campaign {:tamaki.loop/id "loop-1"
+                  :tamaki.loop/status :active
+                  :tamaki.loop/objective "grow safely"
+                  :tamaki.loop/cycles 1
+                  :tamaki.loop/max-cycles 5
+                  :tamaki.loop/failures 0
+                  :tamaki.loop/max-failures 2
+                  :tamaki.loop/updated-at 2}
+        events [{:tamaki.event/run "loop-1"
+                 :tamaki.event/kind :loop/started
+                 :tamaki.event/at 1
+                 :tamaki.event/data {:campaign campaign}}
+                {:tamaki.event/run "loop-1"
+                 :tamaki.event/kind :loop/cycle-started
+                 :tamaki.event/at 2
+                 :tamaki.event/data {:loop/cycle 1}}]
+        state (tamaki-observer/snapshot events)
+        ops (tamaki-observer/surface-ops state)]
+    (is (= 2 (:events state)))
+    (is (= 1 (count (:campaigns state))))
+    (is (some #(= :dom/set-root (first %)) ops))
+    (is (some #(and (= :dom/create-text (first %))
+                    (= "Tamaki Observatory" (nth % 2)))
+              ops))))
 
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))

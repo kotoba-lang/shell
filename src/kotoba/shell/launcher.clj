@@ -1328,6 +1328,7 @@
                     (get-in plan [:window :height]) (conj "--height" (str (get-in plan [:window :height])))
                     (get-in plan [:window :min-width]) (conj "--min-width" (str (get-in plan [:window :min-width])))
                     (get-in plan [:window :min-height]) (conj "--min-height" (str (get-in plan [:window :min-height])))
+                    (true? (get-in plan [:window :floating])) (conj "--floating")
                     (:screenshot plan) (conj "--screenshot" (:screenshot plan))
                     (:smoke? plan) (conj "--smoke"))
         host-run (when (and execute? supported? runtime-valid? ops-valid? binary-ready?)
