@@ -228,10 +228,12 @@ Android expose real toolchain connection points; successful execution requires a
 booted simulator for `xcrun simctl` or a connected Android device/emulator for
 `adb`.
 
-The shell does not require a Tauri-style system WebView. `surface check` records
-`kotoba-lang/browser` as the browser/OS surface engine and `kotoba-lang/dom-gpu`
-(renamed from `wasm-ui`) as the `kotoba:dom` UI substrate. Native hosts provide a display surface,
-input events, lifecycle, and provider capabilities.
+The shell assumes WebKit as its rendering engine on macOS and iOS. Applications
+ship a web bundle and run in WKWebView; ClojureScript, re-frame, WebGL/WebGPU,
+and ordinary web UI libraries are first-class. `kotoba:dom` remains a
+compatibility/input ABI for older surfaces, not a competing default renderer.
+Native hosts provide the WebKit window, lifecycle, custom-scheme bundle
+delivery, diagnostics, and provider capabilities.
 
 `app scaffold` generates minimal macOS, iOS, Android, and Windows native
 project skeletons from the EDN app manifest. The generated projects carry the

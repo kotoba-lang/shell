@@ -199,10 +199,10 @@
                                            "--ops-edn" "{:not :ops}"])]
     (is (:kotoba.cli/ok? check-result))
     (is (= :shell/surface-ready (:kotoba.cli/code check-result)))
-    (is (false? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
-    (is (= "kotoba-lang/browser"
+    (is (true? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
+    (is (= "WebKit"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/browser-engine])))
-    (is (= "kotoba-lang/dom-gpu"
+    (is (= "ClojureScript/WebGL"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/ui-substrate])))
     (is (= :native-surface
            (get-in check-result [:kotoba.cli/data :kotoba.shell/surface-host :kind])))
@@ -1068,7 +1068,7 @@
     (is (= :shell/ui-ready (:kotoba.cli/code result)))
     (is (= "kotoba.shell.ui.v0"
            (get-in result [:kotoba.cli/data :kotoba.shell/ui-schema])))
-    (is (= false (get-in result [:kotoba.cli/data :kotoba.shell/webview-required?])))
+    (is (= true (get-in result [:kotoba.cli/data :kotoba.shell/webview-required?])))
     (is (= 2 (get-in result [:kotoba.cli/data :kotoba.shell/substrate-count])))
     (is (= #{:wasm-ui :browser}
            (set (map :id (get-in result [:kotoba.cli/data :kotoba.shell/ui-rows])))))

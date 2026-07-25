@@ -8,9 +8,15 @@
 </head>
 <body>
   <canvas id="scene"></canvas>
-  <header><h1>Tamaki Observatory</h1><div id="metrics">Connecting…</div></header>
+  <header><h1>Tamaki Observatory</h1><div id="metrics">Connecting…</div>
+    <label>Group
+      <select id="grouping"><option value="org">organization</option>
+        <option value="project">project</option><option value="sync">west sync</option>
+      </select>
+    </label>
+  </header>
   <aside id="inspector"><h2>Workspace</h2><div id="details">Select a repository tile</div></aside>
-  <div id="legend">drag rotate · wheel zoom · click repo<br><span class="live">● active</span>　<span class="sync">● synced</span>　<span class="diff">● west Δ</span></div>
+  <div id="legend">drag rotate · wheel zoom · click repo/agent<br><span class="live">● agent/WIP</span>　<span class="sync">● synced</span>　<span class="diff">● west Δ</span>　<span class="loop">○ loop</span><br>tile height = issue + patch congestion</div>
   <script src="js/main.js"></script>
 </body>
 </html>

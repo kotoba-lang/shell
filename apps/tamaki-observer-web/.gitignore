@@ -5,3 +5,4 @@
 /dist/js/
 /dist/snapshot.json
 /dist/snapshot.json.next
+/dist/topology.edn

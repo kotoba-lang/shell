@@ -1,11 +1,68 @@
 (ns kotoba.shell.tamaki-web-data
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [kotoba.shell.tamaki-observer :as observer]))
+            [kotoba.shell.tamaki-observer :as observer]
+            [kotoba.tamaki.store :as store]))
+
+(def active-statuses #{:queued :leased :running})
+(defn- run-project [run]
+  (or (:agent.run/source-project run) (:agent.run/project run)))
+
+(defn- run-context [events run]
+  (let [receipts (filter #(= (:agent.run/id run) (:tamaki.event/run %)) events)]
+    {:issue (some #(get-in % [:tamaki.event/data :issue/id]) receipts)
+     :loop (some #(get-in % [:tamaki.event/data :loop/id]) receipts)}))
+
+(defn- repo-stats [events runs campaigns]
+  (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)
+        project-of #(some-> (get run-by-id (:tamaki.event/run %)) run-project)]
+    (->> events
+         (group-by project-of)
+         (keep
+          (fn [[project repo-events]]
+            (when project
+              (let [issues (set (keep #(get-in % [:tamaki.event/data :issue/id])
+                                      (filter (comp #{:issue/discovered}
+                                                    :tamaki.event/kind)
+                                              repo-events)))
+                    solved (set (keep #(get-in % [:tamaki.event/data :issue/id])
+                                      (filter (comp #{:patch/integrated}
+                                                    :tamaki.event/kind)
+                                              repo-events)))
+                    patches (count (filter (comp #{:patch/created}
+                                                 :tamaki.event/kind)
+                                           repo-events))
+                    integrated (count (filter (comp #{:patch/integrated}
+                                                    :tamaki.event/kind)
+                                              repo-events))]
+                {:path project
+                 :issues-open (count (remove solved issues))
+                 :patches-open (max 0 (- patches integrated))
+                 :loops (count (filter #(= project (:tamaki.loop/project %))
+                                       campaigns))
+                 :wip (count (filter
+                              #(and (= project (run-project %))
+                                    (active-statuses (:agent.run/status %)))
+                              runs))}))))
+         vec)))
 
 (defn web-snapshot []
   (let [state (observer/snapshot)
-        registry (:registry state)]
+        registry (:registry state)
+        events (store/read-local-events (observer/state-dir))
+        runs (:runs state)
+        campaigns (:campaigns state)
+        agents (->> runs
+                    (filter #(active-statuses (:agent.run/status %)))
+                    (mapv (fn [run]
+                            (merge
+                             (select-keys
+                              run [:agent.run/id :agent.run/status
+                                   :agent.run/model :agent.run/runner
+                                   :agent.run/project :agent.run/source-project
+                                   :agent.run/goal
+                                   :agent.run/parent])
+                             (run-context events run)))))]
     {:observed-at (:observed-at state)
      :counts (select-keys registry [:total :west :github :rad :local])
      :orgs (:orgs registry)
@@ -13,6 +70,15 @@
                                    :local? :sync])
                   (:repos registry))
      :dependencies (:dependencies registry)
+     :agents agents
+     :loops (mapv #(select-keys
+                    % [:tamaki.loop/id :tamaki.loop/status
+                       :tamaki.loop/project :tamaki.loop/objective
+                       :tamaki.loop/model :tamaki.loop/runner
+                       :tamaki.loop/cycles
+                       :tamaki.loop/max-cycles])
+                  campaigns)
+     :repo-stats (repo-stats events runs campaigns)
      :active-repos
      (mapv (fn [{:keys [path issue runs]}]
              {:path path :issue issue
@@ -28,7 +94,12 @@
   (let [target-file (io/file target)
         next-file (io/file (str target ".next"))]
     (.mkdirs (.getParentFile target-file))
-    (spit next-file (json/write-str (web-snapshot)))
+    (let [snapshot (web-snapshot)]
+      (spit next-file (json/write-str snapshot))
+      (spit (io/file (.getParentFile target-file) "topology.edn")
+            (pr-str (select-keys snapshot
+                                 [:repos :dependencies :agents :loops
+                                  :repo-stats]))))
     (java.nio.file.Files/move
      (.toPath next-file) (.toPath target-file)
      (into-array java.nio.file.CopyOption

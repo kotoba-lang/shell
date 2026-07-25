@@ -68,24 +68,20 @@
                          "keychain/read-text"
                          "keychain/write-text"]}})
 
-;; :ui-substrate/:browser-engine は長期目標のアーキテクチャ(kotoba-lang/dom-gpu +
-;; kotoba-lang/browser、ADR-2607081015)を表す。ADR-2607081015 時点でその2 repo は
-;; R0段階・実運用実績ゼロだったため、ADR の "WKWebView 実用優先" 決定に沿って
-;; `app scaffold` が実際に生成する macOS/iOS アプリは今 WKWebView を使う
-;; (:render-substrate で現在の実装を明示 — :ui-substrate の値を偽らない)。
-;; Android/Windows はこのラウンドで未着手のため :render-substrate は付けない。
+;; WebKit is the rendering contract on Apple platforms. kotoba:dom remains an
+;; optional compatibility/input ABI, not an alternative default renderer.
 (def surface-host-specs
   {:macos {:kind :native-surface
            :display "app-window"
-           :ui-substrate "kotoba-lang/dom-gpu"
-           :browser-engine "kotoba-lang/browser"
+           :ui-substrate "ClojureScript/WebGL"
+           :browser-engine "WebKit"
            :render-substrate :wkwebview
            :renderers [:webgl :webgpu :native]
            :input-events [:pointer :keyboard :text :focus :resize]}
    :ios {:kind :native-surface
          :display "ui-window-scene"
-         :ui-substrate "kotoba-lang/dom-gpu"
-         :browser-engine "kotoba-lang/browser"
+         :ui-substrate "ClojureScript/WebGL"
+         :browser-engine "WebKit"
          :render-substrate :wkwebview
          :renderers [:webgpu :native]
          :input-events [:touch :keyboard :text :focus :resize]}
@@ -1810,10 +1806,12 @@
      :kotoba.cli/data (merge
                        (shell-authority-data)
                        {:kotoba.shell/target target
-                        :kotoba.shell/webview-required? false
+                        :kotoba.shell/webview-required? true
                         :kotoba.shell/surface-host (get surface-host-specs target)
-                        :kotoba.shell/ui-substrate "kotoba-lang/dom-gpu"
-                        :kotoba.shell/browser-engine "kotoba-lang/browser"
+                        :kotoba.shell/ui-substrate
+                        (get-in surface-host-specs [target :ui-substrate])
+                        :kotoba.shell/browser-engine
+                        (get-in surface-host-specs [target :browser-engine])
                         :kotoba.shell/abi "kotoba:dom"})}))
 
 (defn surface-commit-result
@@ -1841,7 +1839,7 @@
        :kotoba.cli/data (merge
                          (shell-authority-data)
                          {:kotoba.shell/target target
-                          :kotoba.shell/webview-required? false
+                          :kotoba.shell/webview-required? true
                           :kotoba.shell/surface-host (get surface-host-specs target)
                           :kotoba.shell/ops-count (count ops)
                           :kotoba.shell/ops ops
@@ -3351,7 +3349,7 @@
                         :kotoba.shell/ui-rows rows
                         :kotoba.shell/ready-count (count (filter :ready? rows))
                         :kotoba.shell/substrate-count (count rows)
-                        :kotoba.shell/webview-required? false
+                        :kotoba.shell/webview-required? true
                         :kotoba.shell/audit
                         (audit-record (cond
                                         all-ready? :ui/ready
