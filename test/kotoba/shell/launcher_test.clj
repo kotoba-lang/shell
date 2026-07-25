@@ -31,6 +31,9 @@
     (is (= 1 (count (:campaigns state))))
     (is (some #(= :dom/set-root (first %)) ops))
     (is (some #(and (= :dom/create-text (first %))
+                    (= "Live activity" (nth % 2)))
+              ops))
+    (is (some #(and (= :dom/create-text (first %))
                     (= "Tamaki Observatory" (nth % 2)))
               ops))))
 

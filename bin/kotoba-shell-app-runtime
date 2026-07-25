@@ -7,6 +7,7 @@ manifest="${KOTOBA_SHELL_MANIFEST:-$app_dir/app.kotoba.edn}"
 action_bin="${KOTOBA_SHELL_ACTION_BIN:-}"
 watch_enabled="${KOTOBA_SHELL_WATCH:-0}"
 floating_enabled="${KOTOBA_SHELL_FLOATING:-0}"
+refresh_seconds="${KOTOBA_SHELL_REFRESH_SECONDS:-0}"
 shell_cli="$shell_dir/bin/kotoba-shell"
 host="$shell_dir/target/kotoba-shell-host-macos-window"
 stamp="$(mktemp -t kotoba-shell-runtime.XXXXXX)"
@@ -79,6 +80,7 @@ launch() {
 mkdir -p "$(dirname "$log")"
 : >"$log"
 launch
+last_refresh=$SECONDS
 while kill -0 "$child" 2>/dev/null; do
   if [[ "$watch_enabled" != "1" ]]; then sleep 0.5; continue; fi
   renderer_change="$(find "$shell_dir/bin/kotoba-shell-host-macos-window.swift" -newer "$stamp" -print -quit 2>/dev/null || true)"
@@ -92,6 +94,10 @@ while kill -0 "$child" 2>/dev/null; do
     commit_surface
     touch "$stamp"
     printf 'P2 commit: %s\n' "$app_change"
+  elif [[ "$refresh_seconds" -gt 0 ]] && (( SECONDS - last_refresh >= refresh_seconds )); then
+    commit_surface
+    touch "$stamp"
+    last_refresh=$SECONDS
   fi
   sleep 0.5
 done

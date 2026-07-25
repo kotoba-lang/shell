@@ -1,6 +1,7 @@
 (ns kotoba.shell.tamaki-observer
   "Read-only native projection of Tamaki's durable event stream."
   (:require [clojure.string :as str]
+            [clojure.java.io :as io]
             [kotoba.tamaki.loop :as agent-loop]
             [kotoba.tamaki.model :as model]
             [kotoba.tamaki.store :as store]))
@@ -8,8 +9,38 @@
 (defn state-dir []
   (or (System/getenv "TAMAKI_STATE_DIR") "../../../tamaki/.tamaki"))
 
+(defn- newest-loop-log []
+  (->> (or (.listFiles (io/file (state-dir))) (make-array java.io.File 0))
+       (filter #(re-matches #"loop-.*\.log" (.getName %)))
+       (sort-by #(.lastModified %) >)
+       first))
+
+(defn- tail-text [file max-bytes]
+  (if-not file
+    ""
+    (with-open [raf (java.io.RandomAccessFile. file "r")]
+      (let [length (.length raf)
+            start (max 0 (- length max-bytes))
+            bytes (byte-array (- length start))]
+        (.seek raf start)
+        (.readFully raf bytes)
+        (String. bytes java.nio.charset.StandardCharsets/UTF_8)))))
+
+(defn activity-lines []
+  (->> (str/split-lines (tail-text (newest-loop-log) 65536))
+       (filter #(or (str/starts-with? % "[tool:")
+                    (str/starts-with? % "-- ")
+                    (str/starts-with? % "{:patch/id")
+                    (str/starts-with? % "{:loop/id")
+                    (str/includes? % "cycle failed")))
+       (map #(str/replace % #"\s+" " "))
+       (take-last 12)
+       vec))
+
 (defn snapshot
-  ([] (snapshot (store/read-local-events (state-dir))))
+  ([] (assoc (snapshot (store/read-local-events (state-dir)))
+             :activity (activity-lines)
+             :observed-at (System/currentTimeMillis)))
   ([events]
    (let [campaigns (agent-loop/campaigns events)
          runs (model/fold-events events)
@@ -96,7 +127,17 @@
                        (if (seq (:runs state))
                          (mapv run-row (take 8 (:runs state)))
                          [(label :p "No AgentRun receipts yet.")])))
-        root (element :main {} [header metrics campaign-section run-section])]
+        activity-section
+        (element :section {"class" "liquid-glass__panel"}
+                 (into [(label :h2 "Live activity")
+                        (label :p (str "updated "
+                                       (java.time.Instant/ofEpochMilli
+                                        (or (:observed-at state) 0))))]
+                       (if (seq (:activity state))
+                         (mapv #(label :p (truncate % 180)) (:activity state))
+                         [(label :p "Waiting for agent tool activity…")])))
+        root (element :main {}
+                      [header metrics activity-section campaign-section run-section])]
     (finish root)))
 
 (defn start []
