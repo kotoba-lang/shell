@@ -13,6 +13,7 @@
    :agent/id {:db/unique :db.unique/identity}
    :loop/id {:db/unique :db.unique/identity}})
 (defonce topology-db (d/create-conn topology-schema))
+(defonce snapshot-repos (atom []))
 
 (defn label [value fallback]
   (cond
@@ -33,6 +34,12 @@
 (defn index-datoms! [snapshot]
   (d/reset-conn! topology-db (d/empty-db topology-schema))
   (let [stats (into {} (map (juxt :path identity)) (:repo-stats snapshot))]
+    (reset! snapshot-repos
+            (mapv (fn [repo]
+                    (merge repo
+                           (select-keys (get stats (:path repo))
+                                        [:issues-open :patches-open :wip])))
+                  (:repos snapshot)))
     (d/transact!
      topology-db
      (concat
@@ -86,6 +93,12 @@
        (mapv (fn [[path name org sync issues patches wip]]
                {:path path :name name :remote org :sync sync
                 :issues-open issues :patches-open patches :wip wip}))))
+
+(defn visible-repos []
+  (let [queried (queried-repos)]
+    (if (= (count queried) (count @snapshot-repos))
+      queried
+      @snapshot-repos)))
 
 (defn queried-agents []
   (mapv (fn [[id project model runner issue goal]]
@@ -170,7 +183,7 @@
 (defn rebuild-scene! [snapshot group-mode]
   (when-let [{:keys [repo-root]} @runtime]
     (clear! repo-root)
-    (let [repos (queried-repos)
+    (let [repos (visible-repos)
           ranks (dependency-ranks (:dependencies snapshot))
           grouped (group-by #(group-key group-mode %) repos)
           groups (sort (keys grouped))
@@ -288,7 +301,7 @@
         stat (some #(when (= path (:path %)) %) (:repo-stats snapshot))]
     (set! (.-value grouping) (label group-mode "org"))
     (set! (.-textContent metrics)
-          (str (count (queried-repos)) "/" total " repo tiles · "
+          (str (count (visible-repos)) "/" total " repo tiles · "
                (count (:agents snapshot)) " agents · "
                (count (:loops snapshot)) " loops · WEST " west
                " · GitHub " github " · Radicle " rad))
