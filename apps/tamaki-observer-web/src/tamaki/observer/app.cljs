@@ -625,12 +625,25 @@
                                  spawn "</span>"))
                           "</div>")))))
     (let [{:keys [stocks flows bottleneck failure-pressure backlog-delta
-                  throughput]} (:system-dynamics snapshot)]
+                  throughput business-status business-control-score
+                  business-kpis]} (:system-dynamics snapshot)]
       (set! (.-innerHTML dynamics-panel)
             (str "<div class=\"dynamics-heading\"><b>System dynamics</b>"
                  "<span>1h flow · bottleneck " bottleneck
                  " · failure " (.toFixed (* 100 (or failure-pressure 0)) 0)
                  "%</span></div>"
+                 "<div class=\"business-control\"><b>Revenue control</b>"
+                 (if (= business-status "observed")
+                   (str "<span>score "
+                        (.toFixed (* 100 (or business-control-score 0)) 0)
+                        "% · MRR ¥" (or (:mrr-jpy business-kpis) 0)
+                        " · risk-adjusted ΔMRR ¥"
+                        (or (:risk-adjusted-delta-mrr-jpy business-kpis) 0)
+                        " · experiments "
+                        (.toFixed (or (:experiments-per-week business-kpis) 0) 1)
+                        "/week</span>")
+                   "<span class=\"pressure\">KPI observation required</span>")
+                 "</div>"
                  "<div class=\"stock-row\">"
                  (apply str
                         (for [{:keys [id label value unit color]} stocks]

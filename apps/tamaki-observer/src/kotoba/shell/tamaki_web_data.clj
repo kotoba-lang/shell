@@ -5,6 +5,7 @@
             [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]
+            [kotoba.tamaki.business :as business]
             [kotoba.tamaki.store :as store]))
 
 (def active-statuses #{:queued :leased :running})
@@ -82,6 +83,26 @@
 
 (def dynamics-window-ms 3600000)
 
+(defn business-targets []
+  (let [path (io/file (observer/workspace-root)
+                      "orgs" "kotoba-lang" "tamaki"
+                      "actors" "revenue-targets.edn")]
+    (if (.isFile path) (business/read-targets (.getAbsolutePath path)) {})))
+
+(defn- prefixed-business-dynamics [events]
+  (let [dynamics (business/stock-flow events (business-targets))
+        prefix #(if (= "environment" %) % (str "business-" %))]
+    (-> dynamics
+        (update :stocks
+                #(mapv (fn [stock] (update stock :id prefix)) %))
+        (update :flows
+                #(mapv (fn [flow]
+                         (-> flow
+                             (update :id prefix)
+                             (update :from prefix)
+                             (update :to prefix)))
+                       %)))))
+
 (defn system-dynamics
   "Project durable events into observable stocks and hourly flows.
   The model intentionally uses only persisted facts, so the UI never invents
@@ -128,14 +149,24 @@
                 {:id "integrated" :label "Integrated value"
                  :value (count integrated-patches)
                  :unit "patches" :color "#d06cff"}]
-        bottleneck (apply max-key :value (butlast stocks))]
+        bottleneck (apply max-key :value (butlast stocks))
+        business-dynamics (prefixed-business-dynamics events)
+        business-observed? (= :observed (:status business-dynamics))]
     {:window-ms dynamics-window-ms
-     :stocks stocks
-     :flows flows
+     :stocks (cond-> stocks
+               business-observed?
+               (into (:stocks business-dynamics)))
+     :flows (cond-> flows
+              business-observed?
+              (into (:flows business-dynamics)))
      :bottleneck (:id bottleneck)
      :failure-pressure (if (pos? attempts) (/ failures (double attempts)) 0.0)
      :backlog-delta (- (rate :issue/discovered) (rate :patch/integrated))
      :throughput (rate :patch/integrated)
+     :business-status (:status business-dynamics)
+     :business-control-score (:control-score business-dynamics)
+     :business-kpis (:kpis business-dynamics)
+     :business-targets (:targets business-dynamics)
      :observed-at observed-at}))
 
 (defn- repo-stats [events runs campaigns]

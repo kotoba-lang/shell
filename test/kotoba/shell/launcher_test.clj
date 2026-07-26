@@ -88,6 +88,25 @@
     (is (= 1 (:backlog-delta dynamics)))
     (is (= 1.0 (:failure-pressure dynamics)))))
 
+(deftest tamaki-system-dynamics-adds-observed-revenue-stocks
+  (let [events [{:tamaki.event/kind :business/observed
+                 :tamaki.event/at 1
+                 :tamaki.event/data
+                 {:observation
+                  {:period-days 7
+                   :stocks {:traffic 100 :qualified-leads 10
+                            :proposals 3 :active-customers 2
+                            :mrr-jpy 50000}
+                   :flows {:new-qualified-leads 10 :new-proposals 3
+                           :new-wins 2 :delta-mrr-jpy 20000}
+                   :rates {:confidence 0.8}}}}]
+        dynamics (tamaki-web-data/system-dynamics events [] 2)
+        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))]
+    (is (= :observed (:business-status dynamics)))
+    (is (= 50000.0 (get stocks "business-mrr")))
+    (is (= 16000.0
+           (get-in dynamics [:business-kpis :risk-adjusted-delta-mrr-jpy])))))
+
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
   (is (= ["tool" "--json"]

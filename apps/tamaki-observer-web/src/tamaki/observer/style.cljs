@@ -95,8 +95,14 @@
        [".dynamics-heading b" {:font-size 13}]
        [".dynamics-heading span" {:color "#91859f"
                                   :font "10px ui-monospace, monospace"}]
+       [".business-control" {:display :flex :justify-content :space-between
+                             :gap 10 :margin-top 5
+                             :font "10px ui-monospace, monospace"}]
+       [".business-control b" {:color "#73f4a1"}]
+       [".business-control span" {:color "#bfb4cd"}]
+       [".business-control .pressure" {:color "#ffae52"}]
        [".stock-row" {:display :grid
-                      :grid-template-columns "repeat(4, 1fr)"
+                      :grid-template-columns "repeat(auto-fit, minmax(92px, 1fr))"
                       :gap 7 :margin-top 8}]
        [".stock-card" {:position :relative :padding "6px 8px"
                        :border "1px solid color-mix(in srgb, var(--stock) 55%, transparent)"
