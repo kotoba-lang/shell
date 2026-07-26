@@ -13,7 +13,7 @@
 
 (def active-statuses #{:queued :leased :running})
 (defonce git-tree-cache (atom {}))
-(declare run-project)
+(declare run-project workspace-path)
 
 (defn- git-lines [directory & args]
   (let [{:keys [exit out]} (apply shell/sh "git" "-C"
@@ -78,10 +78,14 @@
 
 (defn- active-git-trees [registry runs]
   (let [workspace (observer/workspace-root)
-        registry-paths (set (map :path (:repos registry)))
         projects (->> (concat (map run-project runs)
                               (map :path (:active-repos registry)))
-                      (filter registry-paths)
+                      (map (fn [project]
+                             (let [file (io/file project)]
+                               (if (.isAbsolute file)
+                                 (workspace-path project)
+                                 project))))
+                      (filter #(-> (io/file workspace %) .isDirectory))
                       distinct
                       (take 8))]
     (->> projects
@@ -89,7 +93,8 @@
          vec)))
 
 (defn- workspace-path [path]
-  (let [root (some-> (System/getenv "KOTOBA_WORKSPACE_ROOT")
+  (let [root (some-> (or (System/getenv "KOTOBA_WORKSPACE_ROOT")
+                         (observer/workspace-root))
                      io/file .getAbsolutePath)
         absolute (some-> path io/file .getAbsolutePath)]
     (if (and root absolute (.startsWith absolute (str root java.io.File/separator)))
