@@ -950,6 +950,25 @@
                  (or text issue patch run "workspace"))]])
         [:div.activity-empty "この agent の activity を待機中…"])]]))
 
+(defn result-panel []
+  (let [snapshot @(rf/subscribe [:snapshot])
+        results (take-last 3 (:results snapshot))]
+    [:div.result-panel
+     (if (seq results)
+       (for [result (reverse results)]
+         ^{:key (:id result)}
+         [:div.result-chain
+          [:small (str (:project result) " · " (:issue result))]
+          [:div
+           (interpose
+            [:span.result-arrow "→"]
+            (for [node (:nodes result)]
+              ^{:key (:id node)}
+              [:span {:class (str "result-node " (name (:type node)))
+                      :title (str (:value node))}
+               (str/upper-case (name (:type node))) ]))]])
+       [:small "source / PR resultを待機中…"])]))
+
 (defn shell-view []
   [:div {:class style/app}
    [:canvas#scene {:class style/scene}]
@@ -975,6 +994,8 @@
    [:aside#inspector {:class (str style/glass " " style/inspector)}
     [:h2 "Workspace"]
     [:div#details.details "Select a repository tile"]
+    [:h2 "Source / PR results"]
+    [result-panel]
     [:h2.activity-title "Live activity"]
     [activity-panel]]
    [:section#system-dynamics

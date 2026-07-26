@@ -68,6 +68,23 @@
        ["h2" {:font-size 15 :margin "0 0 10px"}]
        [".details" {:color "#c8bfd5" :line-height 1.55
                     :word-break :break-word}]
+       [".result-panel" {:display :grid :gap 7 :margin "0 0 18px"}]
+       [".result-chain" {:padding 7 :border "1px solid #ffffff14"
+                         :border-radius 8 :background "#08050e99"}]
+       [".result-chain small" {:display :block :color "#8f849c"
+                               :overflow :hidden :text-overflow :ellipsis
+                               :white-space :nowrap :margin-bottom 5}]
+       [".result-chain div" {:display :flex :align-items :center
+                             :gap 3 :overflow-x :auto}]
+       [".result-node" {:flex "0 0 auto" :padding "2px 5px"
+                        :border-radius 5 :font "8px ui-monospace, monospace"
+                        :color "#eee" :background "#241733"}]
+       [".result-node.source" {:color "#63dfff"}]
+       [".result-node.radicle" {:color "#dd86ff"}]
+       [".result-node.github" {:color "#fff"}]
+       [".result-node.review" {:color "#70ffac"}]
+       [".result-node.merge" {:color "#5aa9ff"}]
+       [".result-arrow" {:color "#5e536b"}]
        [".activity-title" {:margin-top 20}]
        [".activity-filters" {:display :flex :gap 5 :overflow-x :auto
                              :padding-bottom 8 :margin-bottom 2}]
