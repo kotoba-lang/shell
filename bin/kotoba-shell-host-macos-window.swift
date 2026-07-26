@@ -30,6 +30,7 @@ final class KotobaActionTarget: NSObject {
 }
 
 let actionTarget = KotobaActionTarget()
+let floatingWindow = CommandLine.arguments.contains("--floating")
 
 func emit(_ value: [String: Any]) {
   guard let data = try? JSONSerialization.data(withJSONObject: value),
@@ -295,7 +296,7 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
   }
   func windowWillClose(_ notification: Notification) {
     print("{\"event\":\"lifecycle/terminate\"}"); fflush(stdout)
-    if smoke { NSApp.stop(nil) }
+    if smoke { NSApp.terminate(nil) }
   }
 }
 
@@ -314,6 +315,11 @@ let delegate = KotobaWindowDelegate(smoke: smoke)
 retainedWindowDelegate = delegate
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
 window.title = title
+if floatingWindow {
+  window.level = .floating
+  window.collectionBehavior.insert(.canJoinAllSpaces)
+  window.collectionBehavior.insert(.fullScreenAuxiliary)
+}
 window.minSize = NSSize(width: minWidth, height: minHeight)
 window.level = .floating
 window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]

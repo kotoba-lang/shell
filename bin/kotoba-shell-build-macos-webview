@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shell_dir="$(cd "$(dirname "$0")/.." && pwd)"
+output="${1:-$shell_dir/target/kotoba-shell-host-macos-webview}"
+mkdir -p "$(dirname "$output")"
+swiftc "$shell_dir/bin/kotoba-shell-host-macos-webview.swift" \
+  -framework AppKit -framework WebKit -o "$output"
+echo "built: $output"

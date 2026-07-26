@@ -7,6 +7,8 @@ manifest="${KOTOBA_SHELL_MANIFEST:-$app_dir/app.kotoba.edn}"
 action_bin="${KOTOBA_SHELL_ACTION_BIN:-}"
 watch_enabled="${KOTOBA_SHELL_WATCH:-0}"
 action_refresh_seconds="${KOTOBA_SHELL_ACTION_REFRESH_SECONDS:-0.5}"
+floating_enabled="${KOTOBA_SHELL_FLOATING:-0}"
+refresh_seconds="${KOTOBA_SHELL_REFRESH_SECONDS:-0}"
 shell_cli="$shell_dir/bin/kotoba-shell"
 host="$shell_dir/target/kotoba-shell-host-macos-window"
 stamp="$(mktemp -t kotoba-shell-runtime.XXXXXX)"
@@ -65,10 +67,12 @@ launch() {
   [[ -p "$event_pipe" ]] || mkfifo "$event_pipe"
   exec 3<>"$control_pipe"
   handle_events <"$event_pipe" & reader=$!
-  "$host" --title "${KOTOBA_SHELL_TITLE:-Kotoba}" \
-    --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}" \
-    --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}" \
-    --ops-json "$(<"$ops")" <"$control_pipe" >"$event_pipe" 2>>"$log" &
+  host_args=(--title "${KOTOBA_SHELL_TITLE:-Kotoba}"
+    --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}"
+    --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}"
+    --ops-json "$(<"$ops")")
+  [[ "$floating_enabled" == "1" ]] && host_args+=(--floating)
+  "$host" "${host_args[@]}" <"$control_pipe" >"$event_pipe" 2>>"$log" &
   child=$!
   touch "$stamp"
   printf 'kotoba shell runtime: pid=%s watch=%s\n' "$child" "$watch_enabled"
@@ -77,6 +81,7 @@ launch() {
 mkdir -p "$(dirname "$log")"
 : >"$log"
 launch
+last_refresh=$SECONDS
 while kill -0 "$child" 2>/dev/null; do
   if [[ "$watch_enabled" != "1" ]]; then sleep 0.5; continue; fi
   renderer_change="$(find "$shell_dir/bin/kotoba-shell-host-macos-window.swift" -newer "$stamp" -print -quit 2>/dev/null || true)"
@@ -90,6 +95,10 @@ while kill -0 "$child" 2>/dev/null; do
     commit_surface
     touch "$stamp"
     printf 'P2 commit: %s\n' "$app_change"
+  elif [[ "$refresh_seconds" -gt 0 ]] && (( SECONDS - last_refresh >= refresh_seconds )); then
+    commit_surface
+    touch "$stamp"
+    last_refresh=$SECONDS
   fi
   sleep 0.5
 done
