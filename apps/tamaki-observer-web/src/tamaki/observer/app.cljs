@@ -1330,7 +1330,7 @@
      [:div#activity
       (if (seq visible)
         (for [{:keys [id at kind run issue patch text stream] :as event}
-              (take 20 visible)]
+              (take 8 visible)]
           ^{:key (or id (str run "-" at "-" kind))}
           [:div.event
            [:time (.toLocaleTimeString (js/Date. at))]
@@ -1344,7 +1344,7 @@
 
 (defn result-panel []
   (let [snapshot @(rf/subscribe [:snapshot])
-        results (take-last 3 (:results snapshot))]
+        results (take-last 2 (:results snapshot))]
     [:div.result-panel
      (if (seq results)
        (for [result (reverse results)]
