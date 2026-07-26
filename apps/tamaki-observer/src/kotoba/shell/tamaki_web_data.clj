@@ -63,23 +63,26 @@
         dir (io/file root "actors")]
     (->> (or (.listFiles dir) (make-array java.io.File 0))
          (filter #(and (.isFile %) (.endsWith (.getName %) ".edn")))
-         (mapv (fn [file]
-                 (let [spec (actor/read-spec (.getAbsolutePath file))
-                       plan (actor/reconcile-plan spec runs)]
-                   {:id (str (:actor/id spec))
-                    :type (str (:actor/type spec))
-                    :project (workspace-path (:actor/project spec))
-                    :objective (:actor/objective spec)
-                    :desired (:desired plan)
-                    :running (:running plan)
-                    :queued (:queued plan)
-                    :blocked (:blocked plan)
-                    :spawn (:spawn plan)
-                    :hil-policy
-                    (into {}
-                          (map (fn [[gate decision]]
-                                 [(name gate) (name decision)]))
-                          (:actor/hil-policy spec))}))))))
+         (keep (fn [file]
+                 (let [value (edn/read-string (slurp file))]
+                   (when (:actor/id value)
+                     (let [spec (actor/validate-spec value)
+                           plan (actor/reconcile-plan spec runs)]
+                       {:id (str (:actor/id spec))
+                        :type (str (:actor/type spec))
+                        :project (workspace-path (:actor/project spec))
+                        :objective (:actor/objective spec)
+                        :desired (:desired plan)
+                        :running (:running plan)
+                        :queued (:queued plan)
+                        :blocked (:blocked plan)
+                        :spawn (:spawn plan)
+                        :hil-policy
+                        (into {}
+                              (map (fn [[gate decision]]
+                                     [(name gate) (name decision)]))
+                              (:actor/hil-policy spec))}))))
+               ))))
 
 (def dynamics-window-ms 3600000)
 
