@@ -31,6 +31,8 @@ export KOTOBA_SHELL_FLOATING=1
 export KOTOBA_SHELL_REFRESH_SECONDS="${KOTOBA_SHELL_REFRESH_SECONDS:-1}"
 export KOTOBA_SHELL_EXTRA_WATCH_ROOTS="$TAMAKI_STATE_DIR"
 export TAMAKI_VISUAL_SNAPSHOT_PATH="${TAMAKI_VISUAL_SNAPSHOT_PATH:-$TAMAKI_STATE_DIR/visual/live.png}"
+export TAMAKI_CLI_PATH="${TAMAKI_CLI_PATH:-$tamaki_dir/bin/tamaki}"
+export TAMAKI_VOICE_PROJECT="${TAMAKI_VOICE_PROJECT:-$tamaki_dir}"
 
 web_dir="$shell_dir/apps/tamaki-observer-web"
 web_dist="$web_dir/dist"
@@ -48,7 +50,29 @@ trap cleanup EXIT INT TERM
 if [[ ! -d "$web_dir/node_modules" ]]; then
   npm --prefix "$web_dir" install
 fi
-npm --prefix "$web_dir" run build
+if [[ "${KOTOBA_SHELL_WATCH:-0}" == "1" ]]; then
+  mkdir -p "$web_dir/target"
+  shadow_pid_file="$web_dir/target/shadow-watch.pid"
+  shadow_pid="$(command cat "$shadow_pid_file" 2>/dev/null || true)"
+  if [[ -z "$shadow_pid" ]] || ! kill -0 "$shadow_pid" 2>/dev/null ||
+     ! ps -p "$shadow_pid" -o command= | rg -q "shadow-cljs watch app"; then
+    (
+      cd "$web_dir"
+      nohup npm run watch >>target/shadow-watch.log 2>&1 &
+      echo "$!" >target/shadow-watch.pid
+    )
+  fi
+  # A previous release remains immediately bootable. The watch build updates
+  # it in place and shadow-cljs pushes after-load into the live WKWebView.
+  if [[ ! -f "$web_dist/js/main.js" || ! -f "$web_dist/style.css" ]]; then
+    for _ in {1..300}; do
+      [[ -f "$web_dist/js/main.js" && -f "$web_dist/style.css" ]] && break
+      sleep 0.1
+    done
+  fi
+else
+  npm --prefix "$web_dir" run build
+fi
 "$shell_dir/bin/kotoba-shell-build-macos-webview" "$web_host" >/dev/null
 
 mkdir -p "$web_dir/target"

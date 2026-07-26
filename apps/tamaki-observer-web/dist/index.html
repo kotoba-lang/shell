@@ -7,19 +7,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <canvas id="scene"></canvas>
-  <header><h1>Tamaki Observatory</h1><div id="metrics">Connecting…</div>
-    <label>Group
-      <select id="grouping"><option value="org">organization</option>
-        <option value="project">project</option><option value="sync">west sync</option>
-      </select>
-    </label>
-    <div id="model-usage"></div>
-  </header>
-  <aside id="inspector"><h2>Workspace</h2><div id="details">Select a repository tile</div>
-    <h2 class="activity-title">Live activity</h2><div id="activity"></div></aside>
-  <section id="system-dynamics"><b>System dynamics</b><span>Connecting…</span></section>
-  <div id="legend">drag rotate · wheel zoom · click repo/agent<br><span class="live">● agent/WIP</span>　<span class="sync">● synced</span>　<span class="diff">● west Δ</span>　<span class="loop">○ loop</span><br>tile height = issue + patch congestion</div>
+  <div id="app"></div>
   <script src="js/main.js"></script>
 </body>
 </html>

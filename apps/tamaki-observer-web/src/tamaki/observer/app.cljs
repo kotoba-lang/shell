@@ -4,6 +4,8 @@
             [clojure.string :as str]
             [datascript.core :as d]
             [re-frame.core :as rf]
+            [reagent.dom :as rdom]
+            [tamaki.observer.style :as style]
             [org-threejs.core :as three]))
 
 (defonce runtime (atom nil))
@@ -67,6 +69,8 @@
                    :agent/id id :agent/project project
                    :agent/model (or (:agent.run/model agent) (:model agent) "default")
                    :agent/runner (or (:agent.run/runner agent) (:runner agent) "default")
+                   :agent/status (label (or (:agent.run/status agent)
+                                            (:status agent)) "unknown")
                    :agent/goal (or (:agent.run/goal agent) (:goal agent) "")
                    :agent/issue (or (:issue agent) "")})))
             (:agents snapshot))
@@ -101,12 +105,14 @@
       @snapshot-repos)))
 
 (defn queried-agents []
-  (mapv (fn [[id project model runner issue goal]]
+  (mapv (fn [[id project model runner status issue goal]]
           {:agent.run/id id :agent.run/project project :agent.run/model model
-           :agent.run/runner runner :agent.run/goal goal :issue issue})
-        (d/q '[:find ?id ?project ?model ?runner ?issue ?goal
+           :agent.run/runner runner :agent.run/status status
+           :agent.run/goal goal :issue issue})
+        (d/q '[:find ?id ?project ?model ?runner ?status ?issue ?goal
                :where [?e :agent/id ?id] [?e :agent/project ?project]
                [?e :agent/model ?model] [?e :agent/runner ?runner]
+               [?e :agent/status ?status]
                [?e :agent/issue ?issue] [?e :agent/goal ?goal]]
              @topology-db)))
 
@@ -324,6 +330,90 @@
       (.add root title))
     (swap! runtime assoc :flow-particles @particles)))
 
+(def runner-style
+  {"codex" {:body 0x27d8ff :accent 0xc6f7ff :head :visor}
+   "claude" {:body 0xff9b52 :accent 0xffe1b7 :head :antenna}
+   "claude-zai" {:body 0xa875ff :accent 0xe2d2ff :head :crown}
+   "grok" {:body 0xff4f72 :accent 0xffc2cf :head :visor}})
+
+(defn agent-runner [agent]
+  (let [runner (:agent.run/runner agent)
+        model (:agent.run/model agent)]
+    (if (and runner (not= runner "default"))
+      runner
+      (or (some-> model (str/split #":") first not-empty) "agent"))))
+
+(defn character-part [geometry color emissive]
+  (three/mesh
+   geometry
+   (three/standard-material
+    {:color color :emissive emissive :metallic 0.28 :roughness 0.34})))
+
+(defn make-agent-character [agent]
+  (let [runner (agent-runner agent)
+        {:keys [body accent head]} (get runner-style runner
+                                        {:body 0x35ff8a
+                                         :accent 0xd5ffe3 :head :visor})
+        actor (three/group)
+        torso (character-part (THREE/CapsuleGeometry. 0.32 0.55 5 10)
+                              body 0.65)
+        face (character-part (THREE/SphereGeometry. 0.34 16 12)
+                             accent 0.55)
+        visor (character-part (THREE/BoxGeometry. 0.48 0.16 0.14)
+                              0x101525 1.2)
+        left-arm (character-part (THREE/CapsuleGeometry. 0.09 0.46 4 8)
+                                 body 0.45)
+        right-arm (character-part (THREE/CapsuleGeometry. 0.09 0.46 4 8)
+                                  body 0.45)
+        left-leg (character-part (THREE/CapsuleGeometry. 0.11 0.42 4 8)
+                                 0x293145 0.25)
+        right-leg (character-part (THREE/CapsuleGeometry. 0.11 0.42 4 8)
+                                  0x293145 0.25)
+        core (character-part (THREE/SphereGeometry. 0.11 10 8)
+                             accent 1.8)
+        beacon (THREE/Mesh.
+                (THREE/TorusGeometry. 0.52 0.035 8 28)
+                (THREE/MeshBasicMaterial.
+                 #js {:color body :transparent true :opacity 0.72}))
+        clickable (clj->js agent)]
+    (three/set-position! torso 0 0.88 0)
+    (three/set-position! face 0 1.55 0)
+    (three/set-position! visor 0 1.58 0.29)
+    (three/set-position! left-arm -0.42 0.9 0)
+    (three/set-position! right-arm 0.42 0.9 0)
+    (three/set-position! left-leg -0.18 0.28 0)
+    (three/set-position! right-leg 0.18 0.28 0)
+    (three/set-position! core 0 0.92 0.31)
+    (three/set-rotation-x! beacon (/ js/Math.PI 2))
+    (three/set-position! beacon 0 0.06 0)
+    (doseq [part [torso face visor left-arm right-arm left-leg right-leg core
+                  beacon]]
+      (aset (.-userData ^js part) "repo" clickable)
+      (.add actor part))
+    (when (contains? #{:antenna :crown} head)
+      (let [stem (character-part
+                  (THREE/CylinderGeometry. 0.025 0.025 0.35 8)
+                  body 0.8)
+            tip (character-part
+                 (if (= head :crown)
+                   (THREE/OctahedronGeometry. 0.13)
+                   (THREE/SphereGeometry. 0.1 10 8))
+                 accent 1.8)]
+        (three/set-position! stem 0 1.95 0)
+        (three/set-position! tip 0 2.16 0)
+        (aset (.-userData ^js stem) "repo" clickable)
+        (aset (.-userData ^js tip) "repo" clickable)
+        (.add actor stem)
+        (.add actor tip)))
+    (let [nameplate (text-sprite
+                     (str runner " · " (:agent.run/model agent))
+                     (str "#" (.toString body 16)))]
+      (three/set-scale! nameplate 3.3 0.78 1)
+      (three/set-position! nameplate 0 2.75 0)
+      (.add actor nameplate))
+    {:actor actor :head face :left-arm left-arm :right-arm right-arm
+     :left-leg left-leg :right-leg right-leg :beacon beacon}))
+
 (defn rebuild-scene! [snapshot group-mode]
   (when-let [{:keys [repo-root]} @runtime]
     (clear! repo-root)
@@ -404,25 +494,53 @@
       (add-dependency-lines! repo-root @positions (:dependencies snapshot))
       (add-project-topologies! repo-root @positions (:projects snapshot))
       (add-system-dynamics! repo-root (:system-dynamics snapshot))
-      (doseq [[agent-index agent] (map-indexed vector (queried-agents))
+      (let [actor-animations (atom [])]
+       (doseq [[agent-index agent] (map-indexed vector (queried-agents))
               :let [position (get @positions (:agent.run/project agent))]
               :when position]
-        (let [y (+ (:height position) 0.7 (* (mod agent-index 3) 0.35))
-              node (three/mesh (three/sphere-geometry)
-                               (material :active))
-              line-geometry (doto (THREE/BufferGeometry.)
-                              (.setFromPoints
-                               #js [(THREE/Vector3. (:x position)
-                                                   (:height position) (:z position))
-                                    (THREE/Vector3. (:x position) y (:z position))]))
-              line (THREE/Line. line-geometry
-                                (THREE/LineBasicMaterial.
-                                 #js {:color 0x35ff8a}))]
-          (three/set-scale! node 0.48 0.48 0.48)
-          (three/set-position! node (:x position) y (:z position))
-          (set! (.. node -userData -repo) (clj->js agent))
-          (.add repo-root line)
-          (.add repo-root node)))
+        (let [{:keys [actor] :as character} (make-agent-character agent)
+              phase (* agent-index 2.399)
+              radius (+ 1.35 (* 0.35 (mod agent-index 3)))
+              ;; Actors live on a readable central air-deck; the beam retains
+              ;; their exact repo ownership even when that repo is off-screen.
+              base (THREE/Vector3. (+ -11 (* 4.8 (mod agent-index 4)))
+                                   (+ 8.0 (* 2.5 (quot agent-index 4)))
+                                   -2.0)
+              style (get runner-style (agent-runner agent)
+                         {:body 0x35ff8a})
+              orbit (THREE/Mesh.
+                     (THREE/TorusGeometry. radius 0.035 8 48)
+                     (THREE/MeshBasicMaterial.
+                      #js {:color (:body style) :transparent true
+                           :opacity 0.5}))
+              beam-geometry
+              (doto (THREE/BufferGeometry.)
+                (.setFromPoints
+                 #js [(THREE/Vector3. (:x position)
+                                     (:height position) (:z position))
+                      (THREE/Vector3. (.-x base) (.-y base) (.-z base))]))
+              beam (THREE/Line.
+                    beam-geometry
+                    (THREE/LineDashedMaterial.
+                     #js {:color (:body style) :transparent true
+                          :opacity 0.65 :dashSize 0.28 :gapSize 0.18}))]
+          (.computeLineDistances beam)
+          (three/set-rotation-x! orbit (/ js/Math.PI 2))
+          (three/set-position! orbit (.-x base) (.-y base) (.-z base))
+          (three/set-scale! actor 2.0 2.0 2.0)
+          (three/set-position! actor
+                               (+ (.-x base) (* radius (js/Math.cos phase)))
+                               (.-y base)
+                               (+ (.-z base) (* radius (js/Math.sin phase))))
+          (.add repo-root beam)
+          (.add repo-root orbit)
+          (.add repo-root actor)
+          (swap! actor-animations conj
+                 (merge character
+                        {:base base :phase phase :radius radius
+                         :speed (+ 0.28 (* 0.04 (mod agent-index 4)))
+                         :working? (= "running" (:agent.run/status agent))}))))
+       (swap! runtime assoc :actor-animations @actor-animations))
       (doseq [loop (queried-loops)
               :let [position (get @positions (:tamaki.loop/project loop))]
               :when position]
@@ -550,6 +668,92 @@
                   (apply-state!)))
       (.catch #(js/console.error "Tamaki snapshot" %))))
 
+(defn group-mode-changed! [event]
+  (rf/dispatch-sync [:group-mode (keyword (.. event -target -value))])
+  (reset! topology-signature nil)
+  (apply-state!))
+
+(defn submit-voice! [transcript]
+  (when-not (str/blank? transcript)
+    (set! (.-textContent (.getElementById js/document "voice-status"))
+          (str "queued · " transcript))
+    (when-let [handler (some-> js/window .-webkit .-messageHandlers .-voice)]
+      (.postMessage handler transcript))))
+
+(defn start-voice! []
+  (let [ctor (or (.-SpeechRecognition js/window)
+                 (.-webkitSpeechRecognition js/window))]
+    (if ctor
+      (let [recognition (ctor.)]
+        (set! (.-lang recognition) "ja-JP")
+        (set! (.-interimResults recognition) false)
+        (set! (.-continuous recognition) false)
+        (set! (.-textContent (.getElementById js/document "voice-status"))
+              "listening…")
+        (set! (.-onresult recognition)
+              (fn [event]
+                (submit-voice!
+                 (.. event -results (item 0) (item 0) -transcript))))
+        (set! (.-onerror recognition)
+              (fn [event]
+                (set! (.-textContent
+                       (.getElementById js/document "voice-status"))
+                      (str "voice unavailable · " (.-error event)))
+                (when-let [transcript
+                           (js/prompt
+                            "音声認識を利用できません。Tamaki への指示を入力してください")]
+                  (submit-voice! transcript))))
+        (.start recognition))
+      (when-let [transcript
+                 (js/prompt "Tamaki supervisor への指示を入力してください")]
+        (submit-voice! transcript)))))
+
+(defn shell-view []
+  [:div {:class style/app}
+   [:canvas#scene {:class style/scene}]
+   [:header {:class (str style/glass " " style/header)}
+    [:h1 "Tamaki Observatory"]
+    [:div#metrics.metrics "Connecting…"]
+    [:label "Group"
+     [:select#grouping {:on-change group-mode-changed!}
+      [:option {:value "org"} "organization"]
+      [:option {:value "project"} "project"]
+      [:option {:value "sync"} "west sync"]]]
+    [:div.voice-row
+     [:button.voice-button {:type "button" :on-click start-voice!}
+      "🎙 Tamaki に話す"]
+     [:span#voice-status.voice-status
+      "voice intent → supervisor queue"]]
+    [:div#model-usage.model-usage]]
+   [:aside#inspector {:class (str style/glass " " style/inspector)}
+    [:h2 "Workspace"]
+    [:div#details.details "Select a repository tile"]
+    [:h2.activity-title "Live activity"]
+    [:div#activity]]
+   [:section#system-dynamics
+    {:class (str style/glass " " style/dynamics)}
+    [:b "System dynamics"] [:span "Connecting…"]]
+   [:div#legend {:class (str style/glass " " style/legend)}
+    "drag rotate · wheel zoom · click repo/agent" [:br]
+    [:span.live "◆ walking agent actor"] "　"
+    [:span.sync "● synced"] "　"
+    [:span.diff "● west Δ"] "　"
+    [:span.loop "○ loop"] [:br]
+    "animated actor beam = active repo · tile height = congestion"]])
+
+(defn mount-shell! []
+  (rdom/render [shell-view] (.getElementById js/document "app")))
+
+(defn refresh-css! []
+  (when-let [link (.querySelector js/document "link[href^='style.css']")]
+    (set! (.-href link) (str "style.css?t=" (.now js/Date)))))
+
+(defn dispose-scene! []
+  (when-let [stop (:stop @runtime)] (stop))
+  (when-let [root (:repo-root @runtime)] (clear! root))
+  (when-let [renderer (:renderer @runtime)] (.dispose ^js renderer))
+  (reset! runtime nil))
+
 (defn install-picking! [canvas camera repo-root]
   (let [raycaster (THREE/Raycaster.)
         pointer (THREE/Vector2.)]
@@ -564,7 +768,7 @@
          (.setFromCamera raycaster pointer camera)
          (when-let [hit (first (array-seq
                                 (.intersectObjects raycaster
-                                                   (.-children repo-root) false)))]
+                                                   (.-children repo-root) true)))]
            (if-let [repos (.. ^js hit -object -userData -repos)]
              (when-let [repo (aget repos (.-instanceId hit))]
                (rf/dispatch-sync [:select-repo
@@ -608,32 +812,62 @@
         (.updateProjectionMatrix ^js camera)
         (three/set-size! renderer (.-innerWidth js/window)
                          (.-innerHeight js/window))))
-    (three/start-loop!
-     renderer scene camera
-     (fn [{:keys [time]}]
-       (.update ^js controls)
-       (doseq [{:keys [object from to phase speed]}
-               (:flow-particles @runtime)]
-         (let [progress (mod (+ phase (* time speed)) 1)]
-           (.lerpVectors ^js (.-position ^js object)
-                         ^js from ^js to progress)
-           (let [pulse (+ 0.75 (* 0.5 (js/Math.sin (* progress js/Math.PI))))]
-             (three/set-scale! object pulse pulse pulse))))))))
+    (let [stop
+          (three/start-loop!
+           renderer scene camera
+           (fn [{:keys [time]}]
+             (.update ^js controls)
+             (doseq [{:keys [object from to phase speed]}
+                     (:flow-particles @runtime)]
+               (let [progress (mod (+ phase (* time speed)) 1)]
+                 (.lerpVectors ^js (.-position ^js object)
+                               ^js from ^js to progress)
+                 (let [pulse (+ 0.75
+                                (* 0.5 (js/Math.sin
+                                        (* progress js/Math.PI))))]
+                   (three/set-scale! object pulse pulse pulse))))
+             (doseq [{:keys [actor head left-arm right-arm left-leg right-leg
+                             beacon base phase radius speed working?]}
+                     (:actor-animations @runtime)]
+               (let [walk (+ phase (* time speed))
+                     stride (js/Math.sin (* walk 5))
+                     x (+ (.-x base) (* radius (js/Math.cos walk)))
+                     z (+ (.-z base) (* radius (js/Math.sin walk)))
+                     y (+ (.-y base)
+                          (* 0.08 (js/Math.abs
+                                   (js/Math.sin (* walk 5)))))]
+                 (three/set-position! actor x y z)
+                 (set! (.. actor -rotation -y) (- walk (/ js/Math.PI 2)))
+                 (set! (.. left-arm -rotation -x) (* 0.65 stride))
+                 (set! (.. right-arm -rotation -x) (* -0.65 stride))
+                 (set! (.. left-leg -rotation -x) (* -0.55 stride))
+                 (set! (.. right-leg -rotation -x) (* 0.55 stride))
+                 (set! (.. head -rotation -y)
+                       (* 0.18 (js/Math.sin (* time 1.7))))
+                 (set! (.. beacon -rotation -z)
+                       (+ (* time (if working? 1.8 0.35)) phase))
+                 (let [pulse (if working?
+                               (+ 1 (* 0.12 (js/Math.sin (* time 4))))
+                               0.82)]
+                   (three/set-scale! beacon pulse pulse pulse))))))]
+      (swap! runtime assoc :stop stop))))
 
 (defn ^:export init []
   (rf/dispatch-sync [:snapshot nil])
   (rf/dispatch-sync [:group-mode :org])
+  (mount-shell!)
   (init-scene!)
-  (.addEventListener
-   (.getElementById js/document "grouping") "change"
-   (fn [event]
-     (rf/dispatch-sync [:group-mode
-                        (keyword (.. event -target -value))])
-     (reset! topology-signature nil)
-     (apply-state!)))
   (set! (.-tamakiReceive js/window)
         (fn [snapshot]
           (let [value (js->clj snapshot :keywordize-keys true)]
             (index-datoms! value)
             (rf/dispatch-sync [:snapshot value]))
           (apply-state!))))
+
+(defn ^:dev/after-load hot-reload! []
+  (refresh-css!)
+  (dispose-scene!)
+  (mount-shell!)
+  (reset! topology-signature nil)
+  (init-scene!)
+  (apply-state!))

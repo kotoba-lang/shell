@@ -2,7 +2,8 @@
   "name": "@kotoba-lang/tamaki-observer-web",
   "private": true,
   "scripts": {
-    "build": "shadow-cljs release app"
+    "build": "shadow-cljs release app",
+    "watch": "shadow-cljs watch app"
   },
   "dependencies": {
     "react": "18.3.1",

@@ -33,14 +33,43 @@ final class ConsoleBridge: NSObject, WKScriptMessageHandler {
   }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class VoiceBridge: NSObject, WKScriptMessageHandler {
+  func userContentController(_ controller: WKUserContentController,
+                             didReceive message: WKScriptMessage) {
+    guard let transcript = message.body as? String,
+          !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          transcript.count <= 1200,
+          let cli = ProcessInfo.processInfo.environment["TAMAKI_CLI_PATH"],
+          let project = ProcessInfo.processInfo.environment["TAMAKI_VOICE_PROJECT"]
+    else { return }
+    DispatchQueue.global(qos: .utility).async {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: cli)
+      process.arguments = ["voice", transcript, "--project", project]
+      do {
+        try process.run()
+        process.waitUntilExit()
+        print("web: voice-intent exit=\(process.terminationStatus)")
+      } catch {
+        print("web: voice-intent \(error)")
+      }
+      fflush(stdout)
+    }
+  }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
+                         WKUIDelegate {
   let root: URL
   var window: NSWindow?
   var schemeHandler: BundleSchemeHandler?
   var consoleBridge: ConsoleBridge?
+  var voiceBridge: VoiceBridge?
   var webView: WKWebView?
   var snapshotTimer: Timer?
   var visualTimer: Timer?
+  var reloadTimer: Timer?
+  var bundleRevision: String?
   var visualSnapshotInFlight = false
   init(root: URL) { self.root = root }
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -51,12 +80,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let bridge = ConsoleBridge()
     consoleBridge = bridge
     config.userContentController.add(bridge, name: "console")
+    let voice = VoiceBridge()
+    voiceBridge = voice
+    config.userContentController.add(voice, name: "voice")
     let diagnostics = WKUserScript(source:
       "window.addEventListener('error',e=>webkit.messageHandlers.console.postMessage(e.message));",
       injectionTime: .atDocumentStart, forMainFrameOnly: true)
     config.userContentController.addUserScript(diagnostics)
     let webView = WKWebView(frame: .zero, configuration: config)
     self.webView = webView
+    webView.uiDelegate = self
     webView.setValue(false, forKey: "drawsBackground")
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -71,6 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.makeKeyAndOrderFront(nil)
     self.window = window
     webView.load(URLRequest(url: URL(string: "tamaki://app/index.html")!))
+    bundleRevision = currentBundleRevision()
+    if ProcessInfo.processInfo.environment["KOTOBA_SHELL_WATCH"] == "1" {
+      reloadTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) {
+        [weak self] _ in self?.reloadChangedBundle()
+      }
+    }
     snapshotTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
       [weak self] _ in self?.pushSnapshot()
     }
@@ -83,6 +122,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       }
     }
     NSApp.activate(ignoringOtherApps: true)
+  }
+  @available(macOS 12.0, *)
+  func webView(_ webView: WKWebView,
+               requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+               initiatedByFrame frame: WKFrameInfo,
+               type: WKMediaCaptureType,
+               decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+    decisionHandler(type == .microphone ? .grant : .deny)
+  }
+  func currentBundleRevision() -> String {
+    ["index.html", "style.css", "js/main.js"].map { relative in
+      let file = root.appendingPathComponent(relative)
+      let values = try? file.resourceValues(forKeys: [
+        .contentModificationDateKey, .fileSizeKey])
+      return "\(relative):\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values?.fileSize ?? 0)"
+    }.joined(separator: "|")
+  }
+  func reloadChangedBundle() {
+    let next = currentBundleRevision()
+    guard let previous = bundleRevision, next != previous else {
+      bundleRevision = next
+      return
+    }
+    bundleRevision = next
+    print("web: bundle-changed; reloading"); fflush(stdout)
+    let request = URLRequest(
+      url: URL(string: "tamaki://app/index.html")!,
+      cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
+    webView?.load(request)
   }
   func pushSnapshot() {
     let file = root.appendingPathComponent("snapshot.json")
