@@ -7,7 +7,13 @@
 (defn write! []
   (css/write!
    {:sheet {:rules {"html, body" {:margin 0 :width "100%" :height "100%"
-                                  :overflow :hidden :background "#090611"}}}
+                                  :overflow :hidden :background "#090611"}}
+            :keyframes
+            {:tamaki-pulse
+             [[0 {:opacity 0.9
+                  :transform "translate(-50%,-50%) scale(.25)"}]
+              [100 {:opacity 0
+                    :transform "translate(-50%,-50%) scale(2.8)"}]]}}
     :shadow-sources [source]
     :strict-utilities? true
     :minify? false

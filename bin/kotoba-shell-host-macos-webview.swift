@@ -12,8 +12,20 @@ final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
     let relative = url.path == "/" || url.path.isEmpty ? "index.html" :
       String(url.path.dropFirst())
     let file = root.appendingPathComponent(relative)
-    guard let data = try? Data(contentsOf: file) else {
+    guard var data = try? Data(contentsOf: file) else {
       task.didFailWithError(URLError(.fileDoesNotExist)); return
+    }
+    if relative == "index.html",
+       var html = String(data: data, encoding: .utf8) {
+      let bundle = root.appendingPathComponent("js/main.js")
+      let revision = (try? bundle.resourceValues(
+        forKeys: [.contentModificationDateKey, .fileSizeKey]))
+      let stamp = "\(revision?.contentModificationDate?.timeIntervalSince1970 ?? 0)-\(revision?.fileSize ?? 0)"
+      html = html.replacingOccurrences(
+        of: "js/main.js", with: "js/main.js?v=\(stamp)")
+      html = html.replacingOccurrences(
+        of: "style.css", with: "style.css?v=\(stamp)")
+      data = Data(html.utf8)
     }
     let types = ["html": "text/html", "js": "application/javascript",
                  "css": "text/css", "json": "application/json",

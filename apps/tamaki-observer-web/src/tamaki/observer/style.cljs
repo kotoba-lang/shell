@@ -10,6 +10,14 @@
 (def scene
   (css {:position :fixed :inset 0 :width "100%" :height "100%"}))
 
+(def effects
+  (css {:position :fixed :inset 0 :z-index 1
+        :pointer-events :none :overflow :hidden}
+       [".pulse" {:position :absolute :width 52 :height 52
+                  :border "2px solid #70ffbc" :border-radius "50%"
+                  :box-shadow "0 0 28px #4cff91"
+                  :animation "tamaki-pulse .7s ease-out forwards"}]))
+
 (def glass
   (css {:position :fixed :z-index 2
         :background "rgba(22,14,35,.72)"
@@ -30,6 +38,9 @@
                       :margin-top 9}]
        [".voice-button" {:color "#dfffea" :background "#173d2a"
                          :border "1px solid #48dd86" :border-radius 8
+                         :padding "5px 9px" :cursor :pointer}]
+       [".sound-button" {:color "#e8dcff" :background "#2a1b3e"
+                         :border "1px solid #8c67bc" :border-radius 8
                          :padding "5px 9px" :cursor :pointer}]
        [".voice-status" {:max-width 310 :overflow :hidden
                          :text-overflow :ellipsis :white-space :nowrap

@@ -9,6 +9,7 @@
             [org-threejs.core :as three]))
 
 (defonce runtime (atom nil))
+(defonce audio-runtime (atom {:enabled? false :step 0}))
 (defonce topology-signature (atom nil))
 (def topology-schema
   {:repo/path {:db/unique :db.unique/identity}
@@ -668,13 +669,84 @@
                   (apply-state!)))
       (.catch #(js/console.error "Tamaki snapshot" %))))
 
+(declare play-sfx! spawn-pulse!)
+
 (defn group-mode-changed! [event]
+  (play-sfx! :navigate)
+  (spawn-pulse! (.-clientX event) (.-clientY event))
   (rf/dispatch-sync [:group-mode (keyword (.. event -target -value))])
   (reset! topology-signature nil)
   (apply-state!))
 
+(defn play-tone! [frequency duration volume wave]
+  (when-let [context (:context @audio-runtime)]
+    (when (= "running" (.-state context))
+      (let [now (.-currentTime context)
+            oscillator (.createOscillator context)
+            gain (.createGain context)]
+        (set! (.-type oscillator) wave)
+        (.setValueAtTime (.-frequency oscillator) frequency now)
+        (.setValueAtTime (.-gain gain) 0.0001 now)
+        (.exponentialRampToValueAtTime (.-gain gain) volume (+ now 0.025))
+        (.exponentialRampToValueAtTime (.-gain gain) 0.0001 (+ now duration))
+        (.connect oscillator gain)
+        (.connect gain (.-destination context))
+        (.start oscillator now)
+        (.stop oscillator (+ now duration 0.03))))))
+
+(defn play-sfx! [kind]
+  (when (:enabled? @audio-runtime)
+    (case kind
+      :select (do (play-tone! 523.25 0.12 0.035 "sine")
+                  (js/setTimeout #(play-tone! 783.99 0.16 0.028 "sine") 55))
+      :voice (do (play-tone! 392.0 0.18 0.04 "triangle")
+                 (js/setTimeout #(play-tone! 587.33 0.22 0.03 "triangle") 90))
+      :navigate (play-tone! 329.63 0.1 0.025 "sine")
+      nil)))
+
+(def ambient-notes [110.0 146.83 164.81 220.0 196.0 146.83 130.81 164.81])
+
+(defn ambient-step! []
+  (let [step (:step @audio-runtime)
+        note (nth ambient-notes (mod step (count ambient-notes)))]
+    (play-tone! note 1.8 0.012 "sine")
+    (when (zero? (mod step 4))
+      (play-tone! (/ note 2) 3.4 0.009 "triangle"))
+    (swap! audio-runtime update :step inc)))
+
+(defn update-sound-label! []
+  (when-let [button (.getElementById js/document "sound-toggle")]
+    (set! (.-textContent button)
+          (if (:enabled? @audio-runtime) "♫ ambient on" "♫ ambient off"))))
+
+(defn toggle-sound! []
+  (if (:enabled? @audio-runtime)
+    (do
+      (when-let [timer (:timer @audio-runtime)] (js/clearInterval timer))
+      (when-let [context (:context @audio-runtime)] (.suspend context))
+      (swap! audio-runtime assoc :enabled? false :timer nil))
+    (let [context (or (:context @audio-runtime)
+                      (js/AudioContext.))]
+      (.resume context)
+      (swap! audio-runtime assoc
+             :enabled? true :context context
+             :timer (js/setInterval ambient-step! 900))
+      (ambient-step!)
+      (play-sfx! :select)))
+  (update-sound-label!))
+
+(defn spawn-pulse! [x y]
+  (when-let [layer (.getElementById js/document "effects")]
+    (let [pulse (.createElement js/document "span")]
+      (set! (.-className pulse) "pulse")
+      (set! (.. pulse -style -left) (str x "px"))
+      (set! (.. pulse -style -top) (str y "px"))
+      (.appendChild layer pulse)
+      (js/setTimeout #(.remove pulse) 750))))
+
 (defn submit-voice! [transcript]
   (when-not (str/blank? transcript)
+    (play-sfx! :voice)
     (set! (.-textContent (.getElementById js/document "voice-status"))
           (str "queued · " transcript))
     (when-let [handler (some-> js/window .-webkit .-messageHandlers .-voice)]
@@ -711,6 +783,7 @@
 (defn shell-view []
   [:div {:class style/app}
    [:canvas#scene {:class style/scene}]
+   [:div#effects {:class style/effects}]
    [:header {:class (str style/glass " " style/header)}
     [:h1 "Tamaki Observatory"]
     [:div#metrics.metrics "Connecting…"]
@@ -723,7 +796,10 @@
      [:button.voice-button {:type "button" :on-click start-voice!}
       "🎙 Tamaki に話す"]
      [:span#voice-status.voice-status
-      "voice intent → supervisor queue"]]
+      "voice intent → supervisor queue"]
+     [:button#sound-toggle.sound-button
+      {:type "button" :on-click toggle-sound!}
+      "♫ ambient off"]]
     [:div#model-usage.model-usage]]
    [:aside#inspector {:class (str style/glass " " style/inspector)}
     [:h2 "Workspace"]
@@ -760,6 +836,8 @@
     (.addEventListener
      canvas "click"
      (fn [event]
+       (play-sfx! :select)
+       (spawn-pulse! (.-clientX event) (.-clientY event))
        (let [rect (.getBoundingClientRect canvas)]
          (set! (.-x pointer) (- (* (/ (- (.-clientX event) (.-left rect))
                                       (.-width rect)) 2) 1))
