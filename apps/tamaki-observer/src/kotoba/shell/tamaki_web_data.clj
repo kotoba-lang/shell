@@ -2,6 +2,7 @@
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]
@@ -11,6 +12,81 @@
             [kotoba.tamaki.store :as store]))
 
 (def active-statuses #{:queued :leased :running})
+(defonce git-tree-cache (atom {}))
+(declare run-project)
+
+(defn- git-lines [directory & args]
+  (let [{:keys [exit out]} (apply shell/sh "git" "-C"
+                                  (.getAbsolutePath (io/file directory))
+                                  args)]
+    (when (zero? exit)
+      (clojure.string/split-lines out))))
+
+(defn- parse-ref [line]
+  (let [[sha ref] (clojure.string/split line #"\t" 2)]
+    {:name ref :sha sha
+     :kind (cond
+             (clojure.string/starts-with? ref "refs/heads/") "branch"
+             (clojure.string/starts-with? ref "refs/remotes/") "remote-branch"
+             (clojure.string/starts-with? ref "refs/tags/") "tag"
+             :else "ref")}))
+
+(defn- parse-commit [line]
+  (let [[sha & parents] (clojure.string/split line #" ")]
+    {:sha sha :parents (vec parents)}))
+
+(defn- path-node [line]
+  (let [[metadata path] (clojure.string/split line #"\t" 2)
+        [mode type sha] (clojure.string/split metadata #" ")]
+    {:path path :sha sha :mode mode :type type
+     :parent (some-> path io/file .getParent
+                     (clojure.string/replace java.io.File/separator "/"))}))
+
+(defn- git-object-tree
+  "Read the complete locally fetched Git object graph. No sampling is used:
+  commits contains every object reachable from every local/remote ref and files
+  contains every entry at HEAD. The cache key changes when any ref moves."
+  [workspace project]
+  (let [directory (io/file workspace project)
+        refs (git-lines directory "for-each-ref"
+                        "--format=%(objectname)%09%(refname)")
+        signature (hash refs)]
+    (when (and (.isDirectory directory) (seq refs))
+      (if-let [cached (get @git-tree-cache [project signature])]
+        cached
+        (let [head (first (git-lines directory "rev-parse" "HEAD"))
+              value {:project project
+                     :head head
+                     :refs (mapv parse-ref refs)
+                     :commits (mapv parse-commit
+                                    (or (git-lines directory "rev-list"
+                                                   "--all" "--parents")
+                                        []))
+                     :files (mapv path-node
+                                  (or (git-lines directory "ls-tree" "-r" "-t"
+                                                 "--full-tree" "HEAD")
+                                      []))}]
+          (swap! git-tree-cache
+                 (fn [cache] (-> cache
+                                 (assoc [project signature] value)
+                                 (select-keys
+                                  (take-last 12 (keys
+                                                 (assoc cache
+                                                        [project signature]
+                                                        value)))))))
+          value)))))
+
+(defn- active-git-trees [registry runs]
+  (let [workspace (observer/workspace-root)
+        registry-paths (set (map :path (:repos registry)))
+        projects (->> (concat (map run-project runs)
+                              (map :path (:active-repos registry)))
+                      (filter registry-paths)
+                      distinct
+                      (take 8))]
+    (->> projects
+         (keep #(git-object-tree workspace %))
+         vec)))
 
 (defn- workspace-path [path]
   (let [root (some-> (System/getenv "KOTOBA_WORKSPACE_ROOT")
@@ -356,6 +432,7 @@
                                    :local? :sync])
                   (:repos registry))
      :dependencies (:dependencies registry)
+     :git-trees (active-git-trees registry runs)
      :projects
      (into (or @project-topologies
                (reset! project-topologies

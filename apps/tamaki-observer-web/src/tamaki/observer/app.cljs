@@ -163,8 +163,120 @@
          (+ (.-z from) (* (- (.-z to) (.-z from)) 0.42) (* bend 0.35)))
         to]))
 
+(defn hex-unit [value offset]
+  (let [text (str value)
+        pair (subs text (min offset (max 0 (- (count text) 2)))
+                   (min (+ offset 2) (count text)))]
+    (/ (or (js/parseInt pair 16) 0) 255)))
+
+(defn git-commit-position [index total sha]
+  (let [progress (/ index (max 1 (dec total)))
+        spread (+ 0.12 (* 1.7 (js/Math.sin (* progress js/Math.PI))))]
+    (THREE/Vector3.
+     (* spread (- (* 2 (hex-unit sha 0)) 1))
+     (+ 0.55 (* progress 7.4))
+     (* spread (- (* 2 (hex-unit sha 4)) 1)))))
+
+(defn add-exact-git-dag! [tree git-tree animations]
+  (let [commits (vec (reverse (:commits git-tree)))
+        total (count commits)
+        positions (into {}
+                        (map-indexed
+                         (fn [index commit]
+                           [(:sha commit)
+                            (git-commit-position index total (:sha commit))])
+                         commits))
+        node-geometry (THREE/SphereGeometry. 0.065 7 5)
+        nodes (THREE/InstancedMesh.
+               node-geometry
+               (THREE/MeshBasicMaterial.
+                #js {:color 0xffdf79 :transparent true :opacity 0.9})
+               total)
+        matrix (THREE/Matrix4.)
+        edge-values
+        (into-array
+         (mapcat (fn [{:keys [sha parents]}]
+                   (let [child (get positions sha)]
+                     (mapcat (fn [parent]
+                               (when-let [p (get positions parent)]
+                                 [(.-x child) (.-y child) (.-z child)
+                                  (.-x p) (.-y p) (.-z p)]))
+                             parents)))
+                 commits))
+        edge-geometry (THREE/BufferGeometry.)
+        edges (THREE/LineSegments.
+               edge-geometry
+               (THREE/LineBasicMaterial.
+                #js {:color 0xd58a38 :transparent true :opacity 0.34}))]
+    (doseq [[index {:keys [sha]}] (map-indexed vector commits)]
+      (.setPosition matrix (get positions sha))
+      (.setMatrixAt nodes index matrix))
+    (set! (.. nodes -instanceMatrix -needsUpdate) true)
+    (.setAttribute edge-geometry "position"
+                   (THREE/Float32BufferAttribute. edge-values 3))
+    (.add tree edges)
+    (.add tree nodes)
+    (when-let [head-position (get positions (:head git-tree))]
+      (let [head (THREE/Mesh.
+                  (THREE/SphereGeometry. 0.18 14 9)
+                  (THREE/MeshBasicMaterial.
+                   #js {:color 0x8dffb0 :transparent true :opacity 1}))]
+        (.copy (.-position head) head-position)
+        (.add tree head)
+        (swap! animations conj {:object head :phase 0 :base-scale 1.25
+                                :kind :fruit})))
+    positions))
+
+(defn add-exact-file-canopy! [tree git-tree]
+  (let [entries (:files git-tree)
+        position
+        (fn [{:keys [path type]}]
+          (let [depth (count (clojure.string/split (or path "") #"/"))
+                angle (* 6.28318 (hex-unit path 0))
+                radius (+ 2.4 (* 0.3 depth)
+                          (if (= type "blob") (* 0.65 (hex-unit path 4)) 0))]
+            (THREE/Vector3.
+             (* radius (js/Math.cos angle))
+             (+ 7.5 (* 0.32 depth) (* 0.25 (hex-unit path 6)))
+             (* radius (js/Math.sin angle)))))
+        positions (into {nil (THREE/Vector3. 0 7.25 0)}
+                        (map (juxt :path position) entries))
+        vertices (into-array
+                  (mapcat (fn [entry]
+                            (let [point (get positions (:path entry))]
+                              [(.-x point) (.-y point) (.-z point)]))
+                          entries))
+        link-values
+        (into-array
+         (mapcat
+          (fn [entry]
+            (let [child (get positions (:path entry))
+                  parent (get positions (:parent entry)
+                              (get positions nil))]
+              [(.-x child) (.-y child) (.-z child)
+               (.-x parent) (.-y parent) (.-z parent)]))
+          entries))
+        point-geometry (THREE/BufferGeometry.)
+        link-geometry (THREE/BufferGeometry.)
+        points (THREE/Points.
+                point-geometry
+                (THREE/PointsMaterial.
+                 #js {:color 0x62f99a :size 0.11 :sizeAttenuation true
+                      :transparent true :opacity 0.8}))
+        links (THREE/LineSegments.
+               link-geometry
+               (THREE/LineBasicMaterial.
+                #js {:color 0x2c9d61 :transparent true :opacity 0.18}))]
+    (.setAttribute point-geometry "position"
+                   (THREE/Float32BufferAttribute. vertices 3))
+    (.setAttribute link-geometry "position"
+                   (THREE/Float32BufferAttribute. link-values 3))
+    (.add tree links)
+    (.add tree points)))
+
 (defn add-life-tree! [root snapshot]
   (let [tree (three/group)
+        git-tree (first (:git-trees snapshot))
         branch-material (THREE/MeshStandardMaterial.
                          #js {:color 0x704622 :emissive 0x2c1808
                               :emissiveIntensity 0.35 :roughness 0.82})
@@ -183,15 +295,22 @@
                                                       (:status %)) ""))
                                (:agents snapshot)))
         vitality (+ 0.7 (* 0.05 recent-activity) (* 0.18 working))
-        lineage-count (max 3 (min 12 (count (:results snapshot))))
+        lineage-count (max 3 (min 18 (or (some->> (:refs git-tree)
+                                                  (filter #(= "branch" (:kind %)))
+                                                  count)
+                                         (count (:results snapshot)))))
         ring (THREE/Mesh.
               (THREE/TorusGeometry. 5.15 0.075 10 96)
               (THREE/MeshBasicMaterial.
                #js {:color (:lineage garden-colors)
                     :transparent true :opacity 0.56}))
         title (text-sprite
-               (str "TAMAKI · GIT LIVING TREE · "
-                    lineage-count " ACTIVE LINEAGES")
+               (if git-tree
+                 (str "GIT LIVING TREE · " (count (:commits git-tree))
+                      " COMMITS · " (count (:refs git-tree))
+                      " REFS · " (count (:files git-tree)) " OBJECTS")
+                 (str "TAMAKI · GIT LIVING TREE · "
+                      lineage-count " ACTIVE LINEAGES"))
                "#8dffb0")
         heart-light (THREE/PointLight. 0x55ff9a 4.2 18 1.6)
         crown-light (THREE/PointLight. 0xffd76a 2.4 13 1.8)
@@ -216,6 +335,9 @@
       (.copy (.-position commit) to)
       (.add tree segment)
       (.add tree commit))
+    (when git-tree
+      (add-exact-git-dag! tree git-tree animations)
+      (add-exact-file-canopy! tree git-tree))
     ;; Each recent issue/source/patch lineage becomes a fork from main.
     (doseq [branch-index (range lineage-count)
             :let [side (if (even? branch-index) 1 -1)
@@ -239,12 +361,12 @@
                   tip-mesh (THREE/Mesh.
                             (THREE/TubeGeometry. tip-curve 12 0.085 7 false)
                             twig-material)
-                  fruit-kind (keyword (name (or (-> snapshot :results
-                                                    (nth (+ (- (count (:results snapshot))
-                                                               lineage-count)
-                                                            branch-index)
-                                                         nil)
-                                                    :nodes last :type)
+                  fruit-kind (keyword (name (or (when (seq (:results snapshot))
+                                                  (-> snapshot :results
+                                                      (nth (mod branch-index
+                                                                (count (:results snapshot)))
+                                                           nil)
+                                                      :nodes last :type))
                                                :source)))
                   fruit-color (get result-colors fruit-kind 0xffdc75)
                   fruit (THREE/Mesh.
