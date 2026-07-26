@@ -95,16 +95,21 @@
                   :tamaki.loop/status :active
                   :tamaki.loop/project "orgs/kotoba-lang/tamaki"
                   :tamaki.loop/objective "grow maturity"}
-        event {:tamaki.event/run "run-1"
-               :tamaki.event/kind :issue/prioritized
-               :tamaki.event/at 42
-               :tamaki.event/data
-               {:issue/selection
-                {:issue {:issue/id "rad-1" :issue/title "Fix gate"
-                         :issue/status :open :issue/blockers #{"rad-0"}}}}}
+        events [{:tamaki.event/run "run-1"
+                 :tamaki.event/kind :issue/discovered
+                 :tamaki.event/at 41
+                 :tamaki.event/data {:loop/id "loop-1"
+                                     :issue/id "rad-1"}}
+                {:tamaki.event/run "run-1"
+                 :tamaki.event/kind :issue/prioritized
+                 :tamaki.event/at 42
+                 :tamaki.event/data
+                 {:issue/selection
+                  {:issue {:issue/id "rad-1" :issue/title "Fix gate"
+                           :issue/status :open :issue/blockers #{"rad-0"}}}}}]
         [topology]
         (tamaki-web-data/live-objective-topologies
-         [event] [run] [campaign])]
+         events [run] [campaign])]
     (is (= "grow maturity" (:objective topology)))
     (is (= [["rad-1"] ["objective/loop-1"]]
            (:reverse-topology topology)))

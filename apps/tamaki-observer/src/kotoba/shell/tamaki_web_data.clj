@@ -74,8 +74,7 @@
                                     issue (get-in data
                                                   [:issue/selection :issue])]
                                 (when (and run issue)
-                                  {:loop (get-in data
-                                                 [:issue/selection :loop/id])
+                                  {:loop (:loop (run-context events run))
                                    :run (:agent.run/id run)
                                    :project (run-project run)
                                    :at (:tamaki.event/at event)
@@ -87,7 +86,8 @@
           (fn [campaign]
             (let [project (workspace-path (:tamaki.loop/project campaign))
                   objective-key (str "objective/" (:tamaki.loop/id campaign))
-                  observations (get selected project)
+                  observations (get (group-by :loop (mapcat val selected))
+                                    (:tamaki.loop/id campaign))
                   issues (->> observations
                               (map :issue)
                               (reduce (fn [result issue]
@@ -134,7 +134,15 @@
     (->> (or (.listFiles dir) (make-array java.io.File 0))
          (filter #(and (.isFile %) (.endsWith (.getName %) ".edn")))
          (keep (fn [file]
-                 (let [value (edn/read-string (slurp file))]
+                 (let [value (edn/read-string (slurp file))
+                       project (:actor/project value)
+                       value (if (and project
+                                      (not (.isAbsolute (io/file project))))
+                               (assoc value :actor/project
+                                      (.getCanonicalPath
+                                       (io/file (.getParentFile dir)
+                                                project)))
+                               value)]
                    (when (:actor/id value)
                      (let [spec (actor/validate-spec value)
                            plan (actor/reconcile-plan spec runs)]
