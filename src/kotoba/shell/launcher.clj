@@ -38,6 +38,7 @@
                      "fs/write-text"
                      "fs/append-text"
                      "http/fetch"
+                     "browser/open-url"
                      "notify/show"
                      "keychain/read-text"
                      "keychain/write-text"
@@ -51,6 +52,7 @@
                          "fs/write-text"
                          "fs/append-text"
                          "http/fetch"
+                         "browser/open-url"
                          "notify/show"
                          "keychain/read-text"
                          "keychain/write-text"
@@ -486,6 +488,7 @@
                "fs/write-text"
                "fs/append-text"
                "http/fetch"
+               "browser/open-url"
                "notify/show"]
        :deny []
        :audit true}))
