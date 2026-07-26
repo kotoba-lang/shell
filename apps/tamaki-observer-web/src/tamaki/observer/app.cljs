@@ -270,6 +270,65 @@
               (clj->js {:actor actor :from from :to to}))
         (.add root path)))))
 
+(def result-colors
+  {:issue 0xffd45a :source 0x48dcff :radicle 0xc956ff
+   :github 0xf5f5f5 :review 0x35ff8a :merge 0x208cff})
+
+(defn add-result-graphs! [root positions graphs]
+  (doseq [[graph-index graph] (map-indexed vector graphs)
+          :let [base (get positions (:result/project graph))
+                nodes (:result/nodes graph)]
+          :when base]
+    (let [node-positions
+          (into {}
+                (map-indexed
+                 (fn [index node]
+                   [(:result.node/id node)
+                    {:x (+ (:x base) (* (- index (/ (dec (count nodes)) 2))
+                                        1.15))
+                     :y (+ (:height base) 3.0 (* 0.28 (mod graph-index 3)))
+                     :z (+ (:z base) 2.6 (* 0.7 graph-index))}])
+                 nodes))]
+      (doseq [node nodes
+              :let [{:keys [x y z]} (get node-positions
+                                          (:result.node/id node))
+                    kind (keyword (name (:result.node/type node)))
+                    color (get result-colors kind 0xffffff)
+                    object (three/mesh
+                            (case kind
+                              :source (THREE/BoxGeometry. 0.5 0.5 0.5)
+                              :github (THREE/TorusKnotGeometry. 0.24 0.07 40 8)
+                              :review (THREE/DodecahedronGeometry. 0.3)
+                              :merge (THREE/SphereGeometry. 0.32 14 10)
+                              (THREE/OctahedronGeometry. 0.3))
+                            (three/standard-material
+                             {:color color :emissive 1.7 :roughness 0.24}))
+                    caption (text-sprite
+                             (str (str/upper-case (name kind)) " · "
+                                  (let [value (str (:result.node/value node))]
+                                    (subs value 0 (min 12 (count value)))))
+                             (str "#" (.toString color 16)))]]
+        (three/set-position! object x y z)
+        (three/set-position! caption x (+ y 0.62) z)
+        (three/set-scale! caption 3.1 0.65 1)
+        (set! (.. object -userData -result) (clj->js node))
+        (.add root object)
+        (.add root caption))
+      (doseq [edge (:result/edges graph)
+              :let [a (get node-positions (:result.edge/from edge))
+                    b (get node-positions (:result.edge/to edge))]
+              :when (and a b)]
+        (let [geometry (doto (THREE/BufferGeometry.)
+                         (.setFromPoints
+                          #js [(THREE/Vector3. (:x a) (:y a) (:z a))
+                               (THREE/Vector3. (:x b) (:y b) (:z b))]))
+              line (THREE/Line.
+                    geometry
+                    (THREE/LineBasicMaterial.
+                     #js {:color 0x89f7ff :transparent true
+                          :opacity 0.9}))]
+          (.add root line))))))
+
 (defn text-sprite [text color]
   (let [canvas (.createElement js/document "canvas")
         _ (set! (.-width canvas) 512)
@@ -536,6 +595,7 @@
         (.add repo-root points))
       (add-dependency-lines! repo-root @positions (:dependencies snapshot))
       (add-project-topologies! repo-root @positions (:projects snapshot))
+      (add-result-graphs! repo-root @positions (:results snapshot))
       (add-system-dynamics! repo-root (:system-dynamics snapshot))
       (let [actor-animations (atom [])]
        (doseq [[agent-index agent] (map-indexed vector (queried-agents))
@@ -703,6 +763,7 @@
      (frequencies (map :sync (:repos snapshot)))
      (:dependencies snapshot)
      (:projects snapshot) (:agents snapshot) (:loops snapshot)
+     (:results snapshot)
      (:repo-stats snapshot)
      ;; observed-at advances every second but does not change geometry.
      ;; Excluding it avoids disposing/recreating thousands of WebGL objects

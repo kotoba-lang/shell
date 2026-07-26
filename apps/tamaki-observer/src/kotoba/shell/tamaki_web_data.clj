@@ -6,6 +6,8 @@
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]
             [kotoba.tamaki.business :as business]
+            [kotoba.tamaki.evolution :as evolution]
+            [kotoba.tamaki.result :as result]
             [kotoba.tamaki.store :as store]))
 
 (def active-statuses #{:queued :leased :running})
@@ -383,6 +385,9 @@
      :decisions (:decisions state)
      :campaigns (:campaigns state)
      :activity (activity-feed events runs)
+     :results (mapv #(update % :result/project workspace-path)
+                    (result/result-graphs events runs
+                                          (evolution/candidates events)))
      :model-usage
      (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)]
        (->> events
