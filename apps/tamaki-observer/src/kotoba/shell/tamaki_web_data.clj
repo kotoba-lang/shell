@@ -87,9 +87,11 @@
 (def dynamics-window-ms 3600000)
 
 (defn business-targets []
-  (let [path (io/file (observer/workspace-root)
-                      "orgs" "kotoba-lang" "tamaki"
-                      "actors" "revenue-targets.edn")]
+  (let [tamaki (io/file (observer/workspace-root)
+                        "orgs" "kotoba-lang" "tamaki")
+        private (io/file tamaki "actors" "revenue-targets.edn")
+        example (io/file tamaki "examples" "revenue-targets.example.edn")
+        path (if (.isFile private) private example)]
     (if (.isFile path) (business/read-targets (.getAbsolutePath path)) {})))
 
 (defn- prefixed-business-dynamics [events]
