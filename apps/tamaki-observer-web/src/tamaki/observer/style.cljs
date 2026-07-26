@@ -33,6 +33,17 @@
        ["select" {:margin-left 7 :color "#eee" :background "#241733"
                   :border "1px solid #57416e" :border-radius 7
                   :padding "3px 7px"}]
+       [".garden-views" {:display :flex :align-items :center :gap 5
+                         :margin-top 8}]
+       [".garden-views span" {:margin-right 3 :color "#71dda0"
+                              :font "10px ui-monospace, monospace"}]
+       [".garden-views button" {:color "#c9e9d5" :background "#10251a"
+                                :border "1px solid #376a4c"
+                                :border-radius 999 :padding "3px 8px"
+                                :font-size 10 :cursor :pointer}]
+       [".garden-views button:hover" {:color "#07150d"
+                                      :background "#70ffac"
+                                      :border-color "#70ffac"}]
        [".model-usage" {:display :flex :gap 6 :margin-top 10}]
        [".actor-state" {:display :flex :gap 6 :margin-top 7}]
        [".actor-card" {:padding "5px 8px" :border-radius 8
@@ -68,7 +79,34 @@
        ["h2" {:font-size 15 :margin "0 0 10px"}]
        [".details" {:color "#c8bfd5" :line-height 1.55
                     :word-break :break-word}]
+       [".result-panel" {:display :grid :gap 7 :margin "0 0 18px"}]
+       [".result-chain" {:padding 7 :border "1px solid #ffffff14"
+                         :border-radius 8 :background "#08050e99"}]
+       [".result-chain small" {:display :block :color "#8f849c"
+                               :overflow :hidden :text-overflow :ellipsis
+                               :white-space :nowrap :margin-bottom 5}]
+       [".result-chain div" {:display :flex :align-items :center
+                             :gap 3 :overflow-x :auto}]
+       [".result-node" {:flex "0 0 auto" :padding "2px 5px"
+                        :border-radius 5 :font "8px ui-monospace, monospace"
+                        :color "#eee" :background "#241733"}]
+       [".result-node.source" {:color "#63dfff"}]
+       [".result-node.radicle" {:color "#dd86ff"}]
+       [".result-node.github" {:color "#fff"}]
+       [".result-node.review" {:color "#70ffac"}]
+       [".result-node.merge" {:color "#5aa9ff"}]
+       [".result-arrow" {:color "#5e536b"}]
        [".activity-title" {:margin-top 20}]
+       [".activity-filters" {:display :flex :gap 5 :overflow-x :auto
+                             :padding-bottom 8 :margin-bottom 2}]
+       [".activity-filters button" {:flex "0 0 auto" :cursor :pointer
+                                    :color "#b9aec7" :background "#140c20"
+                                    :border "1px solid #473459"
+                                    :border-radius 999 :padding "4px 8px"
+                                    :font "10px ui-monospace, monospace"}]
+       [".activity-filters button.selected"
+        {:color "#07150d" :background "#70ffac" :border-color "#70ffac"
+         :box-shadow "0 0 12px #42f58d55"}]
        [".event" {:display :grid :grid-template-columns "64px 1fr"
                   :gap "2px 8px" :padding "7px 0"
                   :border-top "1px solid #ffffff12"}]
@@ -76,6 +114,11 @@
                        :font "11px ui-monospace, monospace"}]
        [".event b" {:color "#79ffa8"
                     :font "11px ui-monospace, monospace"}]
+       [".event-heading" {:display :flex :align-items :center
+                          :justify-content :space-between :gap 6}]
+       [".event .stream" {:color "#73bfff" :border "1px solid #3998db55"
+                          :border-radius 999 :padding "1px 5px"
+                          :font "9px ui-monospace, monospace"}]
        [".event small" {:grid-column 2 :color "#9f94af" :overflow :hidden
                         :text-overflow :ellipsis :white-space :nowrap}]))
 

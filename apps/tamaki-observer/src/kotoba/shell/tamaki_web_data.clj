@@ -2,13 +2,91 @@
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]
             [kotoba.tamaki.business :as business]
+            [kotoba.tamaki.evolution :as evolution]
+            [kotoba.tamaki.result :as result]
             [kotoba.tamaki.store :as store]))
 
 (def active-statuses #{:queued :leased :running})
+(defonce git-tree-cache (atom {}))
+(declare run-project)
+
+(defn- git-lines [directory & args]
+  (let [{:keys [exit out]} (apply shell/sh "git" "-C"
+                                  (.getAbsolutePath (io/file directory))
+                                  args)]
+    (when (zero? exit)
+      (clojure.string/split-lines out))))
+
+(defn- parse-ref [line]
+  (let [[sha ref] (clojure.string/split line #"\t" 2)]
+    {:name ref :sha sha
+     :kind (cond
+             (clojure.string/starts-with? ref "refs/heads/") "branch"
+             (clojure.string/starts-with? ref "refs/remotes/") "remote-branch"
+             (clojure.string/starts-with? ref "refs/tags/") "tag"
+             :else "ref")}))
+
+(defn- parse-commit [line]
+  (let [[sha & parents] (clojure.string/split line #" ")]
+    {:sha sha :parents (vec parents)}))
+
+(defn- path-node [line]
+  (let [[metadata path] (clojure.string/split line #"\t" 2)
+        [mode type sha] (clojure.string/split metadata #" ")]
+    {:path path :sha sha :mode mode :type type
+     :parent (some-> path io/file .getParent
+                     (clojure.string/replace java.io.File/separator "/"))}))
+
+(defn- git-object-tree
+  "Read the complete locally fetched Git object graph. No sampling is used:
+  commits contains every object reachable from every local/remote ref and files
+  contains every entry at HEAD. The cache key changes when any ref moves."
+  [workspace project]
+  (let [directory (io/file workspace project)
+        refs (git-lines directory "for-each-ref"
+                        "--format=%(objectname)%09%(refname)")
+        signature (hash refs)]
+    (when (and (.isDirectory directory) (seq refs))
+      (if-let [cached (get @git-tree-cache [project signature])]
+        cached
+        (let [head (first (git-lines directory "rev-parse" "HEAD"))
+              value {:project project
+                     :head head
+                     :refs (mapv parse-ref refs)
+                     :commits (mapv parse-commit
+                                    (or (git-lines directory "rev-list"
+                                                   "--all" "--parents")
+                                        []))
+                     :files (mapv path-node
+                                  (or (git-lines directory "ls-tree" "-r" "-t"
+                                                 "--full-tree" "HEAD")
+                                      []))}]
+          (swap! git-tree-cache
+                 (fn [cache] (-> cache
+                                 (assoc [project signature] value)
+                                 (select-keys
+                                  (take-last 12 (keys
+                                                 (assoc cache
+                                                        [project signature]
+                                                        value)))))))
+          value)))))
+
+(defn- active-git-trees [registry runs]
+  (let [workspace (observer/workspace-root)
+        registry-paths (set (map :path (:repos registry)))
+        projects (->> (concat (map run-project runs)
+                              (map :path (:active-repos registry)))
+                      (filter registry-paths)
+                      distinct
+                      (take 8))]
+    (->> projects
+         (keep #(git-object-tree workspace %))
+         vec)))
 
 (defn- workspace-path [path]
   (let [root (some-> (System/getenv "KOTOBA_WORKSPACE_ROOT")
@@ -58,13 +136,91 @@
 
 (defonce project-topologies (atom nil))
 
+(defn live-objective-topologies
+  "Project durable loop objectives and their selected Radicle issues as a
+  walkable graph. The objective depends on its issue frontier; issue blockers
+  remain explicit edges, so the UI can render blocker-first execution order."
+  [events runs campaigns]
+  (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)
+        selected (->> events
+                      (filter #(= :issue/prioritized
+                                  (:tamaki.event/kind %)))
+                      (keep (fn [event]
+                              (let [run (get run-by-id
+                                             (:tamaki.event/run event))
+                                    data (:tamaki.event/data event)
+                                    issue (get-in data
+                                                  [:issue/selection :issue])]
+                                (when (and run issue)
+                                  {:loop (:loop (run-context events run))
+                                   :run (:agent.run/id run)
+                                   :project (run-project run)
+                                   :at (:tamaki.event/at event)
+                                   :issue issue}))))
+                      (group-by :project))]
+    (->> campaigns
+         (filter #(= :active (:tamaki.loop/status %)))
+         (mapv
+          (fn [campaign]
+            (let [project (workspace-path (:tamaki.loop/project campaign))
+                  objective-key (str "objective/" (:tamaki.loop/id campaign))
+                  observations (get (group-by :loop (mapcat val selected))
+                                    (:tamaki.loop/id campaign))
+                  issues (->> observations
+                              (map :issue)
+                              (reduce (fn [result issue]
+                                        (assoc result (:issue/id issue) issue))
+                                      {})
+                              vals
+                              vec)
+                  issue-keys (mapv (comp str :issue/id) issues)]
+              {:id (str (:tamaki.loop/id campaign))
+               :objective (:tamaki.loop/objective campaign)
+               :metric "issue topology walk"
+               :reverse-topology
+               (cond-> []
+                 (seq issue-keys) (conj issue-keys)
+                 true (conj [objective-key]))
+               :execution-waves (cond-> []
+                                  (seq issue-keys) (conj issue-keys)
+                                  true (conj [objective-key]))
+               :issues
+               (into
+                [{:key objective-key :rad nil :repo project
+                  :kind "objective" :status "active"
+                  :title (:tamaki.loop/objective campaign)
+                  :blockers issue-keys}]
+                (map (fn [issue]
+                       {:key (str (:issue/id issue))
+                        :rad (:issue/id issue)
+                        :repo project
+                        :kind "issue"
+                        :title (:issue/title issue)
+                        :status (some-> (:issue/status issue) name)
+                        :blockers (mapv str (:issue/blockers issue))})
+                     issues))
+               :walks
+               (mapv (fn [{:keys [run at issue]}]
+                       {:actor run :at at :from objective-key
+                        :to (str (:issue/id issue))})
+                     observations)})))
+         (filterv #(seq (:issues %))))))
+
 (defn actor-states [runs]
   (let [root (.getParentFile (io/file (observer/state-dir)))
         dir (io/file root "actors")]
     (->> (or (.listFiles dir) (make-array java.io.File 0))
          (filter #(and (.isFile %) (.endsWith (.getName %) ".edn")))
          (keep (fn [file]
-                 (let [value (edn/read-string (slurp file))]
+                 (let [value (edn/read-string (slurp file))
+                       project (:actor/project value)
+                       value (if (and project
+                                      (not (.isAbsolute (io/file project))))
+                               (assoc value :actor/project
+                                      (.getCanonicalPath
+                                       (io/file (.getParentFile dir)
+                                                project)))
+                               value)]
                    (when (:actor/id value)
                      (let [spec (actor/validate-spec value)
                            plan (actor/reconcile-plan spec runs)]
@@ -209,6 +365,47 @@
                               runs))}))))
          vec)))
 
+(defn activity-feed
+  "Join durable events to their AgentRun identity and stream. Explicit
+  activity metadata wins; lifecycle events and older activity records receive
+  deterministic fallbacks so the UI can always attribute and filter them."
+  [events runs]
+  (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)]
+    (->> events
+         (sort-by :tamaki.event/at >)
+         (take 80)
+         (mapv
+          (fn [event]
+            (let [data (:tamaki.event/data event)
+                  run-id (:tamaki.event/run event)
+                  run (get run-by-id run-id)
+                  kind (or (:activity/kind data) (:tamaki.event/kind event))
+                  stream (or (:activity/stream data)
+                             (cond
+                               (= :agent/activity (:tamaki.event/kind event))
+                               (if (= "tool" (namespace kind)) :tool
+                                   (if (= "model" (namespace kind)) :model
+                                       :output))
+                               (some? run) :lifecycle
+                               :else :system))
+                  agent-id (or (:activity/agent data)
+                               (:agent.run/id run)
+                               "system")]
+              {:id (:tamaki.event/id event)
+               :at (:tamaki.event/at event)
+               :run run-id
+               :agent-id (str agent-id)
+               :agent-runner (or (:agent.run/runner run) "system")
+               :agent-model (or (:agent.run/model run) "default")
+               :agent-worker (or (:activity/worker data)
+                                 (:agent.run/worker run))
+               :stream (name stream)
+               :kind kind
+               :state (:activity/state data)
+               :text (:activity/text data)
+               :issue (:issue/id data)
+               :patch (:patch/id data)}))))))
+
 (defn web-snapshot []
   (let [state (observer/snapshot)
         registry (:registry state)
@@ -235,9 +432,12 @@
                                    :local? :sync])
                   (:repos registry))
      :dependencies (:dependencies registry)
-     :projects (or @project-topologies
-                   (reset! project-topologies
-                           (discover-project-topologies registry)))
+     :git-trees (active-git-trees registry runs)
+     :projects
+     (into (or @project-topologies
+               (reset! project-topologies
+                       (discover-project-topologies registry)))
+           (live-objective-topologies events runs campaigns))
      :agents agents
      :actors (actor-states runs)
      :loops (mapv (fn [campaign]
@@ -261,22 +461,10 @@
            (:active-repos registry))
      :decisions (:decisions state)
      :campaigns (:campaigns state)
-     :activity
-     (->> events
-          (sort-by :tamaki.event/at >)
-          (take 80)
-          (mapv (fn [event]
-                  {:id (:tamaki.event/id event)
-                   :at (:tamaki.event/at event)
-                   :run (:tamaki.event/run event)
-                   :kind (or (get-in event
-                                     [:tamaki.event/data :activity/kind])
-                             (:tamaki.event/kind event))
-                   :state (get-in event
-                                  [:tamaki.event/data :activity/state])
-                   :text (get-in event [:tamaki.event/data :activity/text])
-                   :issue (get-in event [:tamaki.event/data :issue/id])
-                   :patch (get-in event [:tamaki.event/data :patch/id])})))
+     :activity (activity-feed events runs)
+     :results (mapv #(update % :result/project workspace-path)
+                    (result/result-graphs events runs
+                                          (evolution/candidates events)))
      :model-usage
      (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)]
        (->> events

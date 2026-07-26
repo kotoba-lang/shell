@@ -11,6 +11,7 @@
 (defonce runtime (atom nil))
 (defonce audio-runtime (atom {:enabled? false :step 0}))
 (defonce topology-signature (atom nil))
+(defonce issue-node-positions (atom {}))
 (def topology-schema
   {:repo/path {:db/unique :db.unique/identity}
    :agent/id {:db/unique :db.unique/identity}
@@ -30,9 +31,13 @@
   (fn [db [_ repo]] (assoc db :selected repo)))
 (rf/reg-event-db :group-mode
   (fn [db [_ mode]] (assoc db :group-mode mode)))
+(rf/reg-event-db :activity-agent
+  (fn [db [_ agent-id]] (assoc db :activity-agent agent-id)))
 (rf/reg-sub :snapshot (fn [db _] (:snapshot db)))
 (rf/reg-sub :selected (fn [db _] (:selected db)))
 (rf/reg-sub :group-mode (fn [db _] (or (:group-mode db) :org)))
+(rf/reg-sub :activity-agent
+  (fn [db _] (or (:activity-agent db) "all")))
 
 (defn index-datoms! [snapshot]
   (d/reset-conn! topology-db (d/empty-db topology-schema))
@@ -138,6 +143,328 @@
     :emissive (if (= kind :active) 1.8 0.12)
     :transparent true :opacity (if (= kind :remote) 0.58 1)}))
 
+(def garden-colors
+  {:soil 0x101a18 :soil-edge 0x274438 :water 0x43e8d3
+   :root 0x9b6a32 :leaf 0x55df83 :leaf-dark 0x1d7c4c
+   :lineage 0xf0c866 :withered 0x8b6337})
+
+(defn garden-material [color emissive]
+  (three/standard-material
+   {:color color :emissive emissive :metallic 0.08 :roughness 0.78}))
+
+(declare text-sprite result-colors)
+
+(defn branch-curve [from to bend]
+  (THREE/CatmullRomCurve3.
+   #js [from
+        (THREE/Vector3.
+         (+ (.-x from) (* (- (.-x to) (.-x from)) 0.42) bend)
+         (+ (.-y from) (* (- (.-y to) (.-y from)) 0.46))
+         (+ (.-z from) (* (- (.-z to) (.-z from)) 0.42) (* bend 0.35)))
+        to]))
+
+(defn hex-unit [value offset]
+  (let [text (str value)
+        pair (subs text (min offset (max 0 (- (count text) 2)))
+                   (min (+ offset 2) (count text)))]
+    (/ (or (js/parseInt pair 16) 0) 255)))
+
+(defn git-commit-position [index total sha]
+  (let [progress (/ index (max 1 (dec total)))
+        spread (+ 0.12 (* 1.7 (js/Math.sin (* progress js/Math.PI))))]
+    (THREE/Vector3.
+     (* spread (- (* 2 (hex-unit sha 0)) 1))
+     (+ 0.55 (* progress 7.4))
+     (* spread (- (* 2 (hex-unit sha 4)) 1)))))
+
+(defn add-exact-git-dag! [tree git-tree animations]
+  (let [commits (vec (reverse (:commits git-tree)))
+        total (count commits)
+        positions (into {}
+                        (map-indexed
+                         (fn [index commit]
+                           [(:sha commit)
+                            (git-commit-position index total (:sha commit))])
+                         commits))
+        node-geometry (THREE/SphereGeometry. 0.065 7 5)
+        nodes (THREE/InstancedMesh.
+               node-geometry
+               (THREE/MeshBasicMaterial.
+                #js {:color 0xffdf79 :transparent true :opacity 0.9})
+               total)
+        matrix (THREE/Matrix4.)
+        edge-values
+        (into-array
+         (mapcat (fn [{:keys [sha parents]}]
+                   (let [child (get positions sha)]
+                     (mapcat (fn [parent]
+                               (when-let [p (get positions parent)]
+                                 [(.-x child) (.-y child) (.-z child)
+                                  (.-x p) (.-y p) (.-z p)]))
+                             parents)))
+                 commits))
+        edge-geometry (THREE/BufferGeometry.)
+        edges (THREE/LineSegments.
+               edge-geometry
+               (THREE/LineBasicMaterial.
+                #js {:color 0xd58a38 :transparent true :opacity 0.34}))]
+    (doseq [[index {:keys [sha]}] (map-indexed vector commits)]
+      (.setPosition matrix (get positions sha))
+      (.setMatrixAt nodes index matrix))
+    (set! (.. nodes -instanceMatrix -needsUpdate) true)
+    (.setAttribute edge-geometry "position"
+                   (THREE/Float32BufferAttribute. edge-values 3))
+    (.add tree edges)
+    (.add tree nodes)
+    (when-let [head-position (get positions (:head git-tree))]
+      (let [head (THREE/Mesh.
+                  (THREE/SphereGeometry. 0.18 14 9)
+                  (THREE/MeshBasicMaterial.
+                   #js {:color 0x8dffb0 :transparent true :opacity 1}))]
+        (.copy (.-position head) head-position)
+        (.add tree head)
+        (swap! animations conj {:object head :phase 0 :base-scale 1.25
+                                :kind :fruit})))
+    positions))
+
+(defn add-exact-file-canopy! [tree git-tree]
+  (let [entries (:files git-tree)
+        position
+        (fn [{:keys [path type]}]
+          (let [depth (count (clojure.string/split (or path "") #"/"))
+                angle (* 6.28318 (hex-unit path 0))
+                radius (+ 2.4 (* 0.3 depth)
+                          (if (= type "blob") (* 0.65 (hex-unit path 4)) 0))]
+            (THREE/Vector3.
+             (* radius (js/Math.cos angle))
+             (+ 7.5 (* 0.32 depth) (* 0.25 (hex-unit path 6)))
+             (* radius (js/Math.sin angle)))))
+        positions (into {nil (THREE/Vector3. 0 7.25 0)}
+                        (map (juxt :path position) entries))
+        vertices (into-array
+                  (mapcat (fn [entry]
+                            (let [point (get positions (:path entry))]
+                              [(.-x point) (.-y point) (.-z point)]))
+                          entries))
+        link-values
+        (into-array
+         (mapcat
+          (fn [entry]
+            (let [child (get positions (:path entry))
+                  parent (get positions (:parent entry)
+                              (get positions nil))]
+              [(.-x child) (.-y child) (.-z child)
+               (.-x parent) (.-y parent) (.-z parent)]))
+          entries))
+        point-geometry (THREE/BufferGeometry.)
+        link-geometry (THREE/BufferGeometry.)
+        points (THREE/Points.
+                point-geometry
+                (THREE/PointsMaterial.
+                 #js {:color 0x62f99a :size 0.11 :sizeAttenuation true
+                      :transparent true :opacity 0.8}))
+        links (THREE/LineSegments.
+               link-geometry
+               (THREE/LineBasicMaterial.
+                #js {:color 0x2c9d61 :transparent true :opacity 0.18}))]
+    (.setAttribute point-geometry "position"
+                   (THREE/Float32BufferAttribute. vertices 3))
+    (.setAttribute link-geometry "position"
+                   (THREE/Float32BufferAttribute. link-values 3))
+    (.add tree links)
+    (.add tree points)))
+
+(defn add-life-tree! [root snapshot]
+  (let [tree (three/group)
+        git-tree (first (:git-trees snapshot))
+        branch-material (THREE/MeshStandardMaterial.
+                         #js {:color 0x704622 :emissive 0x2c1808
+                              :emissiveIntensity 0.35 :roughness 0.82})
+        twig-material (THREE/MeshStandardMaterial.
+                       #js {:color 0xa16a32 :emissive 0x46230d
+                            :emissiveIntensity 0.5 :roughness 0.7})
+        leaf-material (THREE/MeshPhysicalMaterial.
+                       #js {:color 0x39d878 :emissive 0x0c6f37
+                            :emissiveIntensity 0.85 :roughness 0.38
+                            :transmission 0.12 :transparent true :opacity 0.9})
+        commit-material (THREE/MeshBasicMaterial.
+                         #js {:color 0xffdc75 :transparent true :opacity 0.95})
+        recent-activity (count (take 24 (:activity snapshot)))
+        working (count (filter #(contains? #{"running" "working" "started"}
+                                           (label (or (:agent.run/status %)
+                                                      (:status %)) ""))
+                               (:agents snapshot)))
+        vitality (+ 0.7 (* 0.05 recent-activity) (* 0.18 working))
+        lineage-count (max 3 (min 18 (or (some->> (:refs git-tree)
+                                                  (filter #(= "branch" (:kind %)))
+                                                  count)
+                                         (count (:results snapshot)))))
+        ring (THREE/Mesh.
+              (THREE/TorusGeometry. 5.15 0.075 10 96)
+              (THREE/MeshBasicMaterial.
+               #js {:color (:lineage garden-colors)
+                    :transparent true :opacity 0.56}))
+        title (text-sprite
+               (if git-tree
+                 (str "GIT LIVING TREE · " (count (:commits git-tree))
+                      " COMMITS · " (count (:refs git-tree))
+                      " REFS · " (count (:files git-tree)) " OBJECTS")
+                 (str "TAMAKI · GIT LIVING TREE · "
+                      lineage-count " ACTIVE LINEAGES"))
+               "#8dffb0")
+        heart-light (THREE/PointLight. 0x55ff9a 4.2 18 1.6)
+        crown-light (THREE/PointLight. 0xffd76a 2.4 13 1.8)
+        animations (atom [])
+        tips (atom [])
+        main-points (mapv (fn [i]
+                            (THREE/Vector3.
+                             (* 0.18 (js/Math.sin (* i 0.82)))
+                             (* i 1.05)
+                             (* 0.12 (js/Math.cos (* i 0.67)))))
+                          (range 8))]
+    ;; main is the persistent trunk; luminous commit nodes climb it.
+    (doseq [[index [from to]] (map-indexed vector (partition 2 1 main-points))
+            :let [curve (branch-curve from to (* 0.08 (js/Math.sin index)))
+                  radius (- 0.72 (* index 0.065))
+                  segment (THREE/Mesh.
+                           (THREE/TubeGeometry. curve 12 radius 10 false)
+                           branch-material)
+                  commit (THREE/Mesh.
+                          (THREE/SphereGeometry. (+ 0.12 (* 0.015 index)) 12 8)
+                          commit-material)]]
+      (.copy (.-position commit) to)
+      (.add tree segment)
+      (.add tree commit))
+    (when git-tree
+      (add-exact-git-dag! tree git-tree animations)
+      (add-exact-file-canopy! tree git-tree))
+    ;; Each recent issue/source/patch lineage becomes a fork from main.
+    (doseq [branch-index (range lineage-count)
+            :let [side (if (even? branch-index) 1 -1)
+                  trunk-index (+ 2 (mod branch-index 5))
+                  origin (nth main-points trunk-index)
+                  azimuth (+ (* branch-index 2.399963) (* side 0.42))
+                  length (+ 2.8 (* 0.24 (mod branch-index 4)))
+                  fork (THREE/Vector3.
+                        (+ (.-x origin) (* length (js/Math.cos azimuth)))
+                        (+ (.-y origin) 1.25 (* 0.18 (mod branch-index 3)))
+                        (+ (.-z origin) (* length (js/Math.sin azimuth))))
+                  tip (THREE/Vector3.
+                       (+ (.-x fork) (* 1.35 (js/Math.cos (+ azimuth 0.35))))
+                       (+ (.-y fork) 1.2)
+                       (+ (.-z fork) (* 1.35 (js/Math.sin (+ azimuth 0.35)))))
+                  fork-curve (branch-curve origin fork (* side 0.35))
+                  tip-curve (branch-curve fork tip (* side -0.18))
+                  fork-mesh (THREE/Mesh.
+                             (THREE/TubeGeometry. fork-curve 16 0.16 7 false)
+                             twig-material)
+                  tip-mesh (THREE/Mesh.
+                            (THREE/TubeGeometry. tip-curve 12 0.085 7 false)
+                            twig-material)
+                  fruit-kind (keyword (name (or (when (seq (:results snapshot))
+                                                  (-> snapshot :results
+                                                      (nth (mod branch-index
+                                                                (count (:results snapshot)))
+                                                           nil)
+                                                      :nodes last :type))
+                                               :source)))
+                  fruit-color (get result-colors fruit-kind 0xffdc75)
+                  fruit (THREE/Mesh.
+                         (THREE/IcosahedronGeometry. 0.22 1)
+                         (THREE/MeshBasicMaterial.
+                          #js {:color fruit-color :transparent true
+                               :opacity 0.92}))]]
+      (.copy (.-position fruit) tip)
+      (.add tree fork-mesh)
+      (.add tree tip-mesh)
+      (.add tree fruit)
+      (swap! tips conj tip)
+      (swap! animations conj {:object fruit :phase (* branch-index 0.73)
+                              :base-scale (+ 0.82 (* vitality 0.12))
+                              :kind :fruit}))
+    ;; A translucent living canopy: hundreds of leaves are cheap instanced
+    ;; geometry, while their clusters breathe independently.
+    (doseq [[cluster-index tip] (map-indexed vector @tips)
+            :let [cluster (three/group)]]
+      (doseq [leaf-index (range 13)
+              :let [angle (* leaf-index 2.399963)
+                    radius (+ 0.35 (* 0.1 (mod leaf-index 5)))
+                    leaf (THREE/Mesh.
+                          (THREE/IcosahedronGeometry.
+                           (+ 0.22 (* 0.025 (mod leaf-index 3))) 1)
+                          leaf-material)]]
+        (three/set-position!
+         leaf
+         (+ (.-x tip) (* radius (js/Math.cos angle)))
+         (+ (.-y tip) (* 0.18 (- (mod leaf-index 5) 2)))
+         (+ (.-z tip) (* radius (js/Math.sin angle))))
+        (three/set-scale! leaf 1.5 0.72 1)
+        (.add cluster leaf))
+      (.add tree cluster)
+      (swap! animations conj {:object cluster :phase (* cluster-index 0.51)
+                              :base-y (.-y (.-position cluster))
+                              :kind :canopy}))
+    ;; Agent activity travels upward as sap. More live work means faster light.
+    (doseq [index (range (max 5 (min 14 (+ 4 working))))
+            :let [curve (branch-curve (first main-points)
+                                     (nth main-points (inc (mod index 7)))
+                                     (* 0.12 (js/Math.sin index)))
+                  sap (THREE/Mesh.
+                       (THREE/SphereGeometry. 0.095 10 7)
+                       (THREE/MeshBasicMaterial.
+                        #js {:color 0x8dffb0 :transparent true :opacity 0.95}))]]
+      (.add tree sap)
+      (swap! animations conj {:object sap :curve curve
+                              :phase (/ index 14)
+                              :speed (+ 0.055 (* vitality 0.018))
+                              :kind :sap}))
+    (three/set-rotation-x! ring (/ js/Math.PI 2))
+    (three/set-position! ring 0 0.12 0)
+    (three/set-position! title 0 10.2 0)
+    (three/set-scale! title 8.2 1.25 1)
+    (three/set-position! heart-light 0 4.4 0)
+    (three/set-position! crown-light 0 7.3 0)
+    (.add tree ring)
+    (.add tree title)
+    (.add tree heart-light)
+    (.add tree crown-light)
+    (three/set-scale! tree 1.24 1.24 1.24)
+    (.add root tree)
+    (swap! runtime assoc :tree-animations @animations
+           :tree-vitality vitality)
+    tree))
+
+(defn add-successor! [root]
+  (let [island (three/mesh (THREE/CylinderGeometry. 2.1 2.5 0.7 24)
+                           (garden-material (:soil garden-colors) 0.05))
+        stem (three/mesh (THREE/CylinderGeometry. 0.1 0.16 1.5 8)
+                         (garden-material 0x77502c 0.05))
+        left (three/mesh (THREE/SphereGeometry. 0.42 12 8)
+                         (garden-material 0x77f09a 0.8))
+        right (three/mesh (THREE/SphereGeometry. 0.38 12 8)
+                          (garden-material 0x64d989 0.7))
+        dome (THREE/Mesh.
+              (THREE/SphereGeometry. 1.35 24 14 0 (* 2 js/Math.PI)
+                                    0 (/ js/Math.PI 2))
+              (THREE/MeshPhysicalMaterial.
+               #js {:color 0xb8fff0 :transparent true :opacity 0.18
+                    :roughness 0.1 :metalness 0.0}))
+        label (text-sprite "SUCCESSOR · PROTECTED SAPLING" "#f0c866")]
+    (three/set-position! island 10 0.1 11)
+    (three/set-position! stem 10 1.15 11)
+    (three/set-position! left 9.72 1.85 11)
+    (three/set-position! right 10.3 1.7 11)
+    (three/set-position! dome 10 0.45 11)
+    (three/set-position! label 10 3.2 11)
+    (three/set-scale! label 4.8 0.85 1)
+    (doseq [object [island stem left right dome label]] (.add root object))))
+
+(defn island-origin [index]
+  (let [angle (* index 2.399963229728653)
+        radius (+ 10 (* 3.4 (js/Math.sqrt index)))]
+    {:x (* radius (js/Math.cos angle))
+     :z (* radius (js/Math.sin angle))}))
+
 (defn status [repo active-paths]
   (cond
     (contains? active-paths (:path repo)) :active
@@ -177,17 +504,24 @@
   (doseq [{:keys [from to]} dependencies
           :let [a (get positions from) b (get positions to)]
           :when (and a b)]
-    (let [geometry (THREE/BufferGeometry.)
-          points #js [(THREE/Vector3. (:x a) 0.8 (:z a))
-                      (THREE/Vector3. (:x b) 0.8 (:z b))]
-          _ (.setFromPoints geometry points)
-          line (THREE/Line. geometry
-                            (THREE/LineBasicMaterial.
-                             #js {:color (:edge colors)
-                                  :transparent true :opacity 0.8}))]
-      (.add root line))))
+    (let [start (THREE/Vector3. (:x a) 0.12 (:z a))
+          end (THREE/Vector3. (:x b) 0.12 (:z b))
+          middle (THREE/Vector3. (/ (+ (:x a) (:x b)) 2)
+                                 0.18
+                                 (/ (+ (:z a) (:z b)) 2))
+          curve (THREE/QuadraticBezierCurve3. start middle end)
+          geometry (THREE/TubeGeometry. curve 10 0.025 5 false)
+          root-path (THREE/Mesh.
+                     geometry
+                     (THREE/MeshBasicMaterial.
+                      #js {:color (:root garden-colors)
+                           :transparent true :opacity 0.34}))]
+      (.add root root-path))))
+
+(declare text-sprite)
 
 (defn add-project-topologies! [root positions projects]
+  (reset! issue-node-positions {})
   (doseq [project projects
           :let [issues (into {} (map (juxt :key identity)) (:issues project))
                 issue-positions (atom {})]]
@@ -203,15 +537,31 @@
                            "closed" 0x42f58d
                            "in-progress" 0x42a5ff
                            0xffd45a)
+            objective? (= "objective" (:kind issue))
             node (three/mesh
-                  (THREE/OctahedronGeometry. 0.28)
+                  (if objective?
+                    (THREE/IcosahedronGeometry. 0.48 1)
+                    (THREE/OctahedronGeometry. 0.28))
                   (three/standard-material
-                   {:color status-color :emissive 1.5 :roughness 0.25}))]
+                   {:color (if objective? 0xf4a8ff status-color)
+                    :emissive (if objective? 2.2 1.5) :roughness 0.25}))
+            caption (text-sprite
+                     (if objective?
+                       (str "OBJECTIVE · " (or (:title issue) key))
+                       (str "ISSUE · " (or (:rad issue) key)))
+                     (if objective? "#f4a8ff" "#ffd45a"))]
         (three/set-position! node x y z)
+        (three/set-position! caption x (+ y 0.75) z)
+        (three/set-scale! caption (if objective? 5.6 3.4)
+                          (if objective? 1.05 0.72) 1)
         (set! (.. node -userData -repo)
               (clj->js {:path (:repo issue) :issue (:rad issue)
                         :project (:id project) :issue-key key}))
         (swap! issue-positions assoc key {:x x :y y :z z})
+        (swap! issue-node-positions assoc key {:x x :y y :z z})
+        (when (:rad issue)
+          (swap! issue-node-positions assoc (:rad issue) {:x x :y y :z z}))
+        (.add root caption)
         (.add root node)))
     (doseq [[key issue] issues
             blocker (:blockers issue)
@@ -226,7 +576,98 @@
                   geometry
                   (THREE/LineBasicMaterial.
                    #js {:color 0xffd45a :transparent true :opacity 0.85}))]
-        (.add root line)))))
+        (.add root line)))
+    (doseq [{:keys [actor from to]} (:walks project)
+            :let [a (get @issue-positions from)
+                  b (get @issue-positions to)]
+            :when (and a b)]
+      (let [curve (THREE/QuadraticBezierCurve3.
+                   (THREE/Vector3. (:x a) (:y a) (:z a))
+                   (THREE/Vector3. (/ (+ (:x a) (:x b)) 2)
+                                   (+ 1.4 (max (:y a) (:y b)))
+                                   (/ (+ (:z a) (:z b)) 2))
+                   (THREE/Vector3. (:x b) (:y b) (:z b)))
+            geometry (THREE/TubeGeometry. curve 24 0.035 6 false)
+            path (THREE/Mesh.
+                  geometry
+                  (THREE/MeshBasicMaterial.
+                   #js {:color 0x35ff8a :transparent true :opacity 0.72}))]
+        (set! (.. path -userData -walk)
+              (clj->js {:actor actor :from from :to to}))
+        (.add root path)))))
+
+(def result-colors
+  {:issue 0xffd45a :source 0x48dcff :radicle 0xc956ff
+   :github 0xf5f5f5 :review 0x35ff8a :merge 0x208cff})
+
+(defn add-result-graphs! [root positions graphs]
+  ;; The garden keeps every result visible as fruit, but only the two newest
+  ;; lineages grow nameplates.  Rendering every historical caption turned the
+  ;; canopy into a wall of text at colony scale.
+  (doseq [[graph-index graph] (map-indexed vector (take-last 8 graphs))
+          :let [base (get positions (:project graph))
+                nodes (:nodes graph)]
+          :when base]
+    (let [node-positions
+          (into {}
+                (map-indexed
+                 (fn [index node]
+                   [(:id node)
+                    {:x (+ (:x base) (* (- index (/ (dec (count nodes)) 2))
+                                        1.15))
+                     :y (+ (:height base) 3.0 (* 0.28 (mod graph-index 3)))
+                     :z (+ (:z base) 2.6 (* 0.7 graph-index))}])
+                 nodes))]
+      (doseq [node nodes
+              :let [{:keys [x y z]} (get node-positions (:id node))
+                    kind (keyword (name (:type node)))
+                    color (get result-colors kind 0xffffff)
+                    object (three/mesh
+                            (case kind
+                              :source (THREE/TetrahedronGeometry. 0.34)
+                              :radicle (THREE/SphereGeometry. 0.3 12 9)
+                              :github (THREE/SphereGeometry. 0.36 18 10
+                                                               0 (* 2 js/Math.PI)
+                                                               0 (/ js/Math.PI 2))
+                              :review (THREE/TorusGeometry. 0.3 0.1 8 20)
+                              :merge (THREE/IcosahedronGeometry. 0.38 1)
+                              (THREE/OctahedronGeometry. 0.3))
+                            (three/standard-material
+                             {:color color :emissive 1.7 :roughness 0.24}))
+                    caption (when (>= graph-index 6)
+                              (text-sprite
+                               (str (case kind
+                                      :source "SOURCE SEED"
+                                      :radicle "RADICLE POD"
+                                      :github "GITHUB CONSERVATORY"
+                                      :review "REVIEW BLOOM"
+                                      :merge "MERGE CANOPY"
+                                      (str/upper-case (name kind)))
+                                    " · "
+                                    (let [value (str (:value node))]
+                                      (subs value 0 (min 12 (count value)))))
+                               (str "#" (.toString color 16))))]]
+        (three/set-position! object x y z)
+        (set! (.. object -userData -result) (clj->js node))
+        (.add root object)
+        (when caption
+          (three/set-position! caption x (+ y 0.62) z)
+          (three/set-scale! caption 2.25 0.48 1)
+          (.add root caption)))
+      (doseq [edge (:edges graph)
+              :let [a (get node-positions (:from edge))
+                    b (get node-positions (:to edge))]
+              :when (and a b)]
+        (let [geometry (doto (THREE/BufferGeometry.)
+                         (.setFromPoints
+                          #js [(THREE/Vector3. (:x a) (:y a) (:z a))
+                               (THREE/Vector3. (:x b) (:y b) (:z b))]))
+              line (THREE/Line.
+                    geometry
+                    (THREE/LineBasicMaterial.
+                     #js {:color 0x89f7ff :transparent true
+                          :opacity 0.9}))]
+          (.add root line))))))
 
 (defn text-sprite [text color]
   (let [canvas (.createElement js/document "canvas")
@@ -427,6 +868,8 @@
           active-by-path (into {} (map (juxt :path identity) (:active-repos snapshot)))
           active-paths (set (keys active-by-path))
           positions (atom {})]
+      (add-life-tree! repo-root snapshot)
+      (add-successor! repo-root)
       (doseq [[group-index group] (map-indexed vector groups)
               :let [group-repos (->> (get grouped group)
                                      (sort-by (juxt #(get ranks (:path %) 0)
@@ -436,16 +879,30 @@
                                             (fn [i repo] [(:path repo) i])
                                             group-repos))
                     columns (max 1 (js/Math.ceil (js/Math.sqrt (count group-repos))))
-                    col (mod group-index group-columns)
-                    row (quot group-index group-columns)
-                    origin-x (* (- col (/ (dec group-columns) 2)) 22)
-                    origin-z (* row 20)
-                    extent (+ 1 (* columns 0.32))
+                    {:keys [x z]} (island-origin group-index)
+                    origin-x x
+                    origin-z z
+                    extent (+ 2.2 (* columns 0.28))
                     platform (three/mesh
-                              (THREE/BoxGeometry. extent 0.32 extent)
-                              (material :platform))]]
-        (three/set-position! platform origin-x -0.2 origin-z)
+                              (THREE/CylinderGeometry.
+                               (/ extent 2) (* 0.82 (/ extent 2))
+                               0.62 24)
+                              (garden-material (:soil garden-colors) 0.05))
+                    island-ring (THREE/Mesh.
+                                 (THREE/TorusGeometry.
+                                  (* 0.43 extent) 0.045 7 42)
+                                 (THREE/MeshBasicMaterial.
+                                  #js {:color (:soil-edge garden-colors)
+                                       :transparent true :opacity 0.65}))
+                    island-label (text-sprite (str group) "#8dffb0")]]
+        (three/set-position! platform origin-x -0.32 origin-z)
+        (three/set-rotation-x! island-ring (/ js/Math.PI 2))
+        (three/set-position! island-ring origin-x 0.01 origin-z)
+        (three/set-position! island-label origin-x 2.5 origin-z)
+        (three/set-scale! island-label 4.0 0.72 1)
         (.add repo-root platform)
+        (.add repo-root island-ring)
+        (.add repo-root island-label)
         (doseq [[[kind congestion] kind-repos]
                 (group-by (fn [repo]
                             [(status repo active-paths)
@@ -453,19 +910,26 @@
                                        (:patches-open repo)))])
                           group-repos)
                 :let [height (if (= kind :active)
-                               0.8
-                               (+ 0.18 (* congestion 0.12)))
-                      geometry (THREE/BoxGeometry. 0.25 height 0.25)
-                      mesh (THREE/InstancedMesh. geometry (material kind)
+                               1.25
+                               (+ 0.28 (* congestion 0.12)))
+                      geometry (if (= kind :different)
+                                 (THREE/ConeGeometry. 0.105 height 5)
+                                 (THREE/ConeGeometry. 0.09 height 7))
+                      plant-kind (case kind
+                                   :active :active
+                                   :different :different
+                                   :synced :synced
+                                   :remote)
+                      mesh (THREE/InstancedMesh. geometry (material plant-kind)
                                                  (count kind-repos))
                       matrix (THREE/Matrix4.)
                       repo-array (array)]]
           (doseq [[instance-id repo] (map-indexed vector kind-repos)
                   :let [repo-index (get index-by-path (:path repo))
                         x (+ origin-x (* (- (mod repo-index columns)
-                                             (/ (dec columns) 2)) 0.32))
+                                             (/ (dec columns) 2)) 0.25))
                         z (+ origin-z (* (- (quot repo-index columns)
-                                             (/ (dec columns) 2)) 0.32))
+                                             (/ (dec columns) 2)) 0.25))
                         y (/ height 2)]]
             (.setPosition matrix x y z)
             (.setMatrixAt mesh instance-id matrix)
@@ -487,26 +951,26 @@
             points (THREE/Points.
                     geometry
                     (THREE/PointsMaterial.
-                     #js {:color 0x9b7bc4 :size 0.22
+                    #js {:color 0x6ff59b :size 0.16
                           :sizeAttenuation true :transparent true
                           :opacity 0.95}))]
         (.setAttribute geometry "position" attribute)
         (.add repo-root points))
       (add-dependency-lines! repo-root @positions (:dependencies snapshot))
       (add-project-topologies! repo-root @positions (:projects snapshot))
-      (add-system-dynamics! repo-root (:system-dynamics snapshot))
+      (add-result-graphs! repo-root @positions (:results snapshot))
       (let [actor-animations (atom [])]
        (doseq [[agent-index agent] (map-indexed vector (queried-agents))
-              :let [position (get @positions (:agent.run/project agent))]
+              :let [position (or (get @issue-node-positions (:issue agent))
+                                 (get @positions (:agent.run/project agent)))]
               :when position]
         (let [{:keys [actor] :as character} (make-agent-character agent)
               phase (* agent-index 2.399)
-              radius (+ 1.35 (* 0.35 (mod agent-index 3)))
-              ;; Actors live on a readable central air-deck; the beam retains
-              ;; their exact repo ownership even when that repo is off-screen.
-              base (THREE/Vector3. (+ -11 (* 4.8 (mod agent-index 4)))
-                                   (+ 8.0 (* 2.5 (quot agent-index 4)))
-                                   -2.0)
+              radius (+ 0.62 (* 0.12 (mod agent-index 3)))
+              base (THREE/Vector3.
+                    (:x position)
+                    (+ (or (:y position) (:height position) 0) 1.2)
+                    (:z position))
               style (get runner-style (agent-runner agent)
                          {:body 0x35ff8a})
               orbit (THREE/Mesh.
@@ -518,7 +982,9 @@
               (doto (THREE/BufferGeometry.)
                 (.setFromPoints
                  #js [(THREE/Vector3. (:x position)
-                                     (:height position) (:z position))
+                                     (or (:y position)
+                                         (:height position) 0)
+                                     (:z position))
                       (THREE/Vector3. (.-x base) (.-y base) (.-z base))]))
               beam (THREE/Line.
                     beam-geometry
@@ -528,7 +994,7 @@
           (.computeLineDistances beam)
           (three/set-rotation-x! orbit (/ js/Math.PI 2))
           (three/set-position! orbit (.-x base) (.-y base) (.-z base))
-          (three/set-scale! actor 2.0 2.0 2.0)
+          (three/set-scale! actor 0.72 0.72 0.72)
           (three/set-position! actor
                                (+ (.-x base) (* radius (js/Math.cos phase)))
                                (.-y base)
@@ -559,7 +1025,6 @@
         active (first (:active-repos snapshot))
         metrics (.getElementById js/document "metrics")
         details (.getElementById js/document "details")
-        activity (.getElementById js/document "activity")
         model-usage (.getElementById js/document "model-usage")
         dynamics-panel (.getElementById js/document "system-dynamics")
         grouping (.getElementById js/document "grouping")
@@ -591,15 +1056,6 @@
                         "model " (or (get run :agent.run/model) "default") "<br>"
                         (get run :agent.run/goal))))
             "Select a repository tile"))
-    (set! (.-innerHTML activity)
-          (apply str
-                 (for [{:keys [at kind run issue patch text]}
-                       (take 12 (:activity snapshot))]
-                   (str "<div class=\"event\"><time>"
-                        (.toLocaleTimeString (js/Date. at))
-                        "</time><b>" (label kind "event") "</b><small>"
-                        (or text issue patch run "workspace")
-                        "</small></div>"))))
     (let [usage-by-provider (into {} (map (juxt :provider identity))
                                   (:model-usage snapshot))]
       (set! (.-innerHTML model-usage)
@@ -668,6 +1124,7 @@
      (frequencies (map :sync (:repos snapshot)))
      (:dependencies snapshot)
      (:projects snapshot) (:agents snapshot) (:loops snapshot)
+     (:results snapshot)
      (:repo-stats snapshot)
      ;; observed-at advances every second but does not change geometry.
      ;; Excluding it avoids disposing/recreating thousands of WebGL objects
@@ -806,6 +1263,84 @@
                  (js/prompt "Tamaki supervisor への指示を入力してください")]
         (submit-voice! transcript)))))
 
+(defn short-agent-label [{:keys [agent-id agent-runner]}]
+  (let [id (or agent-id "system")
+        short-id (if (> (count id) 18)
+                   (str (subs id 0 8) "…" (subs id (- (count id) 5)))
+                   id)]
+    (if (and agent-runner (not= agent-runner "system")
+             (not= agent-runner id))
+      (str agent-runner " · " short-id)
+      short-id)))
+
+(defn activity-panel []
+  (let [snapshot @(rf/subscribe [:snapshot])
+        selected-agent @(rf/subscribe [:activity-agent])
+        events (:activity snapshot)
+        agents (->> events
+                    (reduce (fn [result event]
+                              (assoc result (:agent-id event) event)) {})
+                    vals
+                    (sort-by (juxt :agent-runner :agent-id)))
+        visible (if (= "all" selected-agent)
+                  events
+                  (filter #(= selected-agent (:agent-id %)) events))]
+    [:<>
+     [:div.activity-filters
+      [:button {:class (when (= "all" selected-agent) "selected")
+                :on-click #(rf/dispatch [:activity-agent "all"])}
+       "all"]
+      (for [{:keys [agent-id] :as agent} agents]
+        ^{:key agent-id}
+        [:button {:class (when (= agent-id selected-agent) "selected")
+                  :title (str (:agent-runner agent) " · "
+                              (:agent-model agent) " · " agent-id)
+                  :on-click #(rf/dispatch [:activity-agent agent-id])}
+         (short-agent-label agent)])]
+     [:div#activity
+      (if (seq visible)
+        (for [{:keys [id at kind run issue patch text stream] :as event}
+              (take 20 visible)]
+          ^{:key (or id (str run "-" at "-" kind))}
+          [:div.event
+           [:time (.toLocaleTimeString (js/Date. at))]
+           [:div.event-heading
+            [:b (label kind "event")]
+            [:span.stream (or stream "system")]]
+           [:small.agent
+            (str "[" (short-agent-label event) "] · "
+                 (or text issue patch run "workspace"))]])
+        [:div.activity-empty "この agent の activity を待機中…"])]]))
+
+(defn result-panel []
+  (let [snapshot @(rf/subscribe [:snapshot])
+        results (take-last 3 (:results snapshot))]
+    [:div.result-panel
+     (if (seq results)
+       (for [result (reverse results)]
+         ^{:key (:id result)}
+         [:div.result-chain
+          [:small (str (:project result) " · " (:issue result))]
+          [:div
+           (interpose
+            [:span.result-arrow "→"]
+            (for [node (:nodes result)]
+              ^{:key (:id node)}
+              [:span {:class (str "result-node " (name (:type node)))
+                      :title (str (:value node))}
+               (str/upper-case (name (:type node))) ]))]])
+       [:small "source / PR resultを待機中…"])]))
+
+(defn set-garden-view! [view]
+  (when-let [{:keys [camera controls]} @runtime]
+    (let [[x y z target-y] (case view
+                             :world [48 58 72 1.5]
+                             :organism [11 10 16 4.5]
+                             [28 34 42 1.5])]
+      (three/set-position! camera x y z)
+      (three/set-position! (.-target controls) 0 target-y 0)
+      (.update ^js controls))))
+
 (defn shell-view []
   [:div {:class style/app}
    [:canvas#scene {:class style/scene}]
@@ -818,6 +1353,14 @@
       [:option {:value "org"} "organization"]
       [:option {:value "project"} "project"]
       [:option {:value "sync"} "west sync"]]]
+    [:div.garden-views
+     [:span "Living Garden"]
+     [:button {:type "button" :on-click #(set-garden-view! :world)}
+      "World"]
+     [:button {:type "button" :on-click #(set-garden-view! :colony)}
+      "Colony"]
+     [:button {:type "button" :on-click #(set-garden-view! :organism)}
+      "Organism"]]
     [:div.voice-row
      [:button.voice-button {:type "button" :on-click start-voice!}
       "🎙 Tamaki に話す"]
@@ -831,8 +1374,10 @@
    [:aside#inspector {:class (str style/glass " " style/inspector)}
     [:h2 "Workspace"]
     [:div#details.details "Select a repository tile"]
+    [:h2 "Source / PR results"]
+    [result-panel]
     [:h2.activity-title "Live activity"]
-    [:div#activity]]
+    [activity-panel]]
    [:section#system-dynamics
     {:class (str style/glass " " style/dynamics)}
     [:b "System dynamics"] [:span "Connecting…"]]
@@ -892,20 +1437,35 @@
         renderer (three/webgl-renderer canvas {:antialias true :alpha false})
         controls (OrbitControls. camera canvas)
         repo-root (three/group)]
-    (three/set-clear-color! renderer 0x090611 1)
+    (three/set-clear-color! renderer 0x030a08 1)
+    (set! (.-fog scene) (THREE/FogExp2. 0x030a08 0.012))
     (three/set-pixel-ratio! renderer (min 2 (.-devicePixelRatio js/window)))
     (three/set-size! renderer (.-innerWidth js/window) (.-innerHeight js/window))
-    (three/set-position! camera 18 22 28)
+    (three/set-position! camera 28 34 42)
     (.lookAt ^js camera (THREE/Vector3. 0 0 0))
     (set! (.-enableDamping controls) true)
     (set! (.-dampingFactor controls) 0.07)
     (set! (.-minDistance controls) 5)
-    (set! (.-maxDistance controls) 80)
-    (.add scene (three/ambient-light 0xbfa8ff 1.4))
+    (set! (.-maxDistance controls) 120)
+    (.add scene (three/ambient-light 0xa9ffd0 1.25))
     (let [light (three/directional-light 0xffffff 3.2)]
       (three/set-position! light 10 20 12)
       (.add scene light))
-    (.add scene (three/grid-helper 80 80 0x39264f 0x191021))
+    (let [ground (THREE/Mesh.
+                  (THREE/CircleGeometry. 62 96)
+                  (THREE/MeshStandardMaterial.
+                   #js {:color 0x07120e :roughness 0.96
+                        :metalness 0.0 :transparent true :opacity 0.9}))
+          lineage-ring (THREE/Mesh.
+                        (THREE/TorusGeometry. 8.2 0.035 8 96)
+                        (THREE/MeshBasicMaterial.
+                         #js {:color 0xd9b85c :transparent true
+                              :opacity 0.28}))]
+      (three/set-rotation-x! ground (- (/ js/Math.PI 2)))
+      (three/set-position! ground 0 -0.66 0)
+      (three/set-rotation-x! lineage-ring (/ js/Math.PI 2))
+      (.add scene ground)
+      (.add scene lineage-ring))
     (.add scene repo-root)
     (reset! runtime {:scene scene :camera camera :renderer renderer
                      :controls controls :repo-root repo-root})
@@ -931,6 +1491,32 @@
                                 (* 0.5 (js/Math.sin
                                         (* progress js/Math.PI))))]
                    (three/set-scale! object pulse pulse pulse))))
+             (doseq [{:keys [object curve phase speed kind base-scale]}
+                     (:tree-animations @runtime)]
+               (case kind
+                 :sap
+                 (let [progress (mod (+ phase (* time speed)) 1)
+                       point (.getPointAt ^js curve progress)
+                       pulse (+ 0.7 (* 0.65
+                                         (js/Math.sin (* progress js/Math.PI))))]
+                   (.copy (.-position ^js object) point)
+                   (three/set-scale! object pulse pulse pulse))
+
+                 :fruit
+                 (let [pulse (* base-scale
+                                (+ 1 (* 0.16
+                                        (js/Math.sin
+                                         (+ phase (* time 2.7))))))]
+                   (three/set-scale! object pulse pulse pulse)
+                   (set! (.. object -rotation -y) (+ phase (* time 0.28))))
+
+                 :canopy
+                 (do
+                   (set! (.. object -rotation -z)
+                         (* 0.025 (js/Math.sin (+ phase (* time 0.72)))))
+                   (set! (.. object -rotation -x)
+                         (* 0.018 (js/Math.cos (+ phase (* time 0.61))))))
+                 nil))
              (doseq [{:keys [actor head left-arm right-arm left-leg right-leg
                              beacon base phase radius speed working?]}
                      (:actor-animations @runtime)]
@@ -960,6 +1546,7 @@
 (defn ^:export init []
   (rf/dispatch-sync [:snapshot nil])
   (rf/dispatch-sync [:group-mode :org])
+  (rf/dispatch-sync [:activity-agent "all"])
   (mount-shell!)
   (init-scene!)
   (set! (.-tamakiReceive js/window)
