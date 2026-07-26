@@ -3,194 +3,12 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
-            [kotoba.shell.event-test]
+            [kotoba.shell.connector-test]
+            [kotoba.shell.experience :as experience]
             [kotoba.shell.input-test]
             [kotoba.shell.mangaka-app-test]
-            [kotoba.shell.experience :as experience]
             [kotoba.shell.sealed-line :as sealed]
-            [kotoba.shell.tamaki-observer :as tamaki-observer]
-            [kotoba.shell.tamaki-web-data :as tamaki-web-data]
             [kotoba.shell.launcher :as launcher]))
-
-(deftest tamaki-observer-projects-durable-campaigns
-  (let [campaign {:tamaki.loop/id "loop-1"
-                  :tamaki.loop/status :active
-                  :tamaki.loop/objective "grow safely"
-                  :tamaki.loop/cycles 1
-                  :tamaki.loop/max-cycles 5
-                  :tamaki.loop/failures 0
-                  :tamaki.loop/max-failures 2
-                  :tamaki.loop/updated-at 2}
-        events [{:tamaki.event/run "loop-1"
-                 :tamaki.event/kind :loop/started
-                 :tamaki.event/at 1
-                 :tamaki.event/data {:campaign campaign}}
-                {:tamaki.event/run "loop-1"
-                 :tamaki.event/kind :loop/cycle-started
-                 :tamaki.event/at 2
-                 :tamaki.event/data {:loop/cycle 1}}]
-        state (tamaki-observer/snapshot events)
-        ops (tamaki-observer/surface-ops state)]
-    (is (= 2 (:events state)))
-    (is (= 1 (count (:campaigns state))))
-    (is (some #(= :dom/set-root (first %)) ops))
-    (is (some #(and (= :dom/create-text (first %))
-                    (= "Live activity" (nth % 2)))
-              ops))
-    (is (some #(and (= :dom/create-text (first %))
-                    (= "Tamaki Observatory" (nth % 2)))
-              ops))))
-
-(deftest tamaki-observer-joins-west-rad-github-and-agent-activity
-  (let [root (.toFile (java.nio.file.Files/createTempDirectory
-                       "tamaki-registry" (make-array java.nio.file.attribute.FileAttribute 0)))
-        manifest (io/file root "west.yml")
-        repo-dir (io/file root "orgs/kotoba-lang/tamaki/.git")]
-    (.mkdirs repo-dir)
-    (spit manifest
-          (str "manifest:\n  projects:\n"
-               "    - name: tamaki\n"
-               "      remote: kotoba-lang\n"
-               "      path: orgs/kotoba-lang/tamaki\n"
-               "      userdata:\n"
-               "        rad-rid: rad:z123\n"
-               "    - name: shell\n"
-               "      remote: kotoba-lang\n"
-               "      path: orgs/kotoba-lang/shell\n"))
-    (let [projects (tamaki-observer/read-west-projects
-                    (.getPath manifest) (.getPath root))]
-      (is (= 2 (count projects)))
-      (is (every? :west? projects))
-      (is (every? :github? projects))
-      (is (= 1 (count (filter :rad? projects))))
-      (is (= 1 (count (filter :local? projects)))))))
-
-(deftest tamaki-activity-feed-identifies-agent-and-stream
-  (let [runs [{:agent.run/id "run-123456789"
-               :agent.run/worker "agent2"
-               :agent.run/runner "claude"
-               :agent.run/model "sonnet"}]
-        events [{:tamaki.event/id "event-1"
-                 :tamaki.event/run "run-123456789"
-                 :tamaki.event/kind :agent/activity
-                 :tamaki.event/at 10
-                 :tamaki.event/data {:activity/kind :tool/started
-                                     :activity/stream :tool
-                                     :activity/text "read file"}}
-                {:tamaki.event/id "event-2"
-                 :tamaki.event/run "supervisor"
-                 :tamaki.event/kind :loop/cycle-started
-                 :tamaki.event/at 9
-                 :tamaki.event/data {}}]
-        [agent-event system-event]
-        (tamaki-web-data/activity-feed events runs)]
-    (is (= "run-123456789" (:agent-id agent-event)))
-    (is (= "claude" (:agent-runner agent-event)))
-    (is (= "sonnet" (:agent-model agent-event)))
-    (is (= "tool" (:stream agent-event)))
-    (is (= "system" (:agent-id system-event)))
-    (is (= "system" (:stream system-event)))))
-
-(deftest tamaki-objective-topology-exposes-actor-walk
-  (let [run {:agent.run/id "run-1"
-             :agent.run/project "orgs/kotoba-lang/tamaki"}
-        campaign {:tamaki.loop/id "loop-1"
-                  :tamaki.loop/status :active
-                  :tamaki.loop/project "orgs/kotoba-lang/tamaki"
-                  :tamaki.loop/objective "grow maturity"}
-        events [{:tamaki.event/run "run-1"
-                 :tamaki.event/kind :issue/discovered
-                 :tamaki.event/at 41
-                 :tamaki.event/data {:loop/id "loop-1"
-                                     :issue/id "rad-1"}}
-                {:tamaki.event/run "run-1"
-                 :tamaki.event/kind :issue/prioritized
-                 :tamaki.event/at 42
-                 :tamaki.event/data
-                 {:issue/selection
-                  {:issue {:issue/id "rad-1" :issue/title "Fix gate"
-                           :issue/status :open :issue/blockers #{"rad-0"}}}}}]
-        [topology]
-        (tamaki-web-data/live-objective-topologies
-         events [run] [campaign])]
-    (is (= "grow maturity" (:objective topology)))
-    (is (= [["rad-1"] ["objective/loop-1"]]
-           (:reverse-topology topology)))
-    (is (= {:actor "run-1" :at 42
-            :from "objective/loop-1" :to "rad-1"}
-           (first (:walks topology))))
-    (is (= #{"rad-0"}
-           (set (:blockers
-                 (some #(when (= "rad-1" (:key %)) %)
-                       (:issues topology))))))))
-
-(deftest tamaki-system-dynamics-projects-durable-stock-and-flow
-  (let [now 4000000
-        event (fn [kind at data]
-                {:tamaki.event/kind kind :tamaki.event/at at
-                 :tamaki.event/data data})
-        events [(event :issue/discovered 100 {:issue/id "old"})
-                (event :issue/discovered 3999000 {:issue/id "open"})
-                (event :issue/discovered 3999001 {:issue/id "done"})
-                (event :run/started 3999002 {})
-                (event :patch/created 3999003
-                       {:patch/id "p-open" :issue/id "open"})
-                (event :patch/created 3999004
-                       {:patch/id "p-done" :issue/id "done"})
-                (event :patch/integrated 3999005
-                       {:patch/id "p-done" :issue/id "done"})
-                (event :run/failed 3999006 {})]
-        runs [{:agent.run/status :running}]
-        dynamics (tamaki-web-data/system-dynamics events runs now)
-        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))
-        flows (into {} (map (juxt :id :rate)) (:flows dynamics))]
-    (is (= {"backlog" 2, "wip" 1, "review" 1, "integrated" 1} stocks))
-    (is (= {"discover" 2, "start" 1, "patch" 2, "integrate" 1} flows))
-    (is (= "backlog" (:bottleneck dynamics)))
-    (is (= 1 (:backlog-delta dynamics)))
-    (is (= 1.0 (:failure-pressure dynamics)))))
-
-(deftest tamaki-system-dynamics-adds-observed-revenue-stocks
-  (let [events [{:tamaki.event/kind :business/observed
-                 :tamaki.event/at 1
-                 :tamaki.event/data
-                 {:observation
-                  {:period-days 7
-                   :stocks {:traffic 100 :qualified-leads 10
-                            :proposals 3 :active-customers 2
-                            :mrr-jpy 50000}
-                   :flows {:new-qualified-leads 10 :new-proposals 3
-                           :new-wins 2 :delta-mrr-jpy 20000}
-                   :rates {:confidence 0.8}}}}]
-        dynamics (tamaki-web-data/system-dynamics events [] 2)
-        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))]
-    (is (= :observed (:business-status dynamics)))
-    (is (= 50000.0 (get stocks "business-mrr")))
-    (is (= 16000.0
-           (get-in dynamics [:business-kpis :risk-adjusted-delta-mrr-jpy])))))
-
-(deftest tamaki-finance-dashboard-uses-only-observed-books
-  (is (= :unavailable
-         (:status (tamaki-web-data/finance-dashboard []))))
-  (let [events [{:tamaki.event/kind :finance/observed
-                 :tamaki.event/at 1
-                 :tamaki.event/data
-                 {:org :cloud
-                  :owner {:kind :corporate :ref :org/cloud}
-                  :period "2026-07"
-                  :currency :JPY
-                  :pl {:revenue 1000 :cost-of-sales 200
-                       :operating-expenses 300}
-                  :bs {:assets 1500 :liabilities 400 :equity 1100}
-                  :cf {:operating 500 :investing -100 :financing 0
-                       :ending-cash 900}}}]
-        dashboard (tamaki-web-data/finance-dashboard events)]
-    (is (= :observed (:status dashboard)))
-    (is (= 800 (get-in dashboard [:pl :gross-profit])))
-    (is (= 500 (get-in dashboard [:pl :operating-profit])))
-    (is (zero? (get-in dashboard [:bs :balance-delta])))
-    (is (= 900 (get-in dashboard [:cf :ending-cash])))
-    (is (= 1 (get-in dashboard [:segments :corporate :observations])))))
 
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
@@ -242,17 +60,12 @@
            (get-in macos-result [:kotoba.cli/data :kotoba.shell/authority])))
     (is (false? (get-in macos-result [:kotoba.cli/data :kotoba.shell/deprecated-shim?])))
     (is (= :shell/native-host-ready (:kotoba.cli/code macos-result)))
-    (is (= 15 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
+    (is (= 16 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
     (is (string? (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-command])))
     (is (= :process (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :simctl (get-in ios-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :adb (get-in android-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
-    ;; 9 catalog providers total; contacts/calendar are macOS-only (real
-    ;; AppleScript-backed providers, bin/kotoba-shell-host-macos) so iOS sees
-    ;; 6, not the other 8 (was incorrectly 8 before contacts/calendar were
-    ;; narrowed to :required-targets [:macos] to match what's actually
-    ;; implemented -- they used to falsely claim iOS/Android support too).
-    (is (= 6 (get-in ios-result [:kotoba.cli/data :kotoba.shell/capability-gate-count])))
+    (is (= 8 (get-in ios-result [:kotoba.cli/data :kotoba.shell/capability-gate-count])))
     (is (= 53766 (get-in android-result [:kotoba.cli/data :kotoba.shell/native-host-exports
                                          "native-command-surface-digest"])))
     (is (false? (:kotoba.cli/ok? unknown-result)))
@@ -316,8 +129,7 @@
     (let [result (launcher/dispatch ["adapter" "check" "--target" "android" "--json"])]
       (is (:kotoba.cli/ok? result))
       (is (= :android (get-in result [:kotoba.cli/data :kotoba.shell/target])))
-      ;; contacts/calendar are macOS-only (see native-host-check-uses-shell-owned-contracts)
-      (is (= 6 (get-in result [:kotoba.cli/data :kotoba.shell/provider-count]))))))
+      (is (= 8 (get-in result [:kotoba.cli/data :kotoba.shell/provider-count]))))))
 
 (deftest surface-host-uses-browser-and-wasm-ui-without-webview
   (let [check-result (launcher/dispatch ["surface" "check" "--target" "macos" "--json"])
@@ -330,10 +142,10 @@
                                            "--ops-edn" "{:not :ops}"])]
     (is (:kotoba.cli/ok? check-result))
     (is (= :shell/surface-ready (:kotoba.cli/code check-result)))
-    (is (true? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
-    (is (= "WebKit"
+    (is (false? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
+    (is (= "kotoba-lang/browser"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/browser-engine])))
-    (is (= "ClojureScript/WebGL"
+    (is (= "kotoba-lang/dom-gpu"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/ui-substrate])))
     (is (= :native-surface
            (get-in check-result [:kotoba.cli/data :kotoba.shell/surface-host :kind])))
@@ -462,77 +274,6 @@
   (is (= launcher/default-provider-timeout-seconds
          (launcher/provider-timeout-seconds :macos "unknown/command"))))
 
-(deftest macos-contacts-calendar-providers-are-macos-only-and-gated-by-default
-  ;; Contacts.app/Calendar.app access needs a real TCC grant a fresh CI
-  ;; runner won't have (and shouldn't be asked to grant interactively), so
-  ;; this only verifies the dispatch/catalog/policy plumbing -- same
-  ;; approach as the webauthn tests above. A fake --host-command stands in
-  ;; for the real osascript-backed provider
-  ;; (resources/kotoba/shell/selfhost/{contacts_list,calendar_list_events}.applescript,
-  ;; manually verified against real Contacts/Calendar data during
-  ;; development: 128 contacts in ~8s, real calendar events with correct
-  ;; JSON escaping).
-  (let [contacts-allow-policy "{:allow [\"contacts/read\"] :deny []}"
-        calendar-allow-policy "{:allow [\"calendar/read\"] :deny []}"
-        contacts-with-fake-host
-        (launcher/dispatch ["native-host" "provider"
-                            "--target" "macos"
-                            "--provider-command" "contacts/list"
-                            "--host-command" "/bin/echo"
-                            "--host-arg" "fake-contacts-ok"
-                            "--policy-edn" contacts-allow-policy])
-        calendar-with-fake-host
-        (launcher/dispatch ["native-host" "provider"
-                            "--target" "macos"
-                            "--provider-command" "calendar/list-events"
-                            "--host-command" "/bin/echo"
-                            "--host-arg" "fake-calendar-ok"
-                            "--policy-edn" calendar-allow-policy])
-        ios-unknown (launcher/dispatch ["native-host" "provider"
-                                        "--target" "ios"
-                                        "--provider-command" "contacts/list"
-                                        "--host-command" "/bin/echo"
-                                        "--policy-edn" contacts-allow-policy])
-        android-unknown (launcher/dispatch ["native-host" "provider"
-                                            "--target" "android"
-                                            "--provider-command" "calendar/list-events"
-                                            "--host-command" "/bin/echo"
-                                            "--policy-edn" calendar-allow-policy])
-        contacts-default-policy-denied
-        (launcher/dispatch ["native-host" "provider"
-                            "--target" "macos"
-                            "--provider-command" "contacts/list"
-                            "--host-command" "/bin/echo"])]
-    (is (:kotoba.cli/ok? contacts-with-fake-host))
-    (is (= :shell/provider-ran (:kotoba.cli/code contacts-with-fake-host)))
-    (is (= "contacts/read"
-           (get-in contacts-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
-    (is (str/includes? (get-in contacts-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
-                       "fake-contacts-ok"))
-    (is (:kotoba.cli/ok? calendar-with-fake-host))
-    (is (= :shell/provider-ran (:kotoba.cli/code calendar-with-fake-host)))
-    (is (= "calendar/read"
-           (get-in calendar-with-fake-host [:kotoba.cli/data :kotoba.shell/provider-capability])))
-    (is (str/includes? (get-in calendar-with-fake-host [:kotoba.cli/data :kotoba.shell/stdout])
-                       "fake-calendar-ok"))
-    (is (false? (:kotoba.cli/ok? ios-unknown)))
-    (is (= :shell/provider-command-unknown (:kotoba.cli/code ios-unknown))
-        "contacts/calendar require :macos in :required-targets -- there is no CLI-invokable
-        iOS/Android equivalent (would need native Contacts/EventKit or
-        ContactsContract/CalendarContract bridges compiled into an app, not a bash host
-        script), so the catalog must not claim they do")
-    (is (false? (:kotoba.cli/ok? android-unknown)))
-    (is (= :shell/provider-command-unknown (:kotoba.cli/code android-unknown)))
-    (is (false? (:kotoba.cli/ok? contacts-default-policy-denied))
-        "contacts/calendar must not be in the default allow-list, same as keychain/*/webauthn/*")
-    (is (= :shell/provider-denied (:kotoba.cli/code contacts-default-policy-denied)))))
-
-(deftest contacts-calendar-providers-declare-longer-timeouts-than-instant-providers
-  ;; Real AppleScript/Apple Events round trips scale with data volume (128
-  ;; contacts took ~8s in manual testing) -- not "instant" like clipboard/fs.
-  (is (= 60 (launcher/provider-timeout-seconds :macos "contacts/list")))
-  (is (= 30 (launcher/provider-timeout-seconds :macos "calendar/list-events"))))
-
 (deftest release-check-and-evidence-cover-packaging-signing-updater
   (let [macos-manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\"}"
         mobile-manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
@@ -654,122 +395,14 @@
     (is (= 3 (get-in scaffold [:kotoba.cli/data :kotoba.shell/ready-count])))
     (is (every? pos-int?
                 (map :file-count (get-in scaffold [:kotoba.cli/data :kotoba.shell/app-rows]))))
-    ;; macOS/iOS: project.pbxproj を手書きせず xcodegen generate に作らせる方式
-    ;; (native-render-pipeline、ADR-2607081015 の WKWebView 実用優先決定)。
-    ;; Info.plist もその生成物(xcodegen の info.path 出力) — scaffold-files が
-    ;; 直接書くファイル一覧には含まれないが、scaffold-target-row のパイプライン
-    ;; 全体を通せば実在するようになる。SceneDelegate.swift は scene 無しの単純な
-    ;; UIApplicationDelegate ライフサイクルにしたため、もう存在しない(意図的)。
     (is (.isFile (io/file output-dir "macos" "Info.plist")))
-    (is (.isFile (io/file output-dir "macos" "KotobaShell.xcodeproj" "project.pbxproj")))
-    ;; Resources/WebBundle(Resources 直下ではない)— xcodegen の folder
-    ;; reference にして Xcode の Copy Bundle Resources によるサブディレクトリ
-    ;; フラット化(vendor/ 等が消える実バグ)を避けるための専用配置。
-    (is (.isFile (io/file output-dir "macos" "Resources" "WebBundle" "index.html")))
-    (is (.isFile (io/file output-dir "ios" "Info.plist")))
-    (is (.isFile (io/file output-dir "ios" "KotobaShell.xcodeproj" "project.pbxproj")))
-    (is (.isFile (io/file output-dir "ios" "Resources" "WebBundle" "index.html")))
+    (is (.isFile (io/file output-dir "ios" "Sources" "SceneDelegate.swift")))
     (is (.isFile (io/file output-dir "android" "app" "build.gradle")))
-    (is (.isFile (io/file output-dir "android" "app" "src" "main" "assets" "index.html")))
     (is (:kotoba.cli/ok? check))
     (is (= :shell/app-ready (:kotoba.cli/code check)))
     (is (every? :ok? (get-in check [:kotoba.cli/data :kotoba.shell/app-rows])))
     (is (false? (:kotoba.cli/ok? invalid)))
     (is (= :shell/app-scaffold-blocked (:kotoba.cli/code invalid)))))
-
-(deftest app-scaffold-macos-ios-load-web-bundle-via-custom-scheme-not-file-url
-  ;; 実機診断で判明した実バグ: WKWebView の loadFileURL(file:// origin)は
-  ;; window.onerror の message/filename/lineno/colno/error を無条件に
-  ;; redact して "Script error." にしてしまう(WKScriptMessageHandler
-  ;; ブリッジで隔離再現し、同一内容を http:// 経由でロードすると詳細が
-  ;; 復元することを確認済み)。file:// を避け、自前の WKURLSchemeHandler
-  ;; (KotobaWebBundleSchemeHandler)がバンドルを配信する経路に切り替えた
-  ;; ので、生成物がこの経路になっているかをテンプレート文字列で検証する。
-  (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\"}"
-        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
-                                             (str "kotoba-shell-schemehandler-" (System/nanoTime)))
-                                (.mkdirs)))
-        scaffold (launcher/dispatch ["app" "scaffold"
-                                     "--target" "macos"
-                                     "--target" "ios"
-                                     "--manifest-edn" manifest
-                                     "--output-dir" output-dir])]
-    (is (:kotoba.cli/ok? scaffold))
-    (doseq [target ["macos" "ios"]]
-      (let [handler-file (io/file output-dir target "Sources" "WebBundleSchemeHandler.swift")
-            delegate-file (io/file output-dir target "Sources" "AppDelegate.swift")
-            handler-src (slurp handler-file)
-            delegate-src (slurp delegate-file)]
-        (is (.isFile handler-file))
-        (is (str/includes? handler-src "WKURLSchemeHandler"))
-        (is (str/includes? handler-src "static let scheme = \"kotoba-webbundle\""))
-        (is (not (str/includes? delegate-src "loadFileURL")))
-        (is (str/includes? delegate-src "KotobaWebBundleSchemeHandler.scheme"))
-        (is (str/includes? delegate-src "setURLSchemeHandler"))))))
-
-(deftest app-scaffold-macos-keychain-cacao-webview-bridge
-  (let [manifest "{:app/id \"dev.kotoba.itonami\" :app/name \"itonami\" :app/version \"0.1.0\" :macos/product-name \"itonami\" :macos/auth-bridge :keychain-cacao :macos/window-width 393 :macos/window-height 852 :macos/keychain-service \"dev.kotoba.itonami.auth\"}"
-        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
-                                             (str "kotoba-shell-auth-bridge-" (System/nanoTime)))
-                                (.mkdirs)))
-        scaffold (launcher/dispatch ["app" "scaffold" "--target" "macos"
-                                     "--manifest-edn" manifest "--output-dir" output-dir])
-        delegate-src (slurp (io/file output-dir "macos" "Sources" "AppDelegate.swift"))
-        project-yml (slurp (io/file output-dir "macos" "project.yml"))]
-    (is (:kotoba.cli/ok? scaffold))
-    (is (str/includes? delegate-src "WKScriptMessageHandler"))
-    (is (str/includes? delegate-src "LocalAuthentication"))
-    (is (str/includes? delegate-src "kSecClassGenericPassword"))
-    (is (str/includes? delegate-src "width: 393"))
-    (is (str/includes? delegate-src "window.level = .floating"))
-    (is (str/includes? project-yml "name: itonami"))
-    (is (str/includes? project-yml "LocalAuthentication.framework"))
-    (is (str/includes? project-yml "Security.framework"))
-    (is (str/includes? project-yml "AuthenticationServices.framework"))))
-
-(deftest app-scaffold-macos-authorization-session-capability
-  "open-authorization-url は host 言語に残る唯一の capability。WKWebView を
-  IdP へ遷移させる代わりに ASWebAuthenticationSession を使う理由は2つ:
-  Google が embedded webview からの OAuth を拒否すること、および自分が制御
-  する WebView に IdP のログイン画面を出すとアプリが資格情報を覗ける構造に
-  なること。"
-  (let [scaffold! (fn [extra]
-                    (let [manifest (str "{:app/id \"dev.kotoba.demo\" :app/name \"demo\""
-                                        " :app/version \"0.1.0\" :macos/auth-bridge :keychain-cacao"
-                                        " " extra "}")
-                          output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
-                                                              (str "kotoba-shell-authz-" (System/nanoTime)))
-                                                 (.mkdirs)))]
-                      (launcher/dispatch ["app" "scaffold" "--target" "macos"
-                                          "--manifest-edn" manifest "--output-dir" output-dir])
-                      (slurp (io/file output-dir "macos" "Sources" "AppDelegate.swift"))))]
-
-    (testing "capability そのものが生成される"
-      (let [src (scaffold! ":macos/oauth-callback-scheme \"dev.kotoba.demo\"")]
-        (is (str/includes? src "import AuthenticationServices"))
-        (is (str/includes? src "ASWebAuthenticationSession"))
-        (is (str/includes? src "case \"open-authorization-url\""))
-        (is (str/includes? src "kotoba-shell-authorization")
-            "callback URL を JS へ返す CustomEvent が無い")))
-
-    (testing "scheme は manifest から入る"
-      (is (str/includes? (scaffold! ":macos/oauth-callback-scheme \"dev.kotoba.demo\"")
-                         "oauthCallbackScheme = \"dev.kotoba.demo\"")))
-
-    (testing "未設定なら空文字 — 適当な scheme で待ち受けて他アプリの redirect を
-              拾うより、設定されていないことを明示する"
-      (is (str/includes? (scaffold! "") "oauthCallbackScheme = \"\"")))
-
-    (testing "session を強参照で保持する — ローカル変数だと ARC に回収されて
-              ダイアログが即座に消える"
-      (is (str/includes? (scaffold! "") "private var authSession: ASWebAuthenticationSession?")))
-
-    (testing "ephemeral session — 共有 cookie で前回のアカウントに黙って入るのを防ぐ"
-      (is (str/includes? (scaffold! "") "prefersEphemeralWebBrowserSession = true")))
-
-    (testing "https 以外の認可 URL は開かない — 注入された任意 URL を OS の
-              ブラウザで開ける踏み台にしない"
-      (is (str/includes? (scaffold! "") "url.scheme == \"https\"")))))
 
 (deftest app-build-plans_and_executes_native_project_builds
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
@@ -1237,6 +870,24 @@
   (is (launcher/host-smoke-ok? :android "List of devices attached\nserial1 device\n" 0 false))
   (is (false? (launcher/host-smoke-ok? :android "List of devices attached\n" 0 false))))
 
+(deftest native-window-smoke-uses-terminal-appkit-shutdown
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (re-find #"if smoke \{ NSApp\.terminate\(nil\) \}" source))
+    (is (not (re-find #"if smoke \{ NSApp\.stop\(nil\) \}" source)))
+    (is (str/includes? source "NSStatusBar.system.statusItem"))
+    (is (str/includes? source "window.level = .floating"))
+    (is (str/includes? source "func windowDidMiniaturize"))
+    (is (str/includes? source "lifecycle/status-bar"))))
+
+(deftest macos-calendar-provider-is-backed-by-eventkit
+  (let [host (slurp "bin/kotoba-shell-host-macos")
+        helper (slurp "bin/kotoba-shell-calendar-macos.swift")]
+    (is (str/includes? host "calendar/list-events)"))
+    (is (str/includes? host "--from and --to"))
+    (is (str/includes? helper "EKEventStore"))
+    (is (str/includes? helper "requestFullAccessToEvents"))
+    (is (not (str/includes? helper "Application('Calendar')")))))
+
 (deftest ui-check-connects-browser-and-wasm-ui-substrates
   (let [result (launcher/dispatch ["ui" "check"])
         strict-result (launcher/dispatch ["ui" "check" "--strict"])]
@@ -1244,7 +895,7 @@
     (is (= :shell/ui-ready (:kotoba.cli/code result)))
     (is (= "kotoba.shell.ui.v0"
            (get-in result [:kotoba.cli/data :kotoba.shell/ui-schema])))
-    (is (= true (get-in result [:kotoba.cli/data :kotoba.shell/webview-required?])))
+    (is (= false (get-in result [:kotoba.cli/data :kotoba.shell/webview-required?])))
     (is (= 2 (get-in result [:kotoba.cli/data :kotoba.shell/substrate-count])))
     (is (= #{:wasm-ui :browser}
            (set (map :id (get-in result [:kotoba.cli/data :kotoba.shell/ui-rows])))))
@@ -1299,24 +950,34 @@
     (is (= 3 (get-in receipt [:shell :ops-count])))
     (is (true? (get-in receipt [:kotobase :persisted?])))))
 
+(deftest macos-visual-capture-isolated-from-focus-and-ime
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (str/includes? source "node.attrs[\"readonly\"] == \"true\""))
+    (is (str/includes? source "field.isEditable = false"))
+    (is (str/includes? source "window.makeFirstResponder(nil)"))
+    (is (str/includes? source "window.displayIfNeeded()"))))
+
+(deftest action-runtime-streams-checkpoint-surfaces
+  (let [source (slurp "bin/kotoba-shell-app-runtime")]
+    (is (str/includes? source "KOTOBA_SHELL_ACTION_REFRESH_SECONDS"))
+    (is (str/includes? source "while kill -0 \"$action_pid\""))
+    (is (str/includes? source "action pulse:"))
+    (is (str/includes? source "commit_surface"))))
+
 (defn -main
   [& _]
-  ;; `clojure -M:test` runs this namespace's -main, so a test namespace that is
-  ;; not listed here never executes. kotoba.shell.{event,input,mangaka-app}-test
-  ;; existed but were unreachable; they are wired in now and pass.
-  ;;
-  ;; kotoba.shell.connector-test is deliberately NOT listed: it fails on
-  ;; origin/main, and it fails for a real reason rather than a stale
-  ;; expectation. connector/invoke! destructures
-  ;; {:keys [argv input encode decode success?]} -- :timeout-ms is never bound
-  ;; and there is no timeout, so `.waitFor` blocks unbounded. The test asks for
-  ;; a 50ms bound on `/bin/sleep 5` and measures 5048ms, :connector-failed
-  ;; instead of :connector-timeout, exit 0 instead of 124. Listing it would
-  ;; turn main red; fixing it here would collide with in-flight work on that
-  ;; file. Wire it in with the fix, not before.
-  (let [{:keys [fail error]}
-        (clojure.test/run-tests 'kotoba.shell.launcher-test
-                                'kotoba.shell.event-test
-                                'kotoba.shell.input-test
-                                'kotoba.shell.mangaka-app-test)]
+  (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test
+                                                      'kotoba.shell.connector-test
+                                                      'kotoba.shell.input-test
+                                                      'kotoba.shell.mangaka-app-test)]
     (System/exit (if (zero? (+ fail error)) 0 1))))
+(deftest provider-can-read-secret-text-from-stdin
+  (let [result (with-in-str "not-on-argv"
+                 (launcher/dispatch ["native-host" "provider"
+                                     "--target" "macos"
+                                     "--provider-command" "keychain/write-text"
+                                     "--policy-edn" "{:allow [\"keychain/write-text\"]}"
+                                     "--host-command" "/bin/echo"
+                                     "--text-stdin"]))]
+    (is (:kotoba.cli/ok? result))
+    (is (= "not-on-argv" (get-in result [:kotoba.cli/data :kotoba.shell/provider-output])))))

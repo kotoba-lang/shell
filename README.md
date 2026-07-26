@@ -7,162 +7,6 @@ contracts.
 The old `kotoba-lang/kotoba` CLI no longer keeps a compatibility shim for
 `kotoba shell ...`; shell work and shell gates should call this CLI directly.
 
-## Status
-
-Everything below this section is a command reference for the full CLI
-surface; not every command is equally mature. This section says plainly what
-is real and verified today versus still aspirational, so a consumer doesn't
-have to rediscover the gap by hitting it (as `local-manimani`'s own
-integration did more than once).
-
-- **`app scaffold`/`app build` (macOS, iOS): real, verified.** `app scaffold`
-  generates an XcodeGen `project.yml` and runs `xcodegen generate` itself
-  (not a hand-written `project.pbxproj`), producing a project that
-  `xcodebuild` actually builds — confirmed end to end, including installing
-  and launching the built app on a real booted iOS Simulator and
-  screenshotting real WKWebView-rendered content. CI (`.github/workflows/
-  ci.yml`) runs a real `app scaffold` + `app build --execute` for both
-  targets on every push, not just a file-presence check.
-- **`app scaffold`/`app build` (Android): real, verified end to end,
-  including a real booted emulator install+launch.** Generates a real
-  WebView-hosting `MainActivity.java` and a Gradle project that `gradle
-  assembleDebug` builds into a real `app-debug.apk`. CI now runs a real
-  `app scaffold` + `app build --execute` for Android on every push (same
-  pattern as the macOS/iOS smoke tests), after installing `gradle` via
-  Homebrew. **Real gotcha found while wiring this up**: Gradle 9.x lets AGP's
-  `androidJdkImage` transform (the `jlink` step over `core-for-system-
-  modules.jar`, needed for `compileSdk` 33+) auto-detect whichever JDK it
-  finds newest among all installed JDKs, not whatever `java` resolves to on
-  `PATH` — with a too-new JDK (e.g. Homebrew's unversioned `openjdk`, which
-  tracks latest upstream) this fails with `Could not resolve all files for
-  configuration ':app:androidJdkImage'` even though AGP 8.5.0 + `gradle
-  assembleDebug` otherwise runs fine. Fixed (both in CI and reproduced
-  locally) by pinning `JAVA_HOME` to a JDK 17 install before invoking
-  `gradle` — AGP 8.5.0 is only tested up to `compileSdk` 34/JDK 17-ish, so
-  don't assume "whatever JDK happens to be newest on this machine" works.
-  Beyond the build, also verified installing+launching on a real booted
-  Android Emulator (`system-images;android-34;google_apis;arm64-v8a` via
-  `avdmanager`/`emulator`, not just `gradle assembleDebug`): `adb install`
-  + `adb shell am start` on the generated `MainActivity` renders the
-  placeholder page correctly, confirmed via `adb exec-out screencap`.
-  Repeated with `local-manimani/mobile`'s real production bundle via
-  `:web/dist-dir` and got the same `Could not find namespace
-  kotoba-ui.theme.` error already found on macOS/iOS (see below) —
-  independent third-platform confirmation that this is a real
-  `local-manimani` bug, not a WKWebView-specific or kotoba-shell-specific
-  one. **Bonus finding**: unlike WKWebView's `loadFileURL`, Android's
-  `android.webkit.WebView` logs full JS console/error output — message,
-  source file, line, and even surrounding source context — to `adb logcat`
-  (tag `chromium`, `[INFO:CONSOLE(...)]`) by default, with no
-  `WebChromeClient.onConsoleMessage` override and no diagnostic bridge
-  needed. Android's default observability here is strictly better than
-  WKWebView's.
-- **`app scaffold`/`app build` (Windows): scaffolding only, unverified.** The
-  generated `Package.appxmanifest`/`.wapproj` skeleton has never been run
-  through `msbuild` — there is no Windows CI runner and no Windows
-  development machine has exercised this path.
-- **Rendering substrate: WKWebView (macOS/iOS) and `android.webkit.WebView`
-  (Android) today, not `kotoba-lang/dom-gpu`/`kotoba-lang/browser`.**
-  `surface check`'s `:ui-substrate`/`:browser-engine` fields describe the
-  long-term target architecture (see ADR-2607081015 in the superproject);
-  `:render-substrate` in the same data says what actually renders content in
-  a scaffolded app right now. dom-gpu/browser were R0-stage with no real-app
-  adoption at the time of that decision — this is a deliberate, documented
-  pragmatic choice, not an oversight.
-- **Fixed: nested `:web/dist-dir` directories (e.g. `vendor/`) were silently
-  flattened out of the macOS/iOS app bundle.** What was first recorded here
-  as an "opaque WKWebView error with large bundles" turned out to be a real
-  packaging bug, root-caused with a `WKScriptMessageHandler` bridge (inject a
-  `WKUserScript` that relays `console.*`/`window.onerror`/
-  `unhandledrejection` to native code, which appends to a file under the
-  app's Documents directory, readable via `xcrun simctl get_app_container
-  <udid> <bundle-id> data` — no Safari Web Inspector needed, fully
-  CLI-scriptable). Xcode's default "Copy Bundle Resources" build phase
-  flattens nested directories added as a normal group reference: a source
-  tree with `Resources/vendor/scittle.js` landed as `<bundle>/scittle.js`
-  (no `vendor/` at all), so `index.html`'s `<script src="vendor/scittle.js">`
-  ended up pointing at nothing and every `resource failed to load` fired at
-  once. `:web/dist-dir` content is now copied into `Resources/WebBundle`,
-  which the XcodeGen spec (`xcodegen-project-yml`) declares as a `type:
-  folder` **folder reference** instead of a plain path — folder references
-  are copied recursively, preserving structure, unlike group references.
-  Verified against `local-manimani/mobile`'s full real UI bundle
-  (~225KB, `vendor/` included): the built app's CSS now visibly renders
-  (background gradient, no longer blank white), confirming the fix.
-- **Fixed: `loadFileURL` (`file://` origin) redacted every uncaught JS error
-  to the opaque placeholder `"Script error."`, with zero message/filename/
-  line/column/stack.** With the packaging bug above fixed, `vendor/
-  scittle.js` etc. loaded correctly (no more 404s), but evaluating
-  manimani's real bundle still surfaced only `"Script error."` and nothing
-  else via `window.onerror`. Isolated in a minimal reproduction (not
-  manimani-specific): loading *any* HTML/JS — inline `<script>`, external
-  `<script src>`, even a plain `throw new Error(...)` with no `eval`/
-  `Function` involved — via `WKWebView.loadFileURL` gets this same blanket
-  redaction from every uncaught error, while loading byte-identical content
-  over `http://127.0.0.1` (a throwaway local test server used only for this
-  diagnostic) gets full detail every time. This is WebKit's standard
-  cross-origin error-redaction policy applying unconditionally to `file://`
-  content — not a manimani bug, not something fixable from the HTML/JS side
-  (a `crossorigin` attribute doesn't help; even same-document inline script
-  was redacted). Fixed by dropping `loadFileURL` entirely: macOS/iOS
-  AppDelegate templates now register a `WKURLSchemeHandler`
-  (`KotobaWebBundleSchemeHandler`, `Sources/WebBundleSchemeHandler.swift`)
-  that serves `Resources/WebBundle` under a custom `kotoba-webbundle://`
-  scheme, which WebKit treats as a normal non-opaque origin — the same
-  reason Capacitor/Ionic-style production WKWebView apps avoid `file://`.
-  Verified against `local-manimani/mobile`'s real bundle on both a real
-  macOS build and a real booted iOS Simulator install+launch: `window.
-  onerror` now reports full detail. That full detail immediately surfaced
-  the actual underlying bug in `local-manimani`'s bundle itself (not
-  kotoba-shell's): `Could not find namespace kotoba-ui.theme.` — a missing
-  scittle namespace script, filed separately as a `local-manimani` gap, not
-  fixed here.
-- **`doctor check`/`e2e check`/`device-farm check`: real, verified against
-  real tools/devices on all three platforms, not just evidence-shaped
-  data.** These were previously undocumented here (a reader had no way to
-  tell whether they were live gates or aspirational scaffolding). Ran all
-  three with `--strict` against real hardware/toolchains: macOS (local
-  `pbcopy`/`pbpaste`/`curl`/`security`/`codesign`, `kotoba-shell-host-macos`
-  smoke), iOS (a real booted Simulator via `xcrun simctl`), and Android (a
-  real booted Emulator via `adb`, `system-images;android-34;google_apis;
-  arm64-v8a` — the same one installed for the app-build verification
-  above). All three targets came back `ready?: true` with zero missing
-  required tools and a real `host-smoke` process execution (not a stub).
-  `release dry-run`'s artifact/signature outputs are, by design, evidence
-  placeholders rather than real binaries (confirmed by inspecting the
-  output: a small text file, not a built `.app`) — that already matches
-  what this README's Commands section says (`release dry-run` "writes
-  target artifact evidence... without invoking platform stores"), so it
-  isn't a gap, just a distinction worth being explicit about here too.
-- **`contacts/list`/`calendar/list-events`: real, macOS-only.** Backed by
-  AppleScript (`resources/kotoba/shell/selfhost/{contacts_list,
-  calendar_list_events}.applescript`) through `bin/kotoba-shell-host-macos`,
-  manually verified against real Contacts/Calendar data. There is no
-  CLI-invokable equivalent on iOS/Android — that would need native
-  Contacts/EventKit or ContactsContract/CalendarContract bridges compiled
-  into an app, which don't exist yet. The provider catalog's
-  `:required-targets` correctly says `[:macos]` only; it used to (wrongly)
-  claim iOS/Android support with zero implementation behind it.
-- **`webauthn/register`/`webauthn/assert`: real, macOS-only** (Touch ID/
-  password-sheet passkey ceremony via a companion Swift helper). iOS/Android
-  passkey providers are unimplemented.
-- **Manifest schema is flat and shell-specific, not a general "app
-  manifest" format.** `app scaffold`/`app build`/etc. expect exactly
-  `:app/id`, `:app/name`, `:app/version`, `:ios/bundle-id`,
-  `:android/application-id`, and the optional `:web/dist-dir` (a directory
-  to embed as the app's web content; falls back to a placeholder page if
-  omitted). A consumer with its own nested manifest convention (e.g.
-  `local-manimani`'s `app.kotoba.edn`, which uses `:kotoba.app/id`/`:ui
-  {...}`/`:capabilities {...}`) must translate it before calling this CLI;
-  there is no schema auto-detection.
-- **Not published anywhere.** No npm package, no Homebrew formula, no
-  GitHub Release — `bin/kotoba-shell` is a thin `clojure -Sdeps` wrapper, so
-  even a hypothetical `brew install`/`npm install -g` would still require a
-  working Clojure CLI + JVM on the consumer's machine. Use it today as a
-  sibling checkout with `KOTOBA_SHELL_BIN` pointed at `bin/kotoba-shell`, or
-  a git dependency pinned to a specific commit (as `local-manimani/mobile`
-  already does for the underlying `kotoba-lang/kotoba` crates).
-
 ## Commands
 
 ```sh
@@ -237,7 +81,9 @@ implemented.
 Default host runners are now bundled:
 
 - `bin/kotoba-shell-host-macos`: local macOS process runner with clipboard,
-  app-data fs, http fetch, notifications, and keychain command adapters.
+  app-data fs, http fetch, notifications, keychain, and EventKit Calendar
+  adapters. Calendar reads request native macOS Calendar access and return a
+  structured denial receipt until it is granted.
 - `bin/kotoba-shell-host-ios`: iOS simulator/device bridge through
   `xcrun simctl spawn booted`.
 - `bin/kotoba-shell-host-android`: Android device bridge through `adb shell`.
@@ -247,12 +93,10 @@ Android expose real toolchain connection points; successful execution requires a
 booted simulator for `xcrun simctl` or a connected Android device/emulator for
 `adb`.
 
-The shell assumes WebKit as its rendering engine on macOS and iOS. Applications
-ship a web bundle and run in WKWebView; ClojureScript, re-frame, WebGL/WebGPU,
-and ordinary web UI libraries are first-class. `kotoba:dom` remains a
-compatibility/input ABI for older surfaces, not a competing default renderer.
-Native hosts provide the WebKit window, lifecycle, custom-scheme bundle
-delivery, diagnostics, and provider capabilities.
+The shell does not require a Tauri-style system WebView. `surface check` records
+`kotoba-lang/browser` as the browser/OS surface engine and `kotoba-lang/dom-gpu`
+(renamed from `wasm-ui`) as the `kotoba:dom` UI substrate. Native hosts provide a display surface,
+input events, lifecycle, and provider capabilities.
 
 ### Typed text input actions
 
@@ -355,21 +199,6 @@ the local static server on port 8702, waits for it to accept HTTP traffic, and
 then runs the selected WebGL/WebGPU smoke script.
 
 ## Relationship
-
-### Tamaki Observatory
-
-`apps/tamaki-observer` is a read-only native projection of Tamaki's durable
-event stream. It shows campaign bounds and status, patch/integration/failure
-counts, and recent AgentRuns. The shell runtime re-renders when
-`.tamaki/events.edn` changes:
-
-```sh
-bin/kotoba-shell-tamaki-observer
-```
-
-Set `TAMAKI_PROJECT_DIR` or `TAMAKI_STATE_DIR` when observing another checkout.
-The observer never controls or mutates the agent loop; authority remains with
-Tamaki and Radicle.
 
 - `kotoba-lang/shell`: authoritative shell adapter, provider catalog, native
   host contract, conformance tests.

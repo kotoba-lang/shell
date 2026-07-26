@@ -92,11 +92,16 @@ case "$provider_command" in
   keychain/delete)
     /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null
     ;;
-  contacts/list)
-    /usr/bin/osascript "$(dirname "$0")/../resources/kotoba/shell/selfhost/contacts_list.applescript"
-    ;;
   calendar/list-events)
-    /usr/bin/osascript "$(dirname "$0")/../resources/kotoba/shell/selfhost/calendar_list_events.applescript"
+    if [[ -z "$calendar_from" || -z "$calendar_to" ]]; then
+      printf 'calendar/list-events requires --from and --to\n' >&2
+      exit 64
+    fi
+    calendar_helper="${KOTOBA_SHELL_CALENDAR_HELPER:-$(dirname "$0")/../target/kotoba-shell-calendar-macos}"
+    if [[ ! -x "$calendar_helper" ]]; then
+      "$(dirname "$0")/kotoba-shell-build-macos-calendar" >/dev/null
+    fi
+    "$calendar_helper" "$calendar_from" "$calendar_to"
     ;;
   webauthn/register)
     if [[ -z "$rp_id" || -z "$challenge" || -z "$salt" || -z "$user_name" ]]; then
