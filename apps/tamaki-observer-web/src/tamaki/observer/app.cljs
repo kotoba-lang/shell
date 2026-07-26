@@ -277,6 +277,8 @@
 (defn add-life-tree! [root snapshot]
   (let [tree (three/group)
         git-tree (first (:git-trees snapshot))
+        branch-refs (vec (filter #(= "branch" (:kind %)) (:refs git-tree)))
+        pruning-names (set (map :name (:pruning-candidates git-tree)))
         branch-material (THREE/MeshStandardMaterial.
                          #js {:color 0x704622 :emissive 0x2c1808
                               :emissiveIntensity 0.35 :roughness 0.82})
@@ -361,6 +363,16 @@
                   tip-mesh (THREE/Mesh.
                             (THREE/TubeGeometry. tip-curve 12 0.085 7 false)
                             twig-material)
+                  branch-ref (when (seq branch-refs)
+                               (nth branch-refs
+                                    (mod branch-index (count branch-refs))))
+                  prune? (contains? pruning-names (:name branch-ref))
+                  cut-ring (when prune?
+                             (THREE/Mesh.
+                              (THREE/TorusGeometry. 0.27 0.055 8 28)
+                              (THREE/MeshBasicMaterial.
+                               #js {:color 0xff9b56 :transparent true
+                                    :opacity 0.92})))
                   fruit-kind (keyword (name (or (when (seq (:results snapshot))
                                                   (-> snapshot :results
                                                       (nth (mod branch-index
@@ -378,6 +390,13 @@
       (.add tree fork-mesh)
       (.add tree tip-mesh)
       (.add tree fruit)
+      (when cut-ring
+        (.copy (.-position cut-ring) fork)
+        (.lookAt cut-ring origin)
+        (.add tree cut-ring)
+        (swap! animations conj {:object cut-ring
+                                :phase (* branch-index 0.41)
+                                :kind :prune}))
       (swap! tips conj tip)
       (swap! animations conj {:object fruit :phase (* branch-index 0.73)
                               :base-scale (+ 0.82 (* vitality 0.12))
@@ -1038,6 +1057,17 @@
                (count (:agents snapshot)) " agents · "
                (count (:loops snapshot)) " loops · WEST " west
                " · GitHub " github " · Radicle " rad))
+    (when-let [bonsai-state (.getElementById js/document "bonsai-state")]
+      (let [trees (:git-trees snapshot)
+            candidates (mapcat :pruning-candidates trees)]
+        (set! (.-innerHTML bonsai-state)
+              (str "<b>Bonsai care</b>"
+                   "<span>樹 " (count trees)
+                   " · 剪定候補 " (count candidates)
+                   " · 自動削除 off</span>"
+                   (when-let [candidate (first candidates)]
+                     (str "<small>✂ " (:name candidate)
+                          " · review/approval required</small>"))))))
     (set! (.-innerHTML details)
           (if repo
             (str "<strong>" path "</strong><br>"
@@ -1361,6 +1391,9 @@
       "Colony"]
      [:button {:type "button" :on-click #(set-garden-view! :organism)}
       "Organism"]]
+    [:div#bonsai-state.bonsai-state
+     [:b "Bonsai care"]
+     [:span "Git treeを観察中…"]]
     [:div.voice-row
      [:button.voice-button {:type "button" :on-click start-voice!}
       "🎙 Tamaki に話す"]
@@ -1516,6 +1549,13 @@
                          (* 0.025 (js/Math.sin (+ phase (* time 0.72)))))
                    (set! (.. object -rotation -x)
                          (* 0.018 (js/Math.cos (+ phase (* time 0.61))))))
+                 :prune
+                 (do
+                   (set! (.. object -rotation -z) (+ phase (* time 0.55)))
+                   (let [pulse (+ 0.9 (* 0.18
+                                         (js/Math.sin
+                                          (+ phase (* time 2.2)))))]
+                     (three/set-scale! object pulse pulse pulse)))
                  nil))
              (doseq [{:keys [actor head left-arm right-arm left-leg right-leg
                              beacon base phase radius speed working?]}

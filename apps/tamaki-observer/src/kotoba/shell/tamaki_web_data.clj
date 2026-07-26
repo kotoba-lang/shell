@@ -55,9 +55,25 @@
       (if-let [cached (get @git-tree-cache [project signature])]
         cached
         (let [head (first (git-lines directory "rev-parse" "HEAD"))
+              merged-branches
+              (set (or (git-lines directory "for-each-ref" "--merged=HEAD"
+                                  "--format=%(refname)" "refs/heads")
+                       []))
+              pruning-candidates
+              (->> refs
+                   (map parse-ref)
+                   (filter #(and (= "branch" (:kind %))
+                                 (contains? merged-branches (:name %))
+                                 (not (contains?
+                                       #{"refs/heads/main" "refs/heads/master"}
+                                       (:name %)))))
+                   (mapv #(assoc % :reason "merged-into-head"
+                                :action "propose-prune"
+                                :requires-approval true)))
               value {:project project
                      :head head
                      :refs (mapv parse-ref refs)
+                     :pruning-candidates pruning-candidates
                      :commits (mapv parse-commit
                                     (or (git-lines directory "rev-list"
                                                    "--all" "--parents")

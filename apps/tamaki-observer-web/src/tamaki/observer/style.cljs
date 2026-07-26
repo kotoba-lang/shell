@@ -44,6 +44,16 @@
        [".garden-views button:hover" {:color "#07150d"
                                       :background "#70ffac"
                                       :border-color "#70ffac"}]
+       [".bonsai-state" {:display :flex :align-items :center :gap 8
+                         :margin-top 7 :padding "5px 8px"
+                         :border "1px solid #d9a15b55" :border-radius 8
+                         :background "#28180d88"
+                         :font "10px ui-monospace, monospace"}]
+       [".bonsai-state b" {:color "#ffc678"}]
+       [".bonsai-state span" {:color "#d9c7ac"}]
+       [".bonsai-state small" {:max-width 260 :overflow :hidden
+                               :text-overflow :ellipsis :white-space :nowrap
+                               :color "#ffad6c"}]
        [".model-usage" {:display :flex :gap 6 :margin-top 10}]
        [".actor-state" {:display :flex :gap 6 :margin-top 7}]
        [".actor-card" {:padding "5px 8px" :border-radius 8
