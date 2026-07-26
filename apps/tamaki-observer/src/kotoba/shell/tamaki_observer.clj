@@ -139,8 +139,12 @@
     (->> active-repos
          (mapcat
           (fn [{:keys [path]}]
-            (let [content (->> candidates
-                               (map #(io/file root path %))
+            (let [project-file (io/file path)
+                  project-root (if (.isAbsolute project-file)
+                                 project-file
+                                 (io/file root path))
+                  content (->> candidates
+                               (map #(io/file project-root %))
                                (filter #(.isFile %))
                                (map slurp)
                                (str/join "\n"))]

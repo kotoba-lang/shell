@@ -35,6 +35,8 @@
   (fn [db [_ scope]] (assoc db :organism-scope scope :selected nil)))
 (rf/reg-event-db :activity-agent
   (fn [db [_ agent-id]] (assoc db :activity-agent agent-id)))
+(rf/reg-event-db :surface-view
+  (fn [db [_ view]] (assoc db :surface-view view)))
 (rf/reg-sub :snapshot (fn [db _] (:snapshot db)))
 (rf/reg-sub :selected (fn [db _] (:selected db)))
 (rf/reg-sub :group-mode (fn [db _] (or (:group-mode db) :org)))
@@ -42,6 +44,8 @@
   (fn [db _] (or (:organism-scope db) :federation)))
 (rf/reg-sub :activity-agent
   (fn [db _] (or (:activity-agent db) "all")))
+(rf/reg-sub :surface-view
+  (fn [db _] (or (:surface-view db) :garden)))
 
 (defn index-datoms! [snapshot]
   (d/reset-conn! topology-db (d/empty-db topology-schema))
@@ -1449,8 +1453,75 @@
       (three/set-position! (.-target controls) 0 target-y 0)
       (.update ^js controls))))
 
+(defn money [value]
+  (if (number? value)
+    (str "¥" (.toLocaleString value "ja-JP"))
+    "N/A"))
+
+(defn finance-card [title rows]
+  [:section.finance-card
+   [:h3 title]
+   (for [[label value emphasis?] rows]
+     ^{:key label}
+     [:div {:class (str "finance-line" (when emphasis? " total"))}
+      [:span label]
+      [:strong (money value)]])])
+
+(defn finance-panel []
+  (let [snapshot @(rf/subscribe [:snapshot])
+        view @(rf/subscribe [:surface-view])
+        {:keys [status period organizations pl bs cf]} (:finance snapshot)
+        observed? (= "observed" (label status "unavailable"))
+        balanced? (and (number? (:balance-delta bs))
+                       (zero? (:balance-delta bs)))]
+    [:main {:class (str "finance-dashboard"
+                        (when (not= view :finance) " hidden"))}
+     [:div.finance-title
+      [:div
+       [:small "FINANCIAL CONTROL"]
+       [:h2 "Finance Dashboard"]]
+      [:div.finance-period
+       (if observed?
+         (str (or period "latest") " · " organizations " organizations")
+         "Accounting observation required")]]
+     [:div.finance-kpis
+      [:div.finance-kpi
+       [:small "Revenue"] [:strong (money (:revenue pl))]]
+      [:div.finance-kpi
+       [:small "Operating profit"] [:strong (money (:operating-profit pl))]]
+      [:div.finance-kpi
+       [:small "Cash"] [:strong (money (or (:cash bs) (:ending-cash cf)))]]
+      [:div.finance-kpi
+       [:small "Balance check"]
+        [:strong {:class (when (and observed? (not balanced?)) "warning")}
+         (cond
+           (not observed?) "N/A"
+           balanced? "BALANCED"
+           :else (money (:balance-delta bs)))]]]
+     [:div.finance-statements
+      [finance-card "P/L"
+       [["Revenue" (:revenue pl)]
+        ["Cost of sales" (:cost-of-sales pl)]
+        ["Gross profit" (:gross-profit pl) true]
+        ["Operating expenses" (:operating-expenses pl)]
+        ["Operating profit" (:operating-profit pl) true]]]
+      [finance-card "B/S"
+       [["Cash" (:cash bs)]
+        ["Receivables" (:receivables bs)]
+        ["Total assets" (:assets bs) true]
+        ["Liabilities" (:liabilities bs)]
+        ["Equity" (:equity bs) true]]]
+      [finance-card "Cash Flow"
+       [["Operating" (:operating cf)]
+        ["Investing" (:investing cf)]
+        ["Financing" (:financing cf)]
+        ["Ending cash" (:ending-cash cf) true]]]]
+     (when-not observed?
+       [:div.finance-empty
+        "No verified ledger observation yet. Missing accounting values remain N/A."])]))
+
 (defn shell-view []
-  [:div {:class style/app}
+  [:div {:class (str style/app " " style/finance)}
    [:canvas#scene {:class style/scene}]
    [:div#effects {:class style/effects}]
    [:header {:class (str style/glass " " style/header)}
@@ -1462,7 +1533,13 @@
       [:option {:value "project"} "project"]
       [:option {:value "sync"} "west sync"]]]
     [:div.garden-views
-     [:span "Living Garden"]
+     [:span "View"]
+     [:button {:type "button"
+               :on-click #(rf/dispatch [:surface-view :garden])}
+      "Living Garden"]
+     [:button {:type "button"
+               :on-click #(rf/dispatch [:surface-view :finance])}
+      "Finance"]
      [:button {:type "button" :on-click #(set-garden-view! :world)}
       "World"]
      [:button {:type "button" :on-click #(set-garden-view! :colony)}
@@ -1492,6 +1569,7 @@
       "♫ ambient off"]]
     [:div#actor-state.actor-state]
     [:div#model-usage.model-usage]]
+   [finance-panel]
    [:aside#inspector {:class (str style/glass " " style/inspector)}
     [:h2 "Workspace"]
     [:div#details.details "Select a repository tile"]

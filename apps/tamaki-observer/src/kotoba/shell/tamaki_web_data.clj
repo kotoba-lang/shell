@@ -369,6 +369,53 @@
      :business-targets (:targets business-dynamics)
      :observed-at observed-at}))
 
+(defn finance-dashboard
+  "Project only explicit accounting observations. The dashboard deliberately
+  leaves unknown fields nil instead of turning missing books into zero."
+  [events]
+  (let [rows (->> events
+                  (filter #(= :finance/observed (:tamaki.event/kind %)))
+                  (sort-by :tamaki.event/at)
+                  (reduce (fn [latest event]
+                            (let [row (:tamaki.event/data event)]
+                              (assoc latest (or (:org row) :unassigned) row)))
+                          {}))
+        add-known (fn [xs]
+                    (let [known (filter number? xs)]
+                      (when (seq known) (reduce + known))))
+        total-section
+        (fn [section]
+          (->> rows vals
+               (map section)
+               (reduce
+                (fn [totals statement]
+                  (reduce-kv
+                   (fn [m k v] (update m k #(add-known [% v])))
+                   totals (or statement {})))
+                {})))
+        pl (total-section :pl)
+        bs (total-section :bs)
+        cf (total-section :cf)
+        gross-profit (when (and (number? (:revenue pl))
+                                (number? (:cost-of-sales pl)))
+                       (- (:revenue pl) (:cost-of-sales pl)))
+        operating-profit (when (and (number? gross-profit)
+                                    (number? (:operating-expenses pl)))
+                           (- gross-profit (:operating-expenses pl)))
+        balance-delta (when (and (number? (:assets bs))
+                                 (number? (:liabilities bs))
+                                 (number? (:equity bs)))
+                        (- (:assets bs) (:liabilities bs) (:equity bs)))]
+    {:status (if (seq rows) :observed :unavailable)
+     :currency (or (:currency (last (sort-by :observed-at (vals rows)))) :JPY)
+     :period (:period (last (sort-by :observed-at (vals rows))))
+     :organizations (count rows)
+     :pl (assoc pl :gross-profit gross-profit
+                   :operating-profit operating-profit)
+     :bs (assoc bs :balance-delta balance-delta)
+     :cf cf
+     :by-org rows}))
+
 (defn- repo-stats [events runs campaigns]
   (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)
         project-of #(some-> (get run-by-id (:tamaki.event/run %)) run-project)]
@@ -492,6 +539,7 @@
                   campaigns)
      :repo-stats (repo-stats events runs campaigns)
      :system-dynamics (system-dynamics events runs (:observed-at state))
+     :finance (finance-dashboard events)
      :active-repos
      (mapv (fn [{:keys [path issue runs]}]
              {:path path :issue issue
@@ -543,7 +591,7 @@
       (spit (io/file (.getParentFile target-file) "topology.edn")
             (pr-str (select-keys snapshot
                                  [:repos :dependencies :agents :loops
-                                  :repo-stats :system-dynamics]))))
+                                  :repo-stats :system-dynamics :finance]))))
     (java.nio.file.Files/move
      (.toPath next-file) (.toPath target-file)
      (into-array java.nio.file.CopyOption

@@ -166,6 +166,27 @@
     (is (= 16000.0
            (get-in dynamics [:business-kpis :risk-adjusted-delta-mrr-jpy])))))
 
+(deftest tamaki-finance-dashboard-uses-only-observed-books
+  (is (= :unavailable
+         (:status (tamaki-web-data/finance-dashboard []))))
+  (let [events [{:tamaki.event/kind :finance/observed
+                 :tamaki.event/at 1
+                 :tamaki.event/data
+                 {:org :cloud
+                  :period "2026-07"
+                  :currency :JPY
+                  :pl {:revenue 1000 :cost-of-sales 200
+                       :operating-expenses 300}
+                  :bs {:assets 1500 :liabilities 400 :equity 1100}
+                  :cf {:operating 500 :investing -100 :financing 0
+                       :ending-cash 900}}}]
+        dashboard (tamaki-web-data/finance-dashboard events)]
+    (is (= :observed (:status dashboard)))
+    (is (= 800 (get-in dashboard [:pl :gross-profit])))
+    (is (= 500 (get-in dashboard [:pl :operating-profit])))
+    (is (zero? (get-in dashboard [:bs :balance-delta])))
+    (is (= 900 (get-in dashboard [:cf :ending-cash])))))
+
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
   (is (= ["tool" "--json"]

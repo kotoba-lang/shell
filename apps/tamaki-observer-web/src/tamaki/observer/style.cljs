@@ -204,3 +204,52 @@
        [".flow-row b" {:color "#73f4a1"}]
        [".flow-row .pressure" {:color "#ffae52"}]
        [".flow-row .relief" {:color "#62e6b1"}]))
+
+(def finance
+  (css [".finance-dashboard"
+        {:position :fixed :z-index 3 :left 8 :right 306 :top 198 :bottom 8
+         :padding 18 :overflow-y :auto :border-radius 16
+         :background "linear-gradient(145deg, rgba(8,18,14,.97), rgba(19,11,28,.97))"
+         :border "1px solid #7ee6ab33" :box-shadow "0 24px 80px #000b"
+         :color "#f2fff7"}]
+       [".finance-dashboard.hidden" {:display :none}]
+       [".finance-title" {:display :flex :align-items :end
+                          :justify-content :space-between
+                          :border-bottom "1px solid #ffffff18"
+                          :padding-bottom 12}]
+       [".finance-title small" {:color "#67e89d"
+                                :font "10px ui-monospace, monospace"
+                                :letter-spacing ".15em"}]
+       [".finance-title h2" {:margin "3px 0 0" :font-size 24}]
+       [".finance-period" {:color "#9c91aa"
+                           :font "11px ui-monospace, monospace"}]
+       [".finance-kpis" {:display :grid
+                         :grid-template-columns "repeat(4, minmax(0, 1fr))"
+                         :gap 8 :margin "14px 0"}]
+       [".finance-kpi" {:padding "12px 14px" :border-radius 10
+                        :background "#ffffff08"
+                        :border "1px solid #ffffff13"}]
+       [".finance-kpi small" {:display :block :color "#9e94aa"
+                              :font-size 10 :margin-bottom 5}]
+       [".finance-kpi strong" {:font "20px ui-monospace, monospace"}]
+       [".finance-kpi strong.warning" {:color "#ffad62"}]
+       [".finance-statements" {:display :grid
+                               :grid-template-columns "repeat(3, minmax(0, 1fr))"
+                               :gap 10}]
+       [".finance-card" {:padding 14 :border-radius 12
+                         :background "#090c0bbb"
+                         :border "1px solid #ffffff14"}]
+       [".finance-card h3" {:margin "0 0 10px" :color "#77eba5"
+                            :font "13px ui-monospace, monospace"}]
+       [".finance-line" {:display :flex :justify-content :space-between
+                         :gap 10 :padding "8px 0"
+                         :border-top "1px solid #ffffff0d"
+                         :color "#aaa1b2"}]
+       [".finance-line strong" {:color "#f6fff9"
+                                :font "12px ui-monospace, monospace"}]
+       [".finance-line.total" {:border-top "1px solid #74eaa45c"
+                               :color "#d7f8e2"}]
+       [".finance-line.total strong" {:color "#7dffae"}]
+       [".finance-empty" {:margin-top 12 :padding 10 :border-radius 8
+                          :color "#ffbd72" :background "#37210f99"
+                          :font "11px ui-monospace, monospace"}]))
