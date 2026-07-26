@@ -85,7 +85,8 @@
                                (if (.isAbsolute file)
                                  (workspace-path project)
                                  project))))
-                      (filter #(-> (io/file workspace %) .isDirectory))
+                      (filter #(and (not (-> % io/file .isAbsolute))
+                                    (-> (io/file workspace %) .isDirectory)))
                       distinct
                       (take 8))]
     (->> projects
