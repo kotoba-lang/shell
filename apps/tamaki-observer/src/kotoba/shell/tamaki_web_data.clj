@@ -56,6 +56,64 @@
 
 (defonce project-topologies (atom nil))
 
+(def dynamics-window-ms 3600000)
+
+(defn system-dynamics
+  "Project durable events into observable stocks and hourly flows.
+  The model intentionally uses only persisted facts, so the UI never invents
+  progress from an agent's prose."
+  [events runs observed-at]
+  (let [kind #(= % (:tamaki.event/kind %2))
+        issue-id #(get-in % [:tamaki.event/data :issue/id])
+        patch-id #(get-in % [:tamaki.event/data :patch/id])
+        discovered (set (keep issue-id (filter (partial kind :issue/discovered)
+                                               events)))
+        integrated-issues
+        (set (keep issue-id (filter (partial kind :patch/integrated) events)))
+        patches (set (keep patch-id (filter (partial kind :patch/created) events)))
+        integrated-patches
+        (set (keep patch-id (filter (partial kind :patch/integrated) events)))
+        active-runs (count (filter #(active-statuses (:agent.run/status %)) runs))
+        recent (filter #(>= (or (:tamaki.event/at %) 0)
+                            (- observed-at dynamics-window-ms))
+                       events)
+        rate (fn [event-kind]
+               (count (filter (partial kind event-kind) recent)))
+        starts (rate :run/started)
+        successes (rate :run/succeeded)
+        failures (+ (rate :run/failed) (rate :loop/cycle-failed))
+        attempts (+ successes failures)
+        backlog (count (remove integrated-issues discovered))
+        review-queue (count (remove integrated-patches patches))
+        flows [{:id "discover" :label "discover"
+                :from "environment" :to "backlog"
+                :rate (rate :issue/discovered)}
+               {:id "start" :label "start"
+                :from "backlog" :to "wip" :rate starts}
+               {:id "patch" :label "patch"
+                :from "wip" :to "review" :rate (rate :patch/created)}
+               {:id "integrate" :label "merge"
+                :from "review" :to "integrated"
+                :rate (rate :patch/integrated)}]
+        stocks [{:id "backlog" :label "Issue backlog" :value backlog
+                 :unit "issues" :color "#ffb34d"}
+                {:id "wip" :label "Agent WIP" :value active-runs
+                 :unit "runs" :color "#49ee91"}
+                {:id "review" :label "Review queue" :value review-queue
+                 :unit "patches" :color "#54a8ff"}
+                {:id "integrated" :label "Integrated value"
+                 :value (count integrated-patches)
+                 :unit "patches" :color "#d06cff"}]
+        bottleneck (apply max-key :value (butlast stocks))]
+    {:window-ms dynamics-window-ms
+     :stocks stocks
+     :flows flows
+     :bottleneck (:id bottleneck)
+     :failure-pressure (if (pos? attempts) (/ failures (double attempts)) 0.0)
+     :backlog-delta (- (rate :issue/discovered) (rate :patch/integrated))
+     :throughput (rate :patch/integrated)
+     :observed-at observed-at}))
+
 (defn- repo-stats [events runs campaigns]
   (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)
         project-of #(some-> (get run-by-id (:tamaki.event/run %)) run-project)]
@@ -132,6 +190,7 @@
                      :max-cycles (:tamaki.loop/max-cycles campaign)})
                   campaigns)
      :repo-stats (repo-stats events runs campaigns)
+     :system-dynamics (system-dynamics events runs (:observed-at state))
      :active-repos
      (mapv (fn [{:keys [path issue runs]}]
              {:path path :issue issue
@@ -195,7 +254,7 @@
       (spit (io/file (.getParentFile target-file) "topology.edn")
             (pr-str (select-keys snapshot
                                  [:repos :dependencies :agents :loops
-                                  :repo-stats]))))
+                                  :repo-stats :system-dynamics]))))
     (java.nio.file.Files/move
      (.toPath next-file) (.toPath target-file)
      (into-array java.nio.file.CopyOption

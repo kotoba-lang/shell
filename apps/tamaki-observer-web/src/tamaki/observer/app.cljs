@@ -221,6 +221,109 @@
                    #js {:color 0xffd45a :transparent true :opacity 0.85}))]
         (.add root line)))))
 
+(defn text-sprite [text color]
+  (let [canvas (.createElement js/document "canvas")
+        _ (set! (.-width canvas) 512)
+        _ (set! (.-height canvas) 128)
+        context (.getContext canvas "2d")
+        _ (set! (.-fillStyle context) "rgba(9,6,17,.82)")
+        _ (.fillRect context 0 0 512 128)
+        _ (set! (.-strokeStyle context) color)
+        _ (set! (.-lineWidth context) 5)
+        _ (.strokeRect context 3 3 506 122)
+        _ (set! (.-font context) "600 34px -apple-system, sans-serif")
+        _ (set! (.-fillStyle context) "#f8f5ff")
+        _ (set! (.-textAlign context) "center")
+        _ (set! (.-textBaseline context) "middle")
+        _ (.fillText context text 256 64)
+        texture (THREE/CanvasTexture. canvas)
+        sprite (THREE/Sprite.
+                (THREE/SpriteMaterial.
+                 #js {:map texture :transparent true :depthTest false}))]
+    (three/set-scale! sprite 5.4 1.35 1)
+    sprite))
+
+(defn add-system-dynamics! [root dynamics]
+  (let [stocks (:stocks dynamics)
+        stock-x (into {} (map-indexed
+                          (fn [index stock]
+                            [(:id stock) (+ -12 (* index 8))])
+                          stocks))
+        ;; Keep the dynamics lane between repository group rows and toward the
+        ;; camera. At negative Z it is depth-occluded by the large repo grids.
+        z 10
+        particles (atom [])]
+    (doseq [stock stocks
+            :let [x (get stock-x (:id stock))
+                  value (or (:value stock) 0)
+                  color (js/parseInt (subs (:color stock) 1) 16)
+                  fill-height (+ 0.35 (min 5 (* 1.05 (js/Math.sqrt value))))
+                  frame (THREE/Mesh.
+                         (THREE/BoxGeometry. 4.8 5.7 4.8)
+                         (THREE/MeshBasicMaterial.
+                          #js {:color color :wireframe true
+                               :transparent true :opacity 0.35}))
+                  fill (three/mesh
+                        (THREE/BoxGeometry. 4.2 fill-height 4.2)
+                        (three/standard-material
+                         {:color color :emissive 0.72 :roughness 0.28
+                          :transparent true :opacity 0.82}))
+                  title (text-sprite
+                         (str (:label stock) " · " value " " (:unit stock))
+                         (:color stock))]]
+      (three/set-position! frame x 2.65 z)
+      (three/set-position! fill x (/ fill-height 2) z)
+      (three/set-position! title x 6.15 z)
+      (set! (.. fill -userData -dynamics)
+            (clj->js {:type "stock" :stock stock}))
+      (.add root frame)
+      (.add root fill)
+      (.add root title))
+    (doseq [flow (:flows dynamics)
+            :let [from-x (or (get stock-x (:from flow)) -18)
+                  to-x (get stock-x (:to flow))
+                  rate (or (:rate flow) 0)]
+            :when to-x]
+      (let [a (THREE/Vector3. (+ from-x 2.5) 2.6 z)
+            b (THREE/Vector3. (- to-x 2.5) 2.6 z)
+            distance (.distanceTo a b)
+            pipe (THREE/Mesh.
+                  (THREE/CylinderGeometry. 0.09 0.09 distance 10)
+                  (THREE/MeshBasicMaterial.
+                   #js {:color (if (pos? rate) 0x79ffa8 0x51465f)
+                        :transparent true :opacity 0.7}))
+            arrow (THREE/Mesh.
+                   (THREE/ConeGeometry. 0.28 0.7 12)
+                   (THREE/MeshBasicMaterial.
+                    #js {:color (if (pos? rate) 0x79ffa8 0x51465f)}))
+            midpoint (doto (THREE/Vector3.) (.addVectors a b) (.multiplyScalar 0.5))
+            flow-label (text-sprite
+                        (str (:label flow) " · " rate "/h")
+                        (if (pos? rate) "#79ffa8" "#81778e"))]
+        (three/set-position! pipe (.-x midpoint) (.-y midpoint) (.-z midpoint))
+        (set! (.. pipe -rotation -z) (/ js/Math.PI 2))
+        (three/set-position! arrow (.-x b) (.-y b) (.-z b))
+        (set! (.. arrow -rotation -z) (- (/ js/Math.PI 2)))
+        (three/set-position! flow-label (.-x midpoint) 3.8 z)
+        (.add root pipe)
+        (.add root arrow)
+        (.add root flow-label)
+        (doseq [index (range (min 7 rate))
+                :let [dot (THREE/Mesh.
+                           (THREE/SphereGeometry. 0.16 10 8)
+                           (THREE/MeshBasicMaterial.
+                            #js {:color 0xffffff}))]]
+          (.add root dot)
+          (swap! particles conj
+                 {:object dot :from a :to b
+                  :phase (/ index (max 1 (min 7 rate)))
+                  :speed (+ 0.18 (* 0.025 rate))}))))
+    (let [title (text-sprite "SYSTEM DYNAMICS · STOCK → FLOW" "#d9b2ff")]
+      (three/set-position! title 0 8.2 z)
+      (three/set-scale! title 9.2 1.65 1)
+      (.add root title))
+    (swap! runtime assoc :flow-particles @particles)))
+
 (defn rebuild-scene! [snapshot group-mode]
   (when-let [{:keys [repo-root]} @runtime]
     (clear! repo-root)
@@ -300,6 +403,7 @@
         (.add repo-root points))
       (add-dependency-lines! repo-root @positions (:dependencies snapshot))
       (add-project-topologies! repo-root @positions (:projects snapshot))
+      (add-system-dynamics! repo-root (:system-dynamics snapshot))
       (doseq [[agent-index agent] (map-indexed vector (queried-agents))
               :let [position (get @positions (:agent.run/project agent))]
               :when position]
@@ -338,6 +442,7 @@
         details (.getElementById js/document "details")
         activity (.getElementById js/document "activity")
         model-usage (.getElementById js/document "model-usage")
+        dynamics-panel (.getElementById js/document "system-dynamics")
         grouping (.getElementById js/document "grouping")
         repo (or selected active)
         path (or (:path repo) (:agent.run/project repo))
@@ -386,15 +491,45 @@
                           " · out " (or (:output usage) 0) "</span>"
                           "<span><em>remaining "
                           (or (:remaining usage) "unknown")
-                          "</em></span></div>")))))))
+                          "</em></span></div>")))))
+    (let [{:keys [stocks flows bottleneck failure-pressure backlog-delta
+                  throughput]} (:system-dynamics snapshot)]
+      (set! (.-innerHTML dynamics-panel)
+            (str "<div class=\"dynamics-heading\"><b>System dynamics</b>"
+                 "<span>1h flow · bottleneck " bottleneck
+                 " · failure " (.toFixed (* 100 (or failure-pressure 0)) 0)
+                 "%</span></div>"
+                 "<div class=\"stock-row\">"
+                 (apply str
+                        (for [{:keys [id label value unit color]} stocks]
+                          (str "<div class=\"stock-card"
+                               (when (= id bottleneck) " bottleneck")
+                               "\" style=\"--stock:" color "\">"
+                               "<small>" label "</small><strong>" value
+                               "</strong><em>" unit "</em></div>")))
+                 "</div><div class=\"flow-row\">"
+                 (apply str
+                        (for [{:keys [label rate]} flows]
+                          (str "<span>→ " label " <b>" rate "/h</b></span>")))
+                 "<span class=\"" (if (pos? backlog-delta) "pressure" "relief")
+                 "\">backlog Δ " (if (pos? backlog-delta) "+" "") backlog-delta
+                 "/h</span><span>throughput <b>" throughput "/h</b></span>"
+                 "</div>")))))
 
 (defn scene-signature [snapshot]
-  [(count (:repos snapshot))
-   (mapv (juxt :path :issue) (:active-repos snapshot))
-   (frequencies (map :sync (:repos snapshot)))
-   (:dependencies snapshot)
-   (:projects snapshot) (:agents snapshot) (:loops snapshot)
-   (:repo-stats snapshot)])
+  (let [dynamics (:system-dynamics snapshot)]
+    [(count (:repos snapshot))
+     (mapv (juxt :path :issue) (:active-repos snapshot))
+     (frequencies (map :sync (:repos snapshot)))
+     (:dependencies snapshot)
+     (:projects snapshot) (:agents snapshot) (:loops snapshot)
+     (:repo-stats snapshot)
+     ;; observed-at advances every second but does not change geometry.
+     ;; Excluding it avoids disposing/recreating thousands of WebGL objects
+     ;; continuously until the context becomes blank.
+     (select-keys dynamics
+                  [:stocks :flows :bottleneck :failure-pressure
+                   :backlog-delta :throughput])]))
 
 (defn apply-state! []
   (let [snapshot @(rf/subscribe [:snapshot])
@@ -473,8 +608,17 @@
         (.updateProjectionMatrix ^js camera)
         (three/set-size! renderer (.-innerWidth js/window)
                          (.-innerHeight js/window))))
-    (three/start-loop! renderer scene camera
-                       (fn [_] (.update ^js controls)))))
+    (three/start-loop!
+     renderer scene camera
+     (fn [{:keys [time]}]
+       (.update ^js controls)
+       (doseq [{:keys [object from to phase speed]}
+               (:flow-particles @runtime)]
+         (let [progress (mod (+ phase (* time speed)) 1)]
+           (.lerpVectors ^js (.-position ^js object)
+                         ^js from ^js to progress)
+           (let [pulse (+ 0.75 (* 0.5 (js/Math.sin (* progress js/Math.PI))))]
+             (three/set-scale! object pulse pulse pulse))))))))
 
 (defn ^:export init []
   (rf/dispatch-sync [:snapshot nil])

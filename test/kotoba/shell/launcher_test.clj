@@ -6,6 +6,7 @@
             [kotoba.shell.experience :as experience]
             [kotoba.shell.sealed-line :as sealed]
             [kotoba.shell.tamaki-observer :as tamaki-observer]
+            [kotoba.shell.tamaki-web-data :as tamaki-web-data]
             [kotoba.shell.launcher :as launcher]))
 
 (deftest tamaki-observer-projects-durable-campaigns
@@ -60,6 +61,32 @@
       (is (every? :github? projects))
       (is (= 1 (count (filter :rad? projects))))
       (is (= 1 (count (filter :local? projects)))))))
+
+(deftest tamaki-system-dynamics-projects-durable-stock-and-flow
+  (let [now 4000000
+        event (fn [kind at data]
+                {:tamaki.event/kind kind :tamaki.event/at at
+                 :tamaki.event/data data})
+        events [(event :issue/discovered 100 {:issue/id "old"})
+                (event :issue/discovered 3999000 {:issue/id "open"})
+                (event :issue/discovered 3999001 {:issue/id "done"})
+                (event :run/started 3999002 {})
+                (event :patch/created 3999003
+                       {:patch/id "p-open" :issue/id "open"})
+                (event :patch/created 3999004
+                       {:patch/id "p-done" :issue/id "done"})
+                (event :patch/integrated 3999005
+                       {:patch/id "p-done" :issue/id "done"})
+                (event :run/failed 3999006 {})]
+        runs [{:agent.run/status :running}]
+        dynamics (tamaki-web-data/system-dynamics events runs now)
+        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))
+        flows (into {} (map (juxt :id :rate)) (:flows dynamics))]
+    (is (= {"backlog" 2, "wip" 1, "review" 1, "integrated" 1} stocks))
+    (is (= {"discover" 2, "start" 1, "patch" 2, "integrate" 1} flows))
+    (is (= "backlog" (:bottleneck dynamics)))
+    (is (= 1 (:backlog-delta dynamics)))
+    (is (= 1.0 (:failure-pressure dynamics)))))
 
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
