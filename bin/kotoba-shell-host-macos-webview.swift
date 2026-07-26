@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   var consoleBridge: ConsoleBridge?
   var webView: WKWebView?
   var snapshotTimer: Timer?
+  var visualTimer: Timer?
+  var visualSnapshotInFlight = false
   init(root: URL) { self.root = root }
   func applicationDidFinishLaunching(_ notification: Notification) {
     let config = WKWebViewConfiguration()
@@ -72,6 +74,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     snapshotTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
       [weak self] _ in self?.pushSnapshot()
     }
+    if ProcessInfo.processInfo.environment["TAMAKI_VISUAL_SNAPSHOT_PATH"] != nil {
+      visualTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) {
+        [weak self] _ in self?.writeVisualSnapshot()
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        [weak self] in self?.writeVisualSnapshot()
+      }
+    }
     NSApp.activate(ignoringOtherApps: true)
   }
   func pushSnapshot() {
@@ -82,6 +92,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       "window.tamakiReceive && window.tamakiReceive(\(json))") { _, error in
         if let error = error { print("snapshot bridge: \(error)") }
       }
+  }
+  func writeVisualSnapshot() {
+    guard !visualSnapshotInFlight,
+          let webView = webView,
+          let path = ProcessInfo.processInfo.environment[
+            "TAMAKI_VISUAL_SNAPSHOT_PATH"] else { return }
+    visualSnapshotInFlight = true
+    let configuration = WKSnapshotConfiguration()
+    configuration.afterScreenUpdates = true
+    webView.takeSnapshot(with: configuration) { [weak self] image, error in
+      defer { self?.visualSnapshotInFlight = false }
+      guard error == nil,
+            let image = image,
+            let tiff = image.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiff),
+            let png = bitmap.representation(using: .png, properties: [:])
+      else {
+        if let error = error { print("visual snapshot: \(error)") }
+        return
+      }
+      let destination = URL(fileURLWithPath: path)
+      let temporary = destination.appendingPathExtension("next")
+      do {
+        try FileManager.default.createDirectory(
+          at: destination.deletingLastPathComponent(),
+          withIntermediateDirectories: true)
+        try png.write(to: temporary, options: .atomic)
+        _ = try FileManager.default.replaceItemAt(
+          destination, withItemAt: temporary)
+      } catch {
+        do {
+          try? FileManager.default.removeItem(at: destination)
+          try FileManager.default.moveItem(at: temporary, to: destination)
+        } catch {
+          print("visual snapshot: \(error)")
+        }
+      }
+    }
   }
   func windowWillClose(_ notification: Notification) { NSApp.terminate(nil) }
 }
