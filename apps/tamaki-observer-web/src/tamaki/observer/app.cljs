@@ -31,11 +31,15 @@
   (fn [db [_ repo]] (assoc db :selected repo)))
 (rf/reg-event-db :group-mode
   (fn [db [_ mode]] (assoc db :group-mode mode)))
+(rf/reg-event-db :organism-scope
+  (fn [db [_ scope]] (assoc db :organism-scope scope :selected nil)))
 (rf/reg-event-db :activity-agent
   (fn [db [_ agent-id]] (assoc db :activity-agent agent-id)))
 (rf/reg-sub :snapshot (fn [db _] (:snapshot db)))
 (rf/reg-sub :selected (fn [db _] (:selected db)))
 (rf/reg-sub :group-mode (fn [db _] (or (:group-mode db) :org)))
+(rf/reg-sub :organism-scope
+  (fn [db _] (or (:organism-scope db) :federation)))
 (rf/reg-sub :activity-agent
   (fn [db _] (or (:activity-agent db) "all")))
 
@@ -109,6 +113,22 @@
     (if (= (count queried) (count @snapshot-repos))
       queried
       @snapshot-repos)))
+
+(def organism-remote
+  {:com-junkawasaki "com-junkawasaki"
+   :etzhayyim "com-etzhayyim"
+   :cloud-itonami "cloud-itonami"
+   :jk-luxury "jk-luxury"
+   :gftdcojp "gftdcojp"})
+
+(defn scoped-repos [scope]
+  (let [repos (visible-repos)]
+    (if (= scope :federation)
+      repos
+      (let [remote (get organism-remote scope)]
+        (filterv #(or (= remote (:remote %))
+                      (str/includes? (str (:path %)) remote))
+                 repos)))))
 
 (defn queried-agents []
   (mapv (fn [[id project model runner status issue goal]]
@@ -875,10 +895,57 @@
     {:actor actor :head face :left-arm left-arm :right-arm right-arm
      :left-leg left-leg :right-leg right-leg :beacon beacon}))
 
-(defn rebuild-scene! [snapshot group-mode]
+(def organism-grove-style
+  {:com-junkawasaki {:color 0x56c9a8 :label "PERSONAL · RESEARCH / MAKING"}
+   :etzhayyim {:color 0xe0bd67 :label "ETZHAYYIM · WELLBECOMING"}
+   :cloud-itonami {:color 0x45d8c4 :label "CLOUD-ITONAMI · NETWORK-AWAI"}
+   :jk-luxury {:color 0xb89b62 :label "JK-LUXURY · TRUST / RARITY"}
+   :gftdcojp {:color 0x4c9fe8 :label "GFTD · DEFENSIVE SECURITY"}})
+
+(defn organism-key [organism]
+  (keyword (name (or (:org organism) (:organism/org organism) :unknown))))
+
+(defn add-organism-groves! [root organisms selected-scope]
+  (doseq [[index organism] (map-indexed vector organisms)
+          :let [key (organism-key organism)
+                {:keys [color label]} (get organism-grove-style key
+                                           {:color 0x75c69b
+                                            :label (str/upper-case (name key))})
+                angle (+ (- (/ js/Math.PI 2)) (* index (/ (* 2 js/Math.PI)
+                                                          (max 1 (count organisms)))))
+                focused? (or (= selected-scope :federation)
+                             (= selected-scope key))
+                radius (if (= selected-scope :federation) 17 0)
+                x (* radius (js/Math.cos angle))
+                z (* radius (js/Math.sin angle))
+                grove (THREE/Mesh.
+                       (THREE/CylinderGeometry. 5.1 5.7 0.55 36)
+                       (THREE/MeshStandardMaterial.
+                        #js {:color color :emissive color
+                             :emissiveIntensity (if focused? 0.18 0.02)
+                             :roughness 0.9 :transparent true
+                             :opacity (if focused? 0.28 0.06)}))
+                boundary (THREE/Mesh.
+                          (THREE/TorusGeometry. 4.75 0.075 8 64)
+                          (THREE/MeshBasicMaterial.
+                           #js {:color color :transparent true
+                                :opacity (if focused? 0.72 0.12)}))
+                title (text-sprite label
+                                   (str "#" (.toString color 16)))]]
+    (three/set-position! grove x -0.42 z)
+    (three/set-rotation-x! boundary (/ js/Math.PI 2))
+    (three/set-position! boundary x -0.08 z)
+    (three/set-position! title x 1.15 z)
+    (three/set-scale! title 5.4 0.8 1)
+    (set! (.. grove -userData -organism) (clj->js organism))
+    (.add root grove)
+    (.add root boundary)
+    (.add root title)))
+
+(defn rebuild-scene! [snapshot group-mode organism-scope]
   (when-let [{:keys [repo-root]} @runtime]
     (clear! repo-root)
-    (let [repos (visible-repos)
+    (let [repos (scoped-repos organism-scope)
           ranks (dependency-ranks (:dependencies snapshot))
           grouped (group-by #(group-key group-mode %) repos)
           groups (sort (keys grouped))
@@ -887,6 +954,7 @@
           active-by-path (into {} (map (juxt :path identity) (:active-repos snapshot)))
           active-paths (set (keys active-by-path))
           positions (atom {})]
+      (add-organism-groves! repo-root (:organisms snapshot) organism-scope)
       (add-life-tree! repo-root snapshot)
       (add-successor! repo-root)
       (doseq [[group-index group] (map-indexed vector groups)
@@ -1153,6 +1221,7 @@
      (mapv (juxt :path :issue) (:active-repos snapshot))
      (frequencies (map :sync (:repos snapshot)))
      (:dependencies snapshot)
+     (:organisms snapshot)
      (:projects snapshot) (:agents snapshot) (:loops snapshot)
      (:results snapshot)
      (:repo-stats snapshot)
@@ -1166,12 +1235,13 @@
 (defn apply-state! []
   (let [snapshot @(rf/subscribe [:snapshot])
         selected @(rf/subscribe [:selected])
-        group-mode @(rf/subscribe [:group-mode])]
+        group-mode @(rf/subscribe [:group-mode])
+        organism-scope @(rf/subscribe [:organism-scope])]
     (when snapshot
       (let [signature (scene-signature snapshot)]
         (when (not= signature @topology-signature)
           (reset! topology-signature signature)
-          (rebuild-scene! snapshot group-mode)))
+          (rebuild-scene! snapshot group-mode organism-scope)))
       (render-overlay! snapshot selected group-mode))))
 
 (defn fetch-snapshot! []
@@ -1182,7 +1252,7 @@
                   (apply-state!)))
       (.catch #(js/console.error "Tamaki snapshot" %))))
 
-(declare play-sfx! spawn-pulse!)
+(declare play-sfx! spawn-pulse! set-garden-view!)
 
 (defn group-mode-changed! [event]
   (play-sfx! :navigate)
@@ -1190,6 +1260,14 @@
   (rf/dispatch-sync [:group-mode (keyword (.. event -target -value))])
   (reset! topology-signature nil)
   (apply-state!))
+
+(defn select-organism! [scope]
+  (play-sfx! :navigate)
+  (rf/dispatch-sync [:organism-scope scope])
+  (reset! topology-signature nil)
+  (apply-state!)
+  (when (= scope :federation)
+    (set-garden-view! :world)))
 
 (defn play-tone! [frequency duration volume wave]
   (when-let [context (:context @audio-runtime)]
@@ -1394,6 +1472,16 @@
     [:div#bonsai-state.bonsai-state
      [:b "Bonsai care"]
      [:span "Git treeを観察中…"]]
+    [:nav.organism-scopes
+     (for [[scope text] [[:federation "Federation"]
+                         [:com-junkawasaki "Personal"]
+                         [:etzhayyim "Etzhayyim"]
+                         [:cloud-itonami "Cloud"]
+                         [:jk-luxury "JK Luxury"]
+                         [:gftdcojp "GFTD"]]]
+       ^{:key scope}
+       [:button {:type "button" :on-click #(select-organism! scope)}
+        text])]
     [:div.voice-row
      [:button.voice-button {:type "button" :on-click start-voice!}
       "🎙 Tamaki に話す"]
@@ -1586,6 +1674,7 @@
 (defn ^:export init []
   (rf/dispatch-sync [:snapshot nil])
   (rf/dispatch-sync [:group-mode :org])
+  (rf/dispatch-sync [:organism-scope :federation])
   (rf/dispatch-sync [:activity-agent "all"])
   (mount-shell!)
   (init-scene!)

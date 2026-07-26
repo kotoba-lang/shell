@@ -15,6 +15,23 @@
 (defonce git-tree-cache (atom {}))
 (declare run-project workspace-path)
 
+(defn- organism-specs []
+  (let [directory (io/file (observer/workspace-root)
+                           "orgs" "kotoba-lang" "tamaki" "organisms")]
+    (->> (or (.listFiles directory) (make-array java.io.File 0))
+         (filter #(and (.isFile %)
+                       (.endsWith (.getName %) ".edn")))
+         (mapv (fn [file]
+                 (let [spec (edn/read-string (slurp file))]
+                   (select-keys
+                    spec
+                    [:organism/id :organism/org :organism/objective
+                     :organism/responsibilities :organism/repos
+                     :organism/governor :organism/budget
+                     :organism/authority]))))
+         (sort-by (comp str :organism/id))
+         vec)))
+
 (defn- git-lines [directory & args]
   (let [{:keys [exit out]} (apply shell/sh "git" "-C"
                                   (.getAbsolutePath (io/file directory))
@@ -454,6 +471,7 @@
                                    :local? :sync])
                   (:repos registry))
      :dependencies (:dependencies registry)
+     :organisms (organism-specs)
      :git-trees (active-git-trees registry runs)
      :projects
      (into (or @project-topologies

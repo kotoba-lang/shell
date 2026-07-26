@@ -28,7 +28,7 @@
 (def header
   (css {:top 8 :left 8 :right 306 :padding "9px 12px"
         :display :grid :grid-template-columns "auto 1fr auto"
-        :grid-template-rows "22px 28px 27px 43px"
+        :grid-template-rows "22px 28px 27px 43px 25px"
         :column-gap 12 :row-gap 4 :overflow :hidden}
        ["h1" {:grid-column 1 :grid-row 1 :font-size 16 :margin 0
               :white-space :nowrap}]
@@ -92,7 +92,19 @@
        [".usage-card span" {:display :block :color "#d8cfdf"
                             :font "9px ui-monospace, monospace" :margin 0}]
        [".usage-card span:last-child" {:display :none}]
-       [".usage-card em" {:color "#82778e" :font-style :normal}]))
+       [".usage-card em" {:color "#82778e" :font-style :normal}]
+       [".organism-scopes" {:grid-column "1 / 4" :grid-row 5
+                            :display :flex :align-items :center :gap 5
+                            :overflow-x :auto}]
+       [".organism-scopes button"
+        {:flex "0 0 auto" :padding "3px 9px" :border-radius 999
+         :border "1px solid #47725b" :background "#0c2117"
+         :color "#bfe8ce" :font "9px ui-monospace, monospace"
+         :cursor :pointer}]
+       [".organism-scopes button:first-child"
+        {:border-color "#d4b268" :color "#f2d58e" :background "#2b200e"}]
+       [".organism-scopes button:hover"
+        {:background "#70ffac" :color "#07150d" :border-color "#70ffac"}]))
 
 (def inspector
   (css {:right 8 :top 8 :bottom 8 :width 290
