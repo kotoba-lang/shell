@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shell_dir="$(cd "$(dirname "$0")/.." && pwd)"
+app_dir="$shell_dir/apps/tamaki-observer"
+tamaki_dir="${TAMAKI_PROJECT_DIR:-$(cd "$shell_dir/../tamaki" && pwd)}"
+workspace_root="${KOTOBA_WORKSPACE_ROOT:-$(cd "$shell_dir/../../.." && pwd)}"
+
+export TAMAKI_STATE_DIR="${TAMAKI_STATE_DIR:-$tamaki_dir/.tamaki}"
+export KOTOBA_WORKSPACE_ROOT="$workspace_root"
+export KOTOBA_WEST_MANIFEST="${KOTOBA_WEST_MANIFEST:-$workspace_root/manifest/west.yml}"
+export KOTOBA_REPO_INDEX="${KOTOBA_REPO_INDEX:-$TAMAKI_STATE_DIR/workspace-repos.txt}"
+repo_index_next="$KOTOBA_REPO_INDEX.next.$$"
+(
+  find "$workspace_root/orgs" "$workspace_root/projects" "$workspace_root/packages" \
+    -type d \( -name node_modules -o -name target -o -name .cache \) -prune -o \
+    -type d -name .git -print -prune 2>/dev/null |
+    sed "s#^$workspace_root/##; s#/.git\$##" |
+    sort -u > "$repo_index_next"
+  mv "$repo_index_next" "$KOTOBA_REPO_INDEX"
+) &
+export KOTOBA_SHELL_APP_DIR="$app_dir"
+export KOTOBA_SHELL_MANIFEST="$app_dir/app.kotoba.edn"
+export KOTOBA_SHELL_TITLE="Tamaki Observatory"
+export KOTOBA_SHELL_WIDTH="${KOTOBA_SHELL_WIDTH:-980}"
+export KOTOBA_SHELL_HEIGHT="${KOTOBA_SHELL_HEIGHT:-820}"
+export KOTOBA_SHELL_MIN_WIDTH="${KOTOBA_SHELL_MIN_WIDTH:-640}"
+export KOTOBA_SHELL_MIN_HEIGHT="${KOTOBA_SHELL_MIN_HEIGHT:-560}"
+export KOTOBA_SHELL_WATCH=1
+export KOTOBA_SHELL_FLOATING=1
+export KOTOBA_SHELL_REFRESH_SECONDS="${KOTOBA_SHELL_REFRESH_SECONDS:-1}"
+export KOTOBA_SHELL_EXTRA_WATCH_ROOTS="$TAMAKI_STATE_DIR"
+export TAMAKI_VISUAL_SNAPSHOT_PATH="${TAMAKI_VISUAL_SNAPSHOT_PATH:-$TAMAKI_STATE_DIR/visual/live.png}"
+export TAMAKI_CLI_PATH="${TAMAKI_CLI_PATH:-$tamaki_dir/bin/tamaki}"
+export TAMAKI_VOICE_PROJECT="${TAMAKI_VOICE_PROJECT:-$tamaki_dir}"
+
+web_dir="$shell_dir/apps/tamaki-observer-web"
+web_dist="$web_dir/dist"
+web_host="$shell_dir/target/kotoba-shell-host-macos-webview"
+data_pid=""
+
+cleanup() {
+  if [[ -n "$data_pid" ]] && kill -0 "$data_pid" 2>/dev/null; then
+    kill "$data_pid" 2>/dev/null || true
+    wait "$data_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ ! -d "$web_dir/node_modules" ]]; then
+  npm --prefix "$web_dir" install
+fi
+if [[ "${KOTOBA_SHELL_WATCH:-0}" == "1" ]]; then
+  mkdir -p "$web_dir/target"
+  shadow_pid_file="$web_dir/target/shadow-watch.pid"
+  shadow_pid="$(command cat "$shadow_pid_file" 2>/dev/null || true)"
+  if [[ -z "$shadow_pid" ]] || ! kill -0 "$shadow_pid" 2>/dev/null ||
+     ! ps -p "$shadow_pid" -o command= | rg -q "shadow-cljs watch app"; then
+    (
+      cd "$web_dir"
+      nohup npm run watch >>target/shadow-watch.log 2>&1 &
+      echo "$!" >target/shadow-watch.pid
+    )
+  fi
+  # A previous release remains immediately bootable. The watch build updates
+  # it in place and shadow-cljs pushes after-load into the live WKWebView.
+  if [[ ! -f "$web_dist/js/main.js" || ! -f "$web_dist/style.css" ]]; then
+    for _ in {1..300}; do
+      [[ -f "$web_dist/js/main.js" && -f "$web_dist/style.css" ]] && break
+      sleep 0.1
+    done
+  fi
+else
+  npm --prefix "$web_dir" run build
+fi
+"$shell_dir/bin/kotoba-shell-build-macos-webview" "$web_host" >/dev/null
+
+mkdir -p "$web_dir/target"
+(
+  cd "$app_dir"
+  exec clojure -M -m kotoba.shell.tamaki-web-data "$web_dist/snapshot.json"
+) >>"$web_dir/target/data.log" 2>&1 &
+data_pid=$!
+
+for _ in {1..50}; do
+  [[ -f "$web_dist/snapshot.json" ]] && break
+  sleep 0.1
+done
+
+"$web_host" "$web_dist"

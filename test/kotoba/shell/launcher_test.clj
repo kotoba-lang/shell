@@ -5,7 +5,107 @@
             [kotoba.shell.connector :as connector]
             [kotoba.shell.experience :as experience]
             [kotoba.shell.sealed-line :as sealed]
+            [kotoba.shell.tamaki-observer :as tamaki-observer]
+            [kotoba.shell.tamaki-web-data :as tamaki-web-data]
             [kotoba.shell.launcher :as launcher]))
+
+(deftest tamaki-observer-projects-durable-campaigns
+  (let [campaign {:tamaki.loop/id "loop-1"
+                  :tamaki.loop/status :active
+                  :tamaki.loop/objective "grow safely"
+                  :tamaki.loop/cycles 1
+                  :tamaki.loop/max-cycles 5
+                  :tamaki.loop/failures 0
+                  :tamaki.loop/max-failures 2
+                  :tamaki.loop/updated-at 2}
+        events [{:tamaki.event/run "loop-1"
+                 :tamaki.event/kind :loop/started
+                 :tamaki.event/at 1
+                 :tamaki.event/data {:campaign campaign}}
+                {:tamaki.event/run "loop-1"
+                 :tamaki.event/kind :loop/cycle-started
+                 :tamaki.event/at 2
+                 :tamaki.event/data {:loop/cycle 1}}]
+        state (tamaki-observer/snapshot events)
+        ops (tamaki-observer/surface-ops state)]
+    (is (= 2 (:events state)))
+    (is (= 1 (count (:campaigns state))))
+    (is (some #(= :dom/set-root (first %)) ops))
+    (is (some #(and (= :dom/create-text (first %))
+                    (= "Live activity" (nth % 2)))
+              ops))
+    (is (some #(and (= :dom/create-text (first %))
+                    (= "Tamaki Observatory" (nth % 2)))
+              ops))))
+
+(deftest tamaki-observer-joins-west-rad-github-and-agent-activity
+  (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                       "tamaki-registry" (make-array java.nio.file.attribute.FileAttribute 0)))
+        manifest (io/file root "west.yml")
+        repo-dir (io/file root "orgs/kotoba-lang/tamaki/.git")]
+    (.mkdirs repo-dir)
+    (spit manifest
+          (str "manifest:\n  projects:\n"
+               "    - name: tamaki\n"
+               "      remote: kotoba-lang\n"
+               "      path: orgs/kotoba-lang/tamaki\n"
+               "      userdata:\n"
+               "        rad-rid: rad:z123\n"
+               "    - name: shell\n"
+               "      remote: kotoba-lang\n"
+               "      path: orgs/kotoba-lang/shell\n"))
+    (let [projects (tamaki-observer/read-west-projects
+                    (.getPath manifest) (.getPath root))]
+      (is (= 2 (count projects)))
+      (is (every? :west? projects))
+      (is (every? :github? projects))
+      (is (= 1 (count (filter :rad? projects))))
+      (is (= 1 (count (filter :local? projects)))))))
+
+(deftest tamaki-system-dynamics-projects-durable-stock-and-flow
+  (let [now 4000000
+        event (fn [kind at data]
+                {:tamaki.event/kind kind :tamaki.event/at at
+                 :tamaki.event/data data})
+        events [(event :issue/discovered 100 {:issue/id "old"})
+                (event :issue/discovered 3999000 {:issue/id "open"})
+                (event :issue/discovered 3999001 {:issue/id "done"})
+                (event :run/started 3999002 {})
+                (event :patch/created 3999003
+                       {:patch/id "p-open" :issue/id "open"})
+                (event :patch/created 3999004
+                       {:patch/id "p-done" :issue/id "done"})
+                (event :patch/integrated 3999005
+                       {:patch/id "p-done" :issue/id "done"})
+                (event :run/failed 3999006 {})]
+        runs [{:agent.run/status :running}]
+        dynamics (tamaki-web-data/system-dynamics events runs now)
+        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))
+        flows (into {} (map (juxt :id :rate)) (:flows dynamics))]
+    (is (= {"backlog" 2, "wip" 1, "review" 1, "integrated" 1} stocks))
+    (is (= {"discover" 2, "start" 1, "patch" 2, "integrate" 1} flows))
+    (is (= "backlog" (:bottleneck dynamics)))
+    (is (= 1 (:backlog-delta dynamics)))
+    (is (= 1.0 (:failure-pressure dynamics)))))
+
+(deftest tamaki-system-dynamics-adds-observed-revenue-stocks
+  (let [events [{:tamaki.event/kind :business/observed
+                 :tamaki.event/at 1
+                 :tamaki.event/data
+                 {:observation
+                  {:period-days 7
+                   :stocks {:traffic 100 :qualified-leads 10
+                            :proposals 3 :active-customers 2
+                            :mrr-jpy 50000}
+                   :flows {:new-qualified-leads 10 :new-proposals 3
+                           :new-wins 2 :delta-mrr-jpy 20000}
+                   :rates {:confidence 0.8}}}}]
+        dynamics (tamaki-web-data/system-dynamics events [] 2)
+        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))]
+    (is (= :observed (:business-status dynamics)))
+    (is (= 50000.0 (get stocks "business-mrr")))
+    (is (= 16000.0
+           (get-in dynamics [:business-kpis :risk-adjusted-delta-mrr-jpy])))))
 
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
@@ -145,10 +245,10 @@
                                            "--ops-edn" "{:not :ops}"])]
     (is (:kotoba.cli/ok? check-result))
     (is (= :shell/surface-ready (:kotoba.cli/code check-result)))
-    (is (false? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
-    (is (= "kotoba-lang/browser"
+    (is (true? (get-in check-result [:kotoba.cli/data :kotoba.shell/webview-required?])))
+    (is (= "WebKit"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/browser-engine])))
-    (is (= "kotoba-lang/dom-gpu"
+    (is (= "ClojureScript/WebGL"
            (get-in check-result [:kotoba.cli/data :kotoba.shell/ui-substrate])))
     (is (= :native-surface
            (get-in check-result [:kotoba.cli/data :kotoba.shell/surface-host :kind])))
@@ -1059,7 +1159,7 @@
     (is (= :shell/ui-ready (:kotoba.cli/code result)))
     (is (= "kotoba.shell.ui.v0"
            (get-in result [:kotoba.cli/data :kotoba.shell/ui-schema])))
-    (is (= false (get-in result [:kotoba.cli/data :kotoba.shell/webview-required?])))
+    (is (= true (get-in result [:kotoba.cli/data :kotoba.shell/webview-required?])))
     (is (= 2 (get-in result [:kotoba.cli/data :kotoba.shell/substrate-count])))
     (is (= #{:wasm-ui :browser}
            (set (map :id (get-in result [:kotoba.cli/data :kotoba.shell/ui-rows])))))

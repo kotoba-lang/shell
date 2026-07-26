@@ -1,0 +1,7 @@
+{:deps {:aliases [:dev]}
+ :builds
+ {:app {:target :browser
+        :output-dir "dist/js"
+        :asset-path "js"
+        :build-hooks [(tamaki.observer.build-css/hook)]
+        :modules {:main {:init-fn tamaki.observer.app/init}}}}}

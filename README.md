@@ -247,10 +247,12 @@ Android expose real toolchain connection points; successful execution requires a
 booted simulator for `xcrun simctl` or a connected Android device/emulator for
 `adb`.
 
-The shell does not require a Tauri-style system WebView. `surface check` records
-`kotoba-lang/browser` as the browser/OS surface engine and `kotoba-lang/dom-gpu`
-(renamed from `wasm-ui`) as the `kotoba:dom` UI substrate. Native hosts provide a display surface,
-input events, lifecycle, and provider capabilities.
+The shell assumes WebKit as its rendering engine on macOS and iOS. Applications
+ship a web bundle and run in WKWebView; ClojureScript, re-frame, WebGL/WebGPU,
+and ordinary web UI libraries are first-class. `kotoba:dom` remains a
+compatibility/input ABI for older surfaces, not a competing default renderer.
+Native hosts provide the WebKit window, lifecycle, custom-scheme bundle
+delivery, diagnostics, and provider capabilities.
 
 ### Typed text input actions
 
@@ -353,6 +355,21 @@ the local static server on port 8702, waits for it to accept HTTP traffic, and
 then runs the selected WebGL/WebGPU smoke script.
 
 ## Relationship
+
+### Tamaki Observatory
+
+`apps/tamaki-observer` is a read-only native projection of Tamaki's durable
+event stream. It shows campaign bounds and status, patch/integration/failure
+counts, and recent AgentRuns. The shell runtime re-renders when
+`.tamaki/events.edn` changes:
+
+```sh
+bin/kotoba-shell-tamaki-observer
+```
+
+Set `TAMAKI_PROJECT_DIR` or `TAMAKI_STATE_DIR` when observing another checkout.
+The observer never controls or mutates the agent loop; authority remains with
+Tamaki and Radicle.
 
 - `kotoba-lang/shell`: authoritative shell adapter, provider catalog, native
   host contract, conformance tests.

@@ -16,6 +16,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: shell
+      # Shell's Tamaki Observatory and test alias consume the public Tamaki
+      # library through the same sibling layout used by the west workspace.
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/tamaki
+          path: tamaki
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/hil
+          path: hil
       # launcher.clj's substrate-readiness check reads these siblings by
       # hardcoded relative path (../dom-gpu, ../browser).
       - uses: actions/checkout@v4
