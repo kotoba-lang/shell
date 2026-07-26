@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
+            [kotoba.tamaki.actor :as actor]
             [kotoba.tamaki.store :as store]))
 
 (def active-statuses #{:queued :leased :running})
@@ -55,6 +56,28 @@
      candidates)))
 
 (defonce project-topologies (atom nil))
+
+(defn actor-states [runs]
+  (let [root (.getParentFile (io/file (observer/state-dir)))
+        dir (io/file root "actors")]
+    (->> (or (.listFiles dir) (make-array java.io.File 0))
+         (filter #(and (.isFile %) (.endsWith (.getName %) ".edn")))
+         (mapv (fn [file]
+                 (let [spec (actor/read-spec (.getAbsolutePath file))
+                       plan (actor/reconcile-plan spec runs)]
+                   {:id (str (:actor/id spec))
+                    :type (str (:actor/type spec))
+                    :project (workspace-path (:actor/project spec))
+                    :objective (:actor/objective spec)
+                    :desired (:desired plan)
+                    :running (:running plan)
+                    :queued (:queued plan)
+                    :spawn (:spawn plan)
+                    :hil-policy
+                    (into {}
+                          (map (fn [[gate decision]]
+                                 [(name gate) (name decision)]))
+                          (:actor/hil-policy spec))}))))))
 
 (def dynamics-window-ms 3600000)
 
@@ -179,6 +202,7 @@
                    (reset! project-topologies
                            (discover-project-topologies registry)))
      :agents agents
+     :actors (actor-states runs)
      :loops (mapv (fn [campaign]
                     {:id (:tamaki.loop/id campaign)
                      :status (:tamaki.loop/status campaign)

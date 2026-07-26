@@ -34,6 +34,13 @@
                   :border "1px solid #57416e" :border-radius 7
                   :padding "3px 7px"}]
        [".model-usage" {:display :flex :gap 6 :margin-top 10}]
+       [".actor-state" {:display :flex :gap 6 :margin-top 7}]
+       [".actor-card" {:padding "5px 8px" :border-radius 8
+                       :border "1px solid #4cff9155"
+                       :background "#10251a99"
+                       :font "10px ui-monospace, monospace"}]
+       [".actor-card b" {:display :block :color "#77ffad"}]
+       [".actor-card .pressure" {:color "#ffb45b"}]
        [".voice-row" {:display :flex :align-items :center :gap 8
                       :margin-top 9}]
        [".voice-button" {:color "#dfffea" :background "#173d2a"

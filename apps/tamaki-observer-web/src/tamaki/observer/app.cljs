@@ -569,6 +569,7 @@
     (set! (.-value grouping) (label group-mode "org"))
     (set! (.-textContent metrics)
           (str (count (visible-repos)) "/" total " repo tiles · "
+               (count (:actors snapshot)) " actors · "
                (count (:agents snapshot)) " agents · "
                (count (:loops snapshot)) " loops · WEST " west
                " · GitHub " github " · Radicle " rad))
@@ -611,6 +612,18 @@
                           "<span><em>remaining "
                           (or (:remaining usage) "unknown")
                           "</em></span></div>")))))
+    (when-let [actor-state (.getElementById js/document "actor-state")]
+      (set! (.-innerHTML actor-state)
+            (apply str
+                   (for [{:keys [id desired running queued spawn]}
+                         (:actors snapshot)]
+                     (str "<div class=\"actor-card\"><b>" id "</b>"
+                          "desired " desired " · running " running
+                          " · queued " queued
+                          (when (pos? spawn)
+                            (str " · <span class=\"pressure\">need +"
+                                 spawn "</span>"))
+                          "</div>")))))
     (let [{:keys [stocks flows bottleneck failure-pressure backlog-delta
                   throughput]} (:system-dynamics snapshot)]
       (set! (.-innerHTML dynamics-panel)
@@ -800,6 +813,7 @@
      [:button#sound-toggle.sound-button
       {:type "button" :on-click toggle-sound!}
       "♫ ambient off"]]
+    [:div#actor-state.actor-state]
     [:div#model-usage.model-usage]]
    [:aside#inspector {:class (str style/glass " " style/inspector)}
     [:h2 "Workspace"]
