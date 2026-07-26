@@ -1470,7 +1470,7 @@
 (defn finance-panel []
   (let [snapshot @(rf/subscribe [:snapshot])
         view @(rf/subscribe [:surface-view])
-        {:keys [status period organizations pl bs cf]} (:finance snapshot)
+        {:keys [status period organizations pl bs cf segments]} (:finance snapshot)
         observed? (= "observed" (label status "unavailable"))
         balanced? (and (number? (:balance-delta bs))
                        (zero? (:balance-delta bs)))]
@@ -1498,6 +1498,16 @@
            (not observed?) "N/A"
            balanced? "BALANCED"
            :else (money (:balance-delta bs)))]]]
+     [:div.finance-segments
+      (for [[segment title] [[:personal "Personal"]
+                             [:corporate "Corporate"]
+                             [:crypto "Crypto"]]
+            :let [data (get segments segment)]]
+        ^{:key segment}
+        [:div.finance-segment
+         [:span title]
+         [:strong (money (:assets data))]
+         [:small (str (or (:observations data) 0) " observations")]])]
      [:div.finance-statements
       [finance-card "P/L"
        [["Revenue" (:revenue pl)]

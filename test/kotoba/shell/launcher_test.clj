@@ -173,6 +173,7 @@
                  :tamaki.event/at 1
                  :tamaki.event/data
                  {:org :cloud
+                  :owner {:kind :corporate :ref :org/cloud}
                   :period "2026-07"
                   :currency :JPY
                   :pl {:revenue 1000 :cost-of-sales 200
@@ -185,7 +186,8 @@
     (is (= 800 (get-in dashboard [:pl :gross-profit])))
     (is (= 500 (get-in dashboard [:pl :operating-profit])))
     (is (zero? (get-in dashboard [:bs :balance-delta])))
-    (is (= 900 (get-in dashboard [:cf :ending-cash])))))
+    (is (= 900 (get-in dashboard [:cf :ending-cash])))
+    (is (= 1 (get-in dashboard [:segments :corporate :observations])))))
 
 (deftest connector-argv-contract
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))

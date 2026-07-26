@@ -377,8 +377,11 @@
                   (filter #(= :finance/observed (:tamaki.event/kind %)))
                   (sort-by :tamaki.event/at)
                   (reduce (fn [latest event]
-                            (let [row (:tamaki.event/data event)]
-                              (assoc latest (or (:org row) :unassigned) row)))
+                            (let [row (:tamaki.event/data event)
+                                  owner-ref (or (get-in row [:owner :ref])
+                                                (:org row)
+                                                :unassigned)]
+                              (assoc latest owner-ref row)))
                           {}))
         add-known (fn [xs]
                     (let [known (filter number? xs)]
@@ -405,7 +408,22 @@
         balance-delta (when (and (number? (:assets bs))
                                  (number? (:liabilities bs))
                                  (number? (:equity bs)))
-                        (- (:assets bs) (:liabilities bs) (:equity bs)))]
+                        (- (:assets bs) (:liabilities bs) (:equity bs)))
+        segments
+        (->> (vals rows)
+             (group-by (fn [row]
+                         (cond
+                           (= :crypto (:asset-kind row)) :crypto
+                           (= :personal (get-in row [:owner :kind])) :personal
+                           :else :corporate)))
+             (map (fn [[segment segment-rows]]
+                    [segment
+                     {:observations (count segment-rows)
+                      :assets (add-known (map #(get-in % [:bs :assets])
+                                              segment-rows))
+                      :revenue (add-known (map #(get-in % [:pl :revenue])
+                                               segment-rows))}]))
+             (into {}))]
     {:status (if (seq rows) :observed :unavailable)
      :currency (or (:currency (last (sort-by :observed-at (vals rows)))) :JPY)
      :period (:period (last (sort-by :observed-at (vals rows))))
@@ -414,6 +432,7 @@
                    :operating-profit operating-profit)
      :bs (assoc bs :balance-delta balance-delta)
      :cf cf
+     :segments segments
      :by-org rows}))
 
 (defn- repo-stats [events runs campaigns]

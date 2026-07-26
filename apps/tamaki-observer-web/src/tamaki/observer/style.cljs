@@ -233,6 +233,19 @@
                               :font-size 10 :margin-bottom 5}]
        [".finance-kpi strong" {:font "20px ui-monospace, monospace"}]
        [".finance-kpi strong.warning" {:color "#ffad62"}]
+       [".finance-segments" {:display :grid
+                             :grid-template-columns "repeat(3, minmax(0, 1fr))"
+                             :gap 8 :margin-bottom 10}]
+       [".finance-segment" {:display :grid
+                            :grid-template-columns "1fr auto"
+                            :align-items :baseline :padding "7px 10px"
+                            :border-radius 9 :background "#071b1299"
+                            :border "1px solid #70e99f2b"}]
+       [".finance-segment span" {:color "#70e99f"
+                                 :font "10px ui-monospace, monospace"}]
+       [".finance-segment strong" {:font "12px ui-monospace, monospace"}]
+       [".finance-segment small" {:grid-column "1 / 3" :color "#81788b"
+                                  :font "8px ui-monospace, monospace"}]
        [".finance-statements" {:display :grid
                                :grid-template-columns "repeat(3, minmax(0, 1fr))"
                                :gap 10}]
