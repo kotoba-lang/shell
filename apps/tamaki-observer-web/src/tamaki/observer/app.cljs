@@ -276,23 +276,22 @@
 
 (defn add-result-graphs! [root positions graphs]
   (doseq [[graph-index graph] (map-indexed vector graphs)
-          :let [base (get positions (:result/project graph))
-                nodes (:result/nodes graph)]
+          :let [base (get positions (:project graph))
+                nodes (:nodes graph)]
           :when base]
     (let [node-positions
           (into {}
                 (map-indexed
                  (fn [index node]
-                   [(:result.node/id node)
+                   [(:id node)
                     {:x (+ (:x base) (* (- index (/ (dec (count nodes)) 2))
                                         1.15))
                      :y (+ (:height base) 3.0 (* 0.28 (mod graph-index 3)))
                      :z (+ (:z base) 2.6 (* 0.7 graph-index))}])
                  nodes))]
       (doseq [node nodes
-              :let [{:keys [x y z]} (get node-positions
-                                          (:result.node/id node))
-                    kind (keyword (name (:result.node/type node)))
+              :let [{:keys [x y z]} (get node-positions (:id node))
+                    kind (keyword (name (:type node)))
                     color (get result-colors kind 0xffffff)
                     object (three/mesh
                             (case kind
@@ -305,7 +304,7 @@
                              {:color color :emissive 1.7 :roughness 0.24}))
                     caption (text-sprite
                              (str (str/upper-case (name kind)) " · "
-                                  (let [value (str (:result.node/value node))]
+                                  (let [value (str (:value node))]
                                     (subs value 0 (min 12 (count value)))))
                              (str "#" (.toString color 16)))]]
         (three/set-position! object x y z)
@@ -314,9 +313,9 @@
         (set! (.. object -userData -result) (clj->js node))
         (.add root object)
         (.add root caption))
-      (doseq [edge (:result/edges graph)
-              :let [a (get node-positions (:result.edge/from edge))
-                    b (get node-positions (:result.edge/to edge))]
+      (doseq [edge (:edges graph)
+              :let [a (get node-positions (:from edge))
+                    b (get node-positions (:to edge))]
               :when (and a b)]
         (let [geometry (doto (THREE/BufferGeometry.)
                          (.setFromPoints
