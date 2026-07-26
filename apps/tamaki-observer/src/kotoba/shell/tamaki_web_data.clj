@@ -72,6 +72,7 @@
                     :desired (:desired plan)
                     :running (:running plan)
                     :queued (:queued plan)
+                    :blocked (:blocked plan)
                     :spawn (:spawn plan)
                     :hil-policy
                     (into {}

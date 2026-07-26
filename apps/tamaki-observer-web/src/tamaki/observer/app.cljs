@@ -615,11 +615,11 @@
     (when-let [actor-state (.getElementById js/document "actor-state")]
       (set! (.-innerHTML actor-state)
             (apply str
-                   (for [{:keys [id desired running queued spawn]}
+                   (for [{:keys [id desired running queued blocked spawn]}
                          (:actors snapshot)]
                      (str "<div class=\"actor-card\"><b>" id "</b>"
                           "desired " desired " · running " running
-                          " · queued " queued
+                          " · queued " queued " · blocked " blocked
                           (when (pos? spawn)
                             (str " · <span class=\"pressure\">need +"
                                  spawn "</span>"))
