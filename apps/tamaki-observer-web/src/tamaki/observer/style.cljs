@@ -33,6 +33,17 @@
        ["select" {:margin-left 7 :color "#eee" :background "#241733"
                   :border "1px solid #57416e" :border-radius 7
                   :padding "3px 7px"}]
+       [".garden-views" {:display :flex :align-items :center :gap 5
+                         :margin-top 8}]
+       [".garden-views span" {:margin-right 3 :color "#71dda0"
+                              :font "10px ui-monospace, monospace"}]
+       [".garden-views button" {:color "#c9e9d5" :background "#10251a"
+                                :border "1px solid #376a4c"
+                                :border-radius 999 :padding "3px 8px"
+                                :font-size 10 :cursor :pointer}]
+       [".garden-views button:hover" {:color "#07150d"
+                                      :background "#70ffac"
+                                      :border-color "#70ffac"}]
        [".model-usage" {:display :flex :gap 6 :margin-top 10}]
        [".actor-state" {:display :flex :gap 6 :margin-top 7}]
        [".actor-card" {:padding "5px 8px" :border-radius 8
