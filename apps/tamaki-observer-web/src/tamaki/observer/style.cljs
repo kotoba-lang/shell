@@ -69,6 +69,16 @@
        [".details" {:color "#c8bfd5" :line-height 1.55
                     :word-break :break-word}]
        [".activity-title" {:margin-top 20}]
+       [".activity-filters" {:display :flex :gap 5 :overflow-x :auto
+                             :padding-bottom 8 :margin-bottom 2}]
+       [".activity-filters button" {:flex "0 0 auto" :cursor :pointer
+                                    :color "#b9aec7" :background "#140c20"
+                                    :border "1px solid #473459"
+                                    :border-radius 999 :padding "4px 8px"
+                                    :font "10px ui-monospace, monospace"}]
+       [".activity-filters button.selected"
+        {:color "#07150d" :background "#70ffac" :border-color "#70ffac"
+         :box-shadow "0 0 12px #42f58d55"}]
        [".event" {:display :grid :grid-template-columns "64px 1fr"
                   :gap "2px 8px" :padding "7px 0"
                   :border-top "1px solid #ffffff12"}]
@@ -76,6 +86,11 @@
                        :font "11px ui-monospace, monospace"}]
        [".event b" {:color "#79ffa8"
                     :font "11px ui-monospace, monospace"}]
+       [".event-heading" {:display :flex :align-items :center
+                          :justify-content :space-between :gap 6}]
+       [".event .stream" {:color "#73bfff" :border "1px solid #3998db55"
+                          :border-radius 999 :padding "1px 5px"
+                          :font "9px ui-monospace, monospace"}]
        [".event small" {:grid-column 2 :color "#9f94af" :overflow :hidden
                         :text-overflow :ellipsis :white-space :nowrap}]))
 

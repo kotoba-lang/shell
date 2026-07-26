@@ -62,6 +62,60 @@
       (is (= 1 (count (filter :rad? projects))))
       (is (= 1 (count (filter :local? projects)))))))
 
+(deftest tamaki-activity-feed-identifies-agent-and-stream
+  (let [runs [{:agent.run/id "run-123456789"
+               :agent.run/worker "agent2"
+               :agent.run/runner "claude"
+               :agent.run/model "sonnet"}]
+        events [{:tamaki.event/id "event-1"
+                 :tamaki.event/run "run-123456789"
+                 :tamaki.event/kind :agent/activity
+                 :tamaki.event/at 10
+                 :tamaki.event/data {:activity/kind :tool/started
+                                     :activity/stream :tool
+                                     :activity/text "read file"}}
+                {:tamaki.event/id "event-2"
+                 :tamaki.event/run "supervisor"
+                 :tamaki.event/kind :loop/cycle-started
+                 :tamaki.event/at 9
+                 :tamaki.event/data {}}]
+        [agent-event system-event]
+        (tamaki-web-data/activity-feed events runs)]
+    (is (= "run-123456789" (:agent-id agent-event)))
+    (is (= "claude" (:agent-runner agent-event)))
+    (is (= "sonnet" (:agent-model agent-event)))
+    (is (= "tool" (:stream agent-event)))
+    (is (= "system" (:agent-id system-event)))
+    (is (= "system" (:stream system-event)))))
+
+(deftest tamaki-objective-topology-exposes-actor-walk
+  (let [run {:agent.run/id "run-1"
+             :agent.run/project "orgs/kotoba-lang/tamaki"}
+        campaign {:tamaki.loop/id "loop-1"
+                  :tamaki.loop/status :active
+                  :tamaki.loop/project "orgs/kotoba-lang/tamaki"
+                  :tamaki.loop/objective "grow maturity"}
+        event {:tamaki.event/run "run-1"
+               :tamaki.event/kind :issue/prioritized
+               :tamaki.event/at 42
+               :tamaki.event/data
+               {:issue/selection
+                {:issue {:issue/id "rad-1" :issue/title "Fix gate"
+                         :issue/status :open :issue/blockers #{"rad-0"}}}}}
+        [topology]
+        (tamaki-web-data/live-objective-topologies
+         [event] [run] [campaign])]
+    (is (= "grow maturity" (:objective topology)))
+    (is (= [["rad-1"] ["objective/loop-1"]]
+           (:reverse-topology topology)))
+    (is (= {:actor "run-1" :at 42
+            :from "objective/loop-1" :to "rad-1"}
+           (first (:walks topology))))
+    (is (= #{"rad-0"}
+           (set (:blockers
+                 (some #(when (= "rad-1" (:key %)) %)
+                       (:issues topology))))))))
+
 (deftest tamaki-system-dynamics-projects-durable-stock-and-flow
   (let [now 4000000
         event (fn [kind at data]

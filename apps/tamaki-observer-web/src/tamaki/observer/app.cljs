@@ -11,6 +11,7 @@
 (defonce runtime (atom nil))
 (defonce audio-runtime (atom {:enabled? false :step 0}))
 (defonce topology-signature (atom nil))
+(defonce issue-node-positions (atom {}))
 (def topology-schema
   {:repo/path {:db/unique :db.unique/identity}
    :agent/id {:db/unique :db.unique/identity}
@@ -30,9 +31,13 @@
   (fn [db [_ repo]] (assoc db :selected repo)))
 (rf/reg-event-db :group-mode
   (fn [db [_ mode]] (assoc db :group-mode mode)))
+(rf/reg-event-db :activity-agent
+  (fn [db [_ agent-id]] (assoc db :activity-agent agent-id)))
 (rf/reg-sub :snapshot (fn [db _] (:snapshot db)))
 (rf/reg-sub :selected (fn [db _] (:selected db)))
 (rf/reg-sub :group-mode (fn [db _] (or (:group-mode db) :org)))
+(rf/reg-sub :activity-agent
+  (fn [db _] (or (:activity-agent db) "all")))
 
 (defn index-datoms! [snapshot]
   (d/reset-conn! topology-db (d/empty-db topology-schema))
@@ -187,7 +192,10 @@
                                   :transparent true :opacity 0.8}))]
       (.add root line))))
 
+(declare text-sprite)
+
 (defn add-project-topologies! [root positions projects]
+  (reset! issue-node-positions {})
   (doseq [project projects
           :let [issues (into {} (map (juxt :key identity)) (:issues project))
                 issue-positions (atom {})]]
@@ -203,15 +211,31 @@
                            "closed" 0x42f58d
                            "in-progress" 0x42a5ff
                            0xffd45a)
+            objective? (= "objective" (:kind issue))
             node (three/mesh
-                  (THREE/OctahedronGeometry. 0.28)
+                  (if objective?
+                    (THREE/IcosahedronGeometry. 0.48 1)
+                    (THREE/OctahedronGeometry. 0.28))
                   (three/standard-material
-                   {:color status-color :emissive 1.5 :roughness 0.25}))]
+                   {:color (if objective? 0xf4a8ff status-color)
+                    :emissive (if objective? 2.2 1.5) :roughness 0.25}))
+            caption (text-sprite
+                     (if objective?
+                       (str "OBJECTIVE · " (or (:title issue) key))
+                       (str "ISSUE · " (or (:rad issue) key)))
+                     (if objective? "#f4a8ff" "#ffd45a"))]
         (three/set-position! node x y z)
+        (three/set-position! caption x (+ y 0.75) z)
+        (three/set-scale! caption (if objective? 5.6 3.4)
+                          (if objective? 1.05 0.72) 1)
         (set! (.. node -userData -repo)
               (clj->js {:path (:repo issue) :issue (:rad issue)
                         :project (:id project) :issue-key key}))
         (swap! issue-positions assoc key {:x x :y y :z z})
+        (swap! issue-node-positions assoc key {:x x :y y :z z})
+        (when (:rad issue)
+          (swap! issue-node-positions assoc (:rad issue) {:x x :y y :z z}))
+        (.add root caption)
         (.add root node)))
     (doseq [[key issue] issues
             blocker (:blockers issue)
@@ -226,7 +250,25 @@
                   geometry
                   (THREE/LineBasicMaterial.
                    #js {:color 0xffd45a :transparent true :opacity 0.85}))]
-        (.add root line)))))
+        (.add root line)))
+    (doseq [{:keys [actor from to]} (:walks project)
+            :let [a (get @issue-positions from)
+                  b (get @issue-positions to)]
+            :when (and a b)]
+      (let [curve (THREE/QuadraticBezierCurve3.
+                   (THREE/Vector3. (:x a) (:y a) (:z a))
+                   (THREE/Vector3. (/ (+ (:x a) (:x b)) 2)
+                                   (+ 1.4 (max (:y a) (:y b)))
+                                   (/ (+ (:z a) (:z b)) 2))
+                   (THREE/Vector3. (:x b) (:y b) (:z b)))
+            geometry (THREE/TubeGeometry. curve 24 0.035 6 false)
+            path (THREE/Mesh.
+                  geometry
+                  (THREE/MeshBasicMaterial.
+                   #js {:color 0x35ff8a :transparent true :opacity 0.72}))]
+        (set! (.. path -userData -walk)
+              (clj->js {:actor actor :from from :to to}))
+        (.add root path)))))
 
 (defn text-sprite [text color]
   (let [canvas (.createElement js/document "canvas")
@@ -497,7 +539,8 @@
       (add-system-dynamics! repo-root (:system-dynamics snapshot))
       (let [actor-animations (atom [])]
        (doseq [[agent-index agent] (map-indexed vector (queried-agents))
-              :let [position (get @positions (:agent.run/project agent))]
+              :let [position (or (get @issue-node-positions (:issue agent))
+                                 (get @positions (:agent.run/project agent)))]
               :when position]
         (let [{:keys [actor] :as character} (make-agent-character agent)
               phase (* agent-index 2.399)
@@ -518,7 +561,9 @@
               (doto (THREE/BufferGeometry.)
                 (.setFromPoints
                  #js [(THREE/Vector3. (:x position)
-                                     (:height position) (:z position))
+                                     (or (:y position)
+                                         (:height position) 0)
+                                     (:z position))
                       (THREE/Vector3. (.-x base) (.-y base) (.-z base))]))
               beam (THREE/Line.
                     beam-geometry
@@ -559,7 +604,6 @@
         active (first (:active-repos snapshot))
         metrics (.getElementById js/document "metrics")
         details (.getElementById js/document "details")
-        activity (.getElementById js/document "activity")
         model-usage (.getElementById js/document "model-usage")
         dynamics-panel (.getElementById js/document "system-dynamics")
         grouping (.getElementById js/document "grouping")
@@ -591,15 +635,6 @@
                         "model " (or (get run :agent.run/model) "default") "<br>"
                         (get run :agent.run/goal))))
             "Select a repository tile"))
-    (set! (.-innerHTML activity)
-          (apply str
-                 (for [{:keys [at kind run issue patch text]}
-                       (take 12 (:activity snapshot))]
-                   (str "<div class=\"event\"><time>"
-                        (.toLocaleTimeString (js/Date. at))
-                        "</time><b>" (label kind "event") "</b><small>"
-                        (or text issue patch run "workspace")
-                        "</small></div>"))))
     (let [usage-by-provider (into {} (map (juxt :provider identity))
                                   (:model-usage snapshot))]
       (set! (.-innerHTML model-usage)
@@ -806,6 +841,55 @@
                  (js/prompt "Tamaki supervisor への指示を入力してください")]
         (submit-voice! transcript)))))
 
+(defn short-agent-label [{:keys [agent-id agent-runner]}]
+  (let [id (or agent-id "system")
+        short-id (if (> (count id) 18)
+                   (str (subs id 0 8) "…" (subs id (- (count id) 5)))
+                   id)]
+    (if (and agent-runner (not= agent-runner "system")
+             (not= agent-runner id))
+      (str agent-runner " · " short-id)
+      short-id)))
+
+(defn activity-panel []
+  (let [snapshot @(rf/subscribe [:snapshot])
+        selected-agent @(rf/subscribe [:activity-agent])
+        events (:activity snapshot)
+        agents (->> events
+                    (reduce (fn [result event]
+                              (assoc result (:agent-id event) event)) {})
+                    vals
+                    (sort-by (juxt :agent-runner :agent-id)))
+        visible (if (= "all" selected-agent)
+                  events
+                  (filter #(= selected-agent (:agent-id %)) events))]
+    [:<>
+     [:div.activity-filters
+      [:button {:class (when (= "all" selected-agent) "selected")
+                :on-click #(rf/dispatch [:activity-agent "all"])}
+       "all"]
+      (for [{:keys [agent-id] :as agent} agents]
+        ^{:key agent-id}
+        [:button {:class (when (= agent-id selected-agent) "selected")
+                  :title (str (:agent-runner agent) " · "
+                              (:agent-model agent) " · " agent-id)
+                  :on-click #(rf/dispatch [:activity-agent agent-id])}
+         (short-agent-label agent)])]
+     [:div#activity
+      (if (seq visible)
+        (for [{:keys [id at kind run issue patch text stream] :as event}
+              (take 20 visible)]
+          ^{:key (or id (str run "-" at "-" kind))}
+          [:div.event
+           [:time (.toLocaleTimeString (js/Date. at))]
+           [:div.event-heading
+            [:b (label kind "event")]
+            [:span.stream (or stream "system")]]
+           [:small.agent
+            (str "[" (short-agent-label event) "] · "
+                 (or text issue patch run "workspace"))]])
+        [:div.activity-empty "この agent の activity を待機中…"])]]))
+
 (defn shell-view []
   [:div {:class style/app}
    [:canvas#scene {:class style/scene}]
@@ -832,7 +916,7 @@
     [:h2 "Workspace"]
     [:div#details.details "Select a repository tile"]
     [:h2.activity-title "Live activity"]
-    [:div#activity]]
+    [activity-panel]]
    [:section#system-dynamics
     {:class (str style/glass " " style/dynamics)}
     [:b "System dynamics"] [:span "Connecting…"]]
@@ -960,6 +1044,7 @@
 (defn ^:export init []
   (rf/dispatch-sync [:snapshot nil])
   (rf/dispatch-sync [:group-mode :org])
+  (rf/dispatch-sync [:activity-agent "all"])
   (mount-shell!)
   (init-scene!)
   (set! (.-tamakiReceive js/window)
