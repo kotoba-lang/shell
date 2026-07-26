@@ -152,37 +152,164 @@
   (three/standard-material
    {:color color :emissive emissive :metallic 0.08 :roughness 0.78}))
 
-(declare text-sprite)
+(declare text-sprite result-colors)
 
-(defn add-life-tree! [root]
+(defn branch-curve [from to bend]
+  (THREE/CatmullRomCurve3.
+   #js [from
+        (THREE/Vector3.
+         (+ (.-x from) (* (- (.-x to) (.-x from)) 0.42) bend)
+         (+ (.-y from) (* (- (.-y to) (.-y from)) 0.46))
+         (+ (.-z from) (* (- (.-z to) (.-z from)) 0.42) (* bend 0.35)))
+        to]))
+
+(defn add-life-tree! [root snapshot]
   (let [tree (three/group)
-        trunk (three/mesh (THREE/CylinderGeometry. 0.62 1.15 5.8 12)
-                          (garden-material 0x6f4c2c 0.08))
-        crown-material (garden-material (:leaf garden-colors) 0.52)
+        branch-material (THREE/MeshStandardMaterial.
+                         #js {:color 0x704622 :emissive 0x2c1808
+                              :emissiveIntensity 0.35 :roughness 0.82})
+        twig-material (THREE/MeshStandardMaterial.
+                       #js {:color 0xa16a32 :emissive 0x46230d
+                            :emissiveIntensity 0.5 :roughness 0.7})
+        leaf-material (THREE/MeshPhysicalMaterial.
+                       #js {:color 0x39d878 :emissive 0x0c6f37
+                            :emissiveIntensity 0.85 :roughness 0.38
+                            :transmission 0.12 :transparent true :opacity 0.9})
+        commit-material (THREE/MeshBasicMaterial.
+                         #js {:color 0xffdc75 :transparent true :opacity 0.95})
+        recent-activity (count (take 24 (:activity snapshot)))
+        working (count (filter #(contains? #{"running" "working" "started"}
+                                           (label (or (:agent.run/status %)
+                                                      (:status %)) ""))
+                               (:agents snapshot)))
+        vitality (+ 0.7 (* 0.05 recent-activity) (* 0.18 working))
+        lineage-count (max 3 (min 12 (count (:results snapshot))))
         ring (THREE/Mesh.
-              (THREE/TorusGeometry. 4.15 0.11 12 72)
+              (THREE/TorusGeometry. 5.15 0.075 10 96)
               (THREE/MeshBasicMaterial.
                #js {:color (:lineage garden-colors)
-                    :transparent true :opacity 0.78}))
-        title (text-sprite "TAMAKI · LIVING ORGANISM · DAY 12 / 30"
-                           "#8dffb0")]
-    (three/set-position! trunk 0 2.65 0)
-    (.add tree trunk)
-    (doseq [[x y z scale] [[0 6.1 0 2.2] [-1.5 5.7 0.4 1.55]
-                           [1.5 5.8 -0.3 1.7] [-0.5 7.1 -0.4 1.5]
-                           [0.8 6.8 0.7 1.45]]
-            :let [crown (three/mesh
-                         (THREE/IcosahedronGeometry. scale 2)
-                         crown-material)]]
-      (three/set-position! crown x y z)
-      (.add tree crown))
+                    :transparent true :opacity 0.56}))
+        title (text-sprite
+               (str "TAMAKI · GIT LIVING TREE · "
+                    lineage-count " ACTIVE LINEAGES")
+               "#8dffb0")
+        heart-light (THREE/PointLight. 0x55ff9a 4.2 18 1.6)
+        crown-light (THREE/PointLight. 0xffd76a 2.4 13 1.8)
+        animations (atom [])
+        tips (atom [])
+        main-points (mapv (fn [i]
+                            (THREE/Vector3.
+                             (* 0.18 (js/Math.sin (* i 0.82)))
+                             (* i 1.05)
+                             (* 0.12 (js/Math.cos (* i 0.67)))))
+                          (range 8))]
+    ;; main is the persistent trunk; luminous commit nodes climb it.
+    (doseq [[index [from to]] (map-indexed vector (partition 2 1 main-points))
+            :let [curve (branch-curve from to (* 0.08 (js/Math.sin index)))
+                  radius (- 0.72 (* index 0.065))
+                  segment (THREE/Mesh.
+                           (THREE/TubeGeometry. curve 12 radius 10 false)
+                           branch-material)
+                  commit (THREE/Mesh.
+                          (THREE/SphereGeometry. (+ 0.12 (* 0.015 index)) 12 8)
+                          commit-material)]]
+      (.copy (.-position commit) to)
+      (.add tree segment)
+      (.add tree commit))
+    ;; Each recent issue/source/patch lineage becomes a fork from main.
+    (doseq [branch-index (range lineage-count)
+            :let [side (if (even? branch-index) 1 -1)
+                  trunk-index (+ 2 (mod branch-index 5))
+                  origin (nth main-points trunk-index)
+                  azimuth (+ (* branch-index 2.399963) (* side 0.42))
+                  length (+ 2.8 (* 0.24 (mod branch-index 4)))
+                  fork (THREE/Vector3.
+                        (+ (.-x origin) (* length (js/Math.cos azimuth)))
+                        (+ (.-y origin) 1.25 (* 0.18 (mod branch-index 3)))
+                        (+ (.-z origin) (* length (js/Math.sin azimuth))))
+                  tip (THREE/Vector3.
+                       (+ (.-x fork) (* 1.35 (js/Math.cos (+ azimuth 0.35))))
+                       (+ (.-y fork) 1.2)
+                       (+ (.-z fork) (* 1.35 (js/Math.sin (+ azimuth 0.35)))))
+                  fork-curve (branch-curve origin fork (* side 0.35))
+                  tip-curve (branch-curve fork tip (* side -0.18))
+                  fork-mesh (THREE/Mesh.
+                             (THREE/TubeGeometry. fork-curve 16 0.16 7 false)
+                             twig-material)
+                  tip-mesh (THREE/Mesh.
+                            (THREE/TubeGeometry. tip-curve 12 0.085 7 false)
+                            twig-material)
+                  fruit-kind (keyword (name (or (-> snapshot :results
+                                                    (nth (+ (- (count (:results snapshot))
+                                                               lineage-count)
+                                                            branch-index)
+                                                         nil)
+                                                    :nodes last :type)
+                                               :source)))
+                  fruit-color (get result-colors fruit-kind 0xffdc75)
+                  fruit (THREE/Mesh.
+                         (THREE/IcosahedronGeometry. 0.22 1)
+                         (THREE/MeshBasicMaterial.
+                          #js {:color fruit-color :transparent true
+                               :opacity 0.92}))]]
+      (.copy (.-position fruit) tip)
+      (.add tree fork-mesh)
+      (.add tree tip-mesh)
+      (.add tree fruit)
+      (swap! tips conj tip)
+      (swap! animations conj {:object fruit :phase (* branch-index 0.73)
+                              :base-scale (+ 0.82 (* vitality 0.12))
+                              :kind :fruit}))
+    ;; A translucent living canopy: hundreds of leaves are cheap instanced
+    ;; geometry, while their clusters breathe independently.
+    (doseq [[cluster-index tip] (map-indexed vector @tips)
+            :let [cluster (three/group)]]
+      (doseq [leaf-index (range 13)
+              :let [angle (* leaf-index 2.399963)
+                    radius (+ 0.35 (* 0.1 (mod leaf-index 5)))
+                    leaf (THREE/Mesh.
+                          (THREE/IcosahedronGeometry.
+                           (+ 0.22 (* 0.025 (mod leaf-index 3))) 1)
+                          leaf-material)]]
+        (three/set-position!
+         leaf
+         (+ (.-x tip) (* radius (js/Math.cos angle)))
+         (+ (.-y tip) (* 0.18 (- (mod leaf-index 5) 2)))
+         (+ (.-z tip) (* radius (js/Math.sin angle))))
+        (three/set-scale! leaf 1.5 0.72 1)
+        (.add cluster leaf))
+      (.add tree cluster)
+      (swap! animations conj {:object cluster :phase (* cluster-index 0.51)
+                              :base-y (.-y (.-position cluster))
+                              :kind :canopy}))
+    ;; Agent activity travels upward as sap. More live work means faster light.
+    (doseq [index (range (max 5 (min 14 (+ 4 working))))
+            :let [curve (branch-curve (first main-points)
+                                     (nth main-points (inc (mod index 7)))
+                                     (* 0.12 (js/Math.sin index)))
+                  sap (THREE/Mesh.
+                       (THREE/SphereGeometry. 0.095 10 7)
+                       (THREE/MeshBasicMaterial.
+                        #js {:color 0x8dffb0 :transparent true :opacity 0.95}))]]
+      (.add tree sap)
+      (swap! animations conj {:object sap :curve curve
+                              :phase (/ index 14)
+                              :speed (+ 0.055 (* vitality 0.018))
+                              :kind :sap}))
     (three/set-rotation-x! ring (/ js/Math.PI 2))
     (three/set-position! ring 0 0.12 0)
-    (three/set-position! title 0 9.0 0)
+    (three/set-position! title 0 10.2 0)
     (three/set-scale! title 8.2 1.25 1)
+    (three/set-position! heart-light 0 4.4 0)
+    (three/set-position! crown-light 0 7.3 0)
     (.add tree ring)
     (.add tree title)
+    (.add tree heart-light)
+    (.add tree crown-light)
+    (three/set-scale! tree 1.24 1.24 1.24)
     (.add root tree)
+    (swap! runtime assoc :tree-animations @animations
+           :tree-vitality vitality)
     tree))
 
 (defn add-successor! [root]
@@ -619,7 +746,7 @@
           active-by-path (into {} (map (juxt :path identity) (:active-repos snapshot)))
           active-paths (set (keys active-by-path))
           positions (atom {})]
-      (add-life-tree! repo-root)
+      (add-life-tree! repo-root snapshot)
       (add-successor! repo-root)
       (doseq [[group-index group] (map-indexed vector groups)
               :let [group-repos (->> (get grouped group)
@@ -1084,12 +1211,12 @@
 
 (defn set-garden-view! [view]
   (when-let [{:keys [camera controls]} @runtime]
-    (let [[x y z] (case view
-                    :world [48 58 72]
-                    :organism [12 13 18]
-                    [28 34 42])]
+    (let [[x y z target-y] (case view
+                             :world [48 58 72 1.5]
+                             :organism [11 10 16 4.5]
+                             [28 34 42 1.5])]
       (three/set-position! camera x y z)
-      (three/set-position! (.-target controls) 0 1.5 0)
+      (three/set-position! (.-target controls) 0 target-y 0)
       (.update ^js controls))))
 
 (defn shell-view []
@@ -1242,6 +1369,32 @@
                                 (* 0.5 (js/Math.sin
                                         (* progress js/Math.PI))))]
                    (three/set-scale! object pulse pulse pulse))))
+             (doseq [{:keys [object curve phase speed kind base-scale]}
+                     (:tree-animations @runtime)]
+               (case kind
+                 :sap
+                 (let [progress (mod (+ phase (* time speed)) 1)
+                       point (.getPointAt ^js curve progress)
+                       pulse (+ 0.7 (* 0.65
+                                         (js/Math.sin (* progress js/Math.PI))))]
+                   (.copy (.-position ^js object) point)
+                   (three/set-scale! object pulse pulse pulse))
+
+                 :fruit
+                 (let [pulse (* base-scale
+                                (+ 1 (* 0.16
+                                        (js/Math.sin
+                                         (+ phase (* time 2.7))))))]
+                   (three/set-scale! object pulse pulse pulse)
+                   (set! (.. object -rotation -y) (+ phase (* time 0.28))))
+
+                 :canopy
+                 (do
+                   (set! (.. object -rotation -z)
+                         (* 0.025 (js/Math.sin (+ phase (* time 0.72)))))
+                   (set! (.. object -rotation -x)
+                         (* 0.018 (js/Math.cos (+ phase (* time 0.61))))))
+                 nil))
              (doseq [{:keys [actor head left-arm right-arm left-leg right-leg
                              beacon base phase radius speed working?]}
                      (:actor-animations @runtime)]
