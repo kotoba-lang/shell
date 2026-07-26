@@ -698,7 +698,52 @@
     (is (str/includes? delegate-src "window.level = .floating"))
     (is (str/includes? project-yml "name: itonami"))
     (is (str/includes? project-yml "LocalAuthentication.framework"))
-    (is (str/includes? project-yml "Security.framework"))))
+    (is (str/includes? project-yml "Security.framework"))
+    (is (str/includes? project-yml "AuthenticationServices.framework"))))
+
+(deftest app-scaffold-macos-authorization-session-capability
+  "open-authorization-url は host 言語に残る唯一の capability。WKWebView を
+  IdP へ遷移させる代わりに ASWebAuthenticationSession を使う理由は2つ:
+  Google が embedded webview からの OAuth を拒否すること、および自分が制御
+  する WebView に IdP のログイン画面を出すとアプリが資格情報を覗ける構造に
+  なること。"
+  (let [scaffold! (fn [extra]
+                    (let [manifest (str "{:app/id \"dev.kotoba.demo\" :app/name \"demo\""
+                                        " :app/version \"0.1.0\" :macos/auth-bridge :keychain-cacao"
+                                        " " extra "}")
+                          output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
+                                                              (str "kotoba-shell-authz-" (System/nanoTime)))
+                                                 (.mkdirs)))]
+                      (launcher/dispatch ["app" "scaffold" "--target" "macos"
+                                          "--manifest-edn" manifest "--output-dir" output-dir])
+                      (slurp (io/file output-dir "macos" "Sources" "AppDelegate.swift"))))]
+
+    (testing "capability そのものが生成される"
+      (let [src (scaffold! ":macos/oauth-callback-scheme \"dev.kotoba.demo\"")]
+        (is (str/includes? src "import AuthenticationServices"))
+        (is (str/includes? src "ASWebAuthenticationSession"))
+        (is (str/includes? src "case \"open-authorization-url\""))
+        (is (str/includes? src "kotoba-shell-authorization")
+            "callback URL を JS へ返す CustomEvent が無い")))
+
+    (testing "scheme は manifest から入る"
+      (is (str/includes? (scaffold! ":macos/oauth-callback-scheme \"dev.kotoba.demo\"")
+                         "oauthCallbackScheme = \"dev.kotoba.demo\"")))
+
+    (testing "未設定なら空文字 — 適当な scheme で待ち受けて他アプリの redirect を
+              拾うより、設定されていないことを明示する"
+      (is (str/includes? (scaffold! "") "oauthCallbackScheme = \"\"")))
+
+    (testing "session を強参照で保持する — ローカル変数だと ARC に回収されて
+              ダイアログが即座に消える"
+      (is (str/includes? (scaffold! "") "private var authSession: ASWebAuthenticationSession?")))
+
+    (testing "ephemeral session — 共有 cookie で前回のアカウントに黙って入るのを防ぐ"
+      (is (str/includes? (scaffold! "") "prefersEphemeralWebBrowserSession = true")))
+
+    (testing "https 以外の認可 URL は開かない — 注入された任意 URL を OS の
+              ブラウザで開ける踏み台にしない"
+      (is (str/includes? (scaffold! "") "url.scheme == \"https\"")))))
 
 (deftest app-build-plans_and_executes_native_project_builds
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"

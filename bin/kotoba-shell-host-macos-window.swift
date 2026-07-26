@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import UniformTypeIdentifiers
+import WebKit
 
 struct SurfaceNode {
   var tag = "div"
@@ -88,6 +89,11 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
   if node.tag == "button" {
     let button = NSButton(title: directText, target: actionTarget, action: #selector(KotobaActionTarget.perform(_:)))
     button.identifier = NSUserInterfaceItemIdentifier(node.attrs["data-action"] ?? "unknown")
+    button.cell?.representedObject = node.attrs["data-input-id"]
+    if let endpoint = node.attrs["data-endpoint"] {
+      actionTarget.endpoints[button.identifier?.rawValue ?? "unknown"] = endpoint
+      actionTarget.bodies[button.identifier?.rawValue ?? "unknown"] = node.attrs["data-body"] ?? "{}"
+    }
     button.bezelStyle = .rounded
     button.controlSize = .large
     button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -100,6 +106,44 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
       button.contentTintColor = .labelColor
     }
     return button
+  }
+  if node.tag == "img" {
+    let imageView = NSImageView(frame: .zero)
+    imageView.imageScaling = .scaleProportionallyUpOrDown
+    imageView.imageAlignment = .alignCenter
+    if let source = node.attrs["src"] {
+      imageView.image = NSImage(contentsOfFile: source)
+    }
+    imageView.setAccessibilityLabel(node.attrs["alt"] ?? "image")
+    imageView.widthAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+    imageView.heightAnchor.constraint(equalToConstant: 560).isActive = true
+    return imageView
+  }
+  if node.tag == "input" || node.tag == "textarea" {
+    let field = NSTextField(string: node.attrs["value"] ?? "")
+    let inputId = node.attrs["id"] ?? "input-\(id)"
+    field.identifier = NSUserInterfaceItemIdentifier(inputId)
+    field.placeholderString = node.attrs["placeholder"]
+    field.delegate = actionTarget
+    field.font = NSFont.systemFont(ofSize: 14)
+    field.bezelStyle = .roundedBezel
+    field.focusRingType = .default
+    if node.tag == "textarea" {
+      field.maximumNumberOfLines = 4
+      field.usesSingleLineMode = false
+      field.cell?.wraps = true
+      field.cell?.isScrollable = false
+      field.heightAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
+    }
+    if node.attrs["readonly"] == "true" {
+      field.isEditable = false
+    }
+    if node.attrs["disabled"] == "true" {
+      field.isEnabled = false
+    }
+    actionTarget.inputValues[inputId] = field.stringValue
+    field.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+    return field
   }
   if ["h1", "h2", "h3", "p", "label"].contains(node.tag), !directText.isEmpty {
     let label = NSTextField(wrappingLabelWithString: directText)
@@ -190,7 +234,59 @@ func writePNG(view: NSView, path: String) -> Bool {
 // this process owns only AppKit windowing, input, resize, and lifecycle.
 final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
   let smoke: Bool
+  weak var window: NSWindow?
+  var statusItem: NSStatusItem?
+  private var terminationEmitted = false
   init(smoke: Bool) { self.smoke = smoke }
+
+  private func emitTermination(source: String? = nil) {
+    guard !terminationEmitted else { return }
+    terminationEmitted = true
+    var event: [String: Any] = ["event": "lifecycle/terminate"]
+    if let source { event["source"] = source }
+    emit(event)
+  }
+
+  func configure(window: NSWindow, title: String) {
+    self.window = window
+    guard !smoke else { return }
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    if let button = item.button {
+      button.image = NSImage(systemSymbolName: "bubble.left.and.bubble.right.fill",
+                             accessibilityDescription: title)
+      button.toolTip = "\(title) — click to open"
+    }
+    let menu = NSMenu()
+    let open = NSMenuItem(title: "Open \(title)", action: #selector(showWindow), keyEquivalent: "")
+    open.target = self
+    menu.addItem(open)
+    menu.addItem(.separator())
+    let quit = NSMenuItem(title: "Quit \(title)", action: #selector(quitApp), keyEquivalent: "q")
+    quit.target = self
+    menu.addItem(quit)
+    item.menu = menu
+    statusItem = item
+  }
+
+  @objc func showWindow() {
+    NSApp.setActivationPolicy(.regular)
+    window?.deminiaturize(nil)
+    window?.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    emit(["event": "lifecycle/restore", "source": "status-bar"])
+  }
+
+  @objc func quitApp() {
+    emitTermination(source: "status-bar")
+    NSApp.terminate(nil)
+  }
+
+  private func hideToStatusBar() {
+    window?.orderOut(nil)
+    NSApp.setActivationPolicy(.accessory)
+    emit(["event": "lifecycle/status-bar"])
+  }
+
   func windowDidBecomeKey(_ notification: Notification) {
     print("{\"event\":\"lifecycle/activate\"}"); fflush(stdout)
   }
@@ -212,9 +308,11 @@ let windowHeight = Double(argument("--height") ?? "480") ?? 480
 let minWidth = Double(argument("--min-width") ?? "390") ?? 390
 let minHeight = Double(argument("--min-height") ?? "320") ?? 320
 let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
+let webURL = argument("--web-url").flatMap(URL.init(string:))
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let delegate = KotobaWindowDelegate(smoke: smoke)
+retainedWindowDelegate = delegate
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
 window.title = title
 if floatingWindow {
@@ -223,8 +321,11 @@ if floatingWindow {
   window.collectionBehavior.insert(.fullScreenAuxiliary)
 }
 window.minSize = NSSize(width: minWidth, height: minHeight)
+window.level = .floating
+window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 window.delegate = delegate
 window.isReleasedWhenClosed = false
+delegate.configure(window: window, title: title)
 let scroll = NSScrollView(frame: window.contentView?.bounds ?? .zero)
 scroll.autoresizingMask = [.width, .height]
 scroll.hasVerticalScroller = true
@@ -282,6 +383,10 @@ FileHandle.standardInput.readabilityHandler = { handle in
 }
 if smoke {
   DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+    // Visual capture is an observation boundary: do not inherit an IME
+    // composition or focus animation from whichever app was active before us.
+    window.makeFirstResponder(nil)
+    window.displayIfNeeded()
     if let path = screenshotPath {
       let captured = writePNG(view: window.contentView!, path: path)
       print("{\"event\":\"visual/captured\",\"ok\":\(captured),\"path\":\"\(path)\"}"); fflush(stdout)

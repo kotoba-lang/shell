@@ -38,6 +38,7 @@
                      "fs/write-text"
                      "fs/append-text"
                      "http/fetch"
+                     "browser/open-url"
                      "notify/show"
                      "keychain/read-text"
                      "keychain/write-text"
@@ -51,6 +52,7 @@
                          "fs/write-text"
                          "fs/append-text"
                          "http/fetch"
+                         "browser/open-url"
                          "notify/show"
                          "keychain/read-text"
                          "keychain/write-text"
@@ -482,6 +484,7 @@
                "fs/write-text"
                "fs/append-text"
                "http/fetch"
+               "browser/open-url"
                "notify/show"]
        :deny []
        :audit true}))
@@ -763,7 +766,11 @@
          "      - sdk: WebKit.framework\n"
          (when (and (= target :macos) (= :keychain-cacao (:macos/auth-bridge manifest)))
            (str "      - sdk: LocalAuthentication.framework\n"
-                "      - sdk: Security.framework\n")))))
+                "      - sdk: Security.framework\n"
+                ;; open-authorization-url (ASWebAuthenticationSession)。
+                ;; keychain-cacao ブリッジと同じ AppDelegate に入るので、
+                ;; scheme が未設定でもリンクは必要。
+                "      - sdk: AuthenticationServices.framework\n")))))
 
 (def ^:private web-bundle-scheme-handler-swift
   "macOS/iOS 共通。`loadFileURL` は file:// origin をロードするため、WebKit の
@@ -872,7 +879,13 @@
                         "{{KEYCHAIN_SERVICE}}" (str (or (:macos/keychain-service manifest)
                                                          (:macos/bundle-id manifest)
                                                          (:app/id manifest)))
-                        "{{KEYCHAIN_ACCOUNT}}" (str (or (:macos/keychain-account manifest) "session"))}]
+                        "{{KEYCHAIN_ACCOUNT}}" (str (or (:macos/keychain-account manifest) "session"))
+                        ;; OAuth/OIDC の redirect を受ける custom scheme。
+                        ;; 既定は空文字で、open-authorization-url は「未設定」を
+                        ;; 返す — 適当な scheme を勝手に決めて待ち受けると、
+                        ;; 同じ scheme を使う他アプリの redirect を拾いうる。
+                        ;; アプリが明示的に宣言したときだけ有効にする。
+                        "{{OAUTH_CALLBACK_SCHEME}}" (str (or (:macos/oauth-callback-scheme manifest) ""))}]
       (reduce-kv str/replace template replacements))
     default-macos-app-delegate-swift))
 

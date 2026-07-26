@@ -170,6 +170,7 @@ bin/kotoba-shell native-host check --target macos --json
 bin/kotoba-shell native-host run --target macos --host-command /bin/echo --host-arg ok --json
 bin/kotoba-shell native-host provider --target macos --provider-command clipboard/write-text --text ok --json
 bin/kotoba-shell native-host provider --target macos --provider-command clipboard/read-text --json
+bin/kotoba-shell native-host provider --target macos --provider-command calendar/list-events --host-arg --from --host-arg 2026-07-01T00:00:00Z --host-arg --to --host-arg 2026-08-01T00:00:00Z --json
 bin/kotoba-shell surface check --target macos --json
 bin/kotoba-shell surface commit --target macos --ops-edn '[[:dom/create-element 1 :main] [:dom/set-root 1]]' --json
 bin/kotoba-shell app scaffold --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
@@ -210,6 +211,24 @@ bin/kotoba-shell ui smoke --substrate browser --script smoke:visual --execute --
 bin/kotoba-shell ui smoke --substrate browser --script smoke:webgpu --execute --strict --json
 ```
 
+## Mangaka Local Studio
+
+The repository includes a Kotoba-native local control surface for the Mangaka
+EDN → image generation → SAM layer separation → Genko composition → quality
+loop. The app implementation is owned by `gftdcojp/ai-gftd-mangaka`, generated
+assets by `gftdcojp/mangaka-data`, and reusable page/Genko/QA behavior by the
+corresponding `kotoba-lang/kami-mangaka-*` repositories. Start the Mangaka API
+on `127.0.0.1:8088`, then run:
+
+```sh
+bin/kotoba-shell app run --target macos \
+  --manifest mangaka.app.kotoba.edn --execute --rebuild-window
+```
+
+Set `MANGAKA_WORKSPACE` when the shell and Mangaka repositories do not share a
+west workspace root. `MANGAKA_API_BASE` may change the port, but native action
+dispatch remains restricted to `localhost` and `127.0.0.1`.
+
 Supported target names are `macos`, `ios`, `android`, and `windows`.
 macOS clipboard commands use `pbcopy`/`pbpaste` directly. Non-macOS provider
 commands are routed through `--host-command` until each platform host runner is
@@ -234,6 +253,18 @@ and ordinary web UI libraries are first-class. `kotoba:dom` remains a
 compatibility/input ABI for older surfaces, not a competing default renderer.
 Native hosts provide the WebKit window, lifecycle, custom-scheme bundle
 delivery, diagnostics, and provider capabilities.
+
+### Typed text input actions
+
+Apps bind a field and an explicit submit action with `kotoba.shell.input/field`
+and `kotoba.shell.input/submit`. The native host owns IME/editing state and emits
+the current string as the action event's `value`; the app owns validation,
+persistence, and effects. Input changes alone never invoke an app action.
+
+While an explicit action is running, the app runtime re-evaluates and commits
+the read-only surface every `KOTOBA_SHELL_ACTION_REFRESH_SECONDS` (default
+`0.5`). This streams durable ledger/checkpoint progress without exposing a
+mutable token buffer. Set it to `0` to disable action pulses.
 
 `app scaffold` generates minimal macOS, iOS, Android, and Windows native
 project skeletons from the EDN app manifest. The generated projects carry the
