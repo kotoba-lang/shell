@@ -160,15 +160,30 @@
                        {:patch/id "p-done" :issue/id "done"})
                 (event :patch/integrated 3999005
                        {:patch/id "p-done" :issue/id "done"})
+                (event :result/evaluated 3999005
+                       {:evaluation/result "result/p-done"
+                        :evaluation/score 0.8})
+                (event :result/validated 3999005
+                       {:validation/result "result/p-done"
+                        :validation/window :seven-day
+                        :validation/observed-score 0.75})
                 (event :run/failed 3999006 {})]
         runs [{:agent.run/status :running}]
         dynamics (tamaki-web-data/system-dynamics events runs now)
         stocks (into {} (map (juxt :id :value)) (:stocks dynamics))
         flows (into {} (map (juxt :id :rate)) (:flows dynamics))]
-    (is (= {"backlog" 2, "wip" 1, "review" 1, "integrated" 1} stocks))
-    (is (= {"discover" 2, "start" 1, "patch" 2, "integrate" 1} flows))
+    (is (= {"backlog" 2, "wip" 1, "review" 1, "integrated" 1
+            "integrated-unvalidated" 0, "validated-value" 1
+            "evaluation-debt" 0, "regression-debt" 0}
+           stocks))
+    (is (= {"discover" 2, "start" 1, "patch" 2, "integrate" 1
+            "evaluate" 1, "validate" 1, "regress" 0}
+           flows))
     (is (= "backlog" (:bottleneck dynamics)))
     (is (= 1 (:backlog-delta dynamics)))
+    (is (= 1 (:validated-value dynamics)))
+    (is (= 0.8 (:evaluation-score dynamics)))
+    (is (= 0.75 (:result-control-score dynamics)))
     (is (= 1.0 (:failure-pressure dynamics)))))
 
 (deftest tamaki-system-dynamics-adds-observed-revenue-stocks

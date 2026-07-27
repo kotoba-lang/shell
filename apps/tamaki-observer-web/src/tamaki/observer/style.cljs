@@ -5,7 +5,8 @@
   (css {:position :fixed :inset 0 :width "100%" :height "100%"
         :overflow :hidden :background "#090611" :color "#f6f2ff"
         :font "13px -apple-system, sans-serif"}
-       ["*" {:box-sizing :border-box}]))
+       ["*" {:box-sizing :border-box}]
+       [".surface-hidden" {:visibility :hidden :pointer-events :none}]))
 
 (def scene
   (css {:position :fixed :inset 0 :width "100%" :height "100%"}))
@@ -51,6 +52,10 @@
        [".garden-views button:hover" {:color "#07150d"
                                       :background "#70ffac"
                                       :border-color "#70ffac"}]
+       [".garden-views button.selected" {:color "#07150d"
+                                         :background "#70ffac"
+                                         :border-color "#70ffac"
+                                         :box-shadow "0 0 14px #42f58d55"}]
        [".bonsai-state" {:grid-column "1 / 4" :grid-row 3
                          :display :flex :align-items :center :gap 8
                          :margin 0 :padding "4px 8px"
@@ -103,6 +108,9 @@
          :cursor :pointer}]
        [".organism-scopes button:first-child"
         {:border-color "#d4b268" :color "#f2d58e" :background "#2b200e"}]
+       [".organism-scopes button.selected"
+        {:background "#ededf0" :color "#111115" :border-color "#ededf0"
+         :box-shadow "0 0 0 1px #ffffff22"}]
        [".organism-scopes button:hover"
         {:background "#70ffac" :color "#07150d" :border-color "#70ffac"}]))
 
@@ -266,3 +274,204 @@
        [".finance-empty" {:margin-top 12 :padding 10 :border-radius 8
                           :color "#ffbd72" :background "#37210f99"
                           :font "11px ui-monospace, monospace"}]))
+
+(def operations
+  (css {:position :fixed :z-index 3 :left 8 :right 8 :top 198 :bottom 8
+        :display :grid :grid-template-rows "54px 62px minmax(0, 1fr)"
+        :gap 8 :padding 10 :overflow :hidden :border-radius 16
+        :background "#0d0d10"
+        :border "1px solid #28282d" :box-shadow "0 24px 80px #000b"}
+       ["&.hidden" {:display :none}]
+       [".objective-strip" {:display :flex :align-items :center
+                            :justify-content :space-between :gap 16
+                            :padding "8px 12px" :border-radius 10
+                            :background "#0a2117aa" :border "1px solid #5eea9633"}]
+       [".objective-strip small" {:display :block :color "#62e99a"
+                                  :font "8px ui-monospace, monospace"
+                                  :letter-spacing ".16em"}]
+       [".objective-strip strong" {:display :block :max-width "70vw"
+                                   :overflow :hidden :white-space :nowrap
+                                   :text-overflow :ellipsis :font-size 14}]
+       [".objective-health" {:display :flex :align-items :center :gap 7
+                             :font "10px ui-monospace, monospace"
+                             :color "#9fffc0" :white-space :nowrap}]
+       [".live-dot" {:width 7 :height 7 :border-radius "50%"
+                     :background "#53ff94" :box-shadow "0 0 12px #53ff94"}]
+       [".stale-count" {:padding "2px 6px" :border-radius 999
+                        :color "#ffb46b" :background "#43230f"}]
+       [".scope-label" {:padding "3px 7px" :border-radius 5
+                        :background "#25252a" :color "#aaaab3"
+                        :font "8px ui-monospace, monospace"
+                        :letter-spacing ".08em"}]
+       [".kpi-strip" {:display :grid
+                      :grid-template-columns "repeat(4, minmax(0, 1fr))"
+                      :gap 7}]
+       [".board-kpi" {:position :relative :display :grid
+                      :grid-template-columns "1fr auto auto"
+                      :align-items :baseline :gap 5 :padding "9px 11px"
+                      :border-radius 10 :background "#ffffff08"
+                      :border "1px solid #ffffff12" :overflow :hidden}]
+       [".board-kpi::after" {:content "\"\"" :position :absolute
+                             :left 0 :right 0 :bottom 0 :height 2
+                             :background "var(--tone)"}]
+       [".board-kpi.green" {"--tone" "#54f69a"}]
+       [".board-kpi.amber" {"--tone" "#ffb45c"}]
+       [".board-kpi.blue" {"--tone" "#57b5ff"}]
+       [".board-kpi.violet" {"--tone" "#c56cff"}]
+       [".board-kpi small" {:color "#a9a0b3" :font-size 9}]
+       [".board-kpi strong" {:font "21px ui-monospace, monospace"}]
+       [".board-kpi em" {:color "#766e80" :font "8px ui-monospace, monospace"
+                         :font-style :normal}]
+       [".now-board,.flow-board" {:display :grid
+                                  :grid-template-rows "39px minmax(0, 1fr)"
+                                  :min-height 0}]
+       [".section-heading" {:display :flex :align-items :center
+                            :justify-content :space-between
+                            :border-bottom "1px solid #ffffff12"}]
+       [".section-heading small" {:color "#61e89a"
+                                  :font "8px ui-monospace, monospace"
+                                  :letter-spacing ".15em"}]
+       [".section-heading h2" {:display :inline :margin "0 0 0 8px"
+                               :font-size 14}]
+       [".section-heading span" {:color "#7f7689"
+                                 :font "9px ui-monospace, monospace"}]
+       [".now-grid" {:display :grid
+                     :grid-template-columns "repeat(auto-fill, minmax(235px, 1fr))"
+                     :align-content :start :gap 8 :padding-top 8
+                     :overflow-y :auto}]
+       [".linear-workspace" {:display :grid
+                             :grid-template-columns "184px minmax(0, 1fr)"
+                             :min-height 0 :margin-top 8
+                             :border "1px solid #27272c" :border-radius 10
+                             :overflow :hidden :background "#101013"}]
+       [".work-sidebar" {:display :flex :flex-direction :column :gap 2
+                         :padding 10 :border-right "1px solid #27272c"
+                         :background "#0b0b0e"}]
+       [".work-sidebar > small" {:padding "7px 8px 5px" :color "#66666f"
+                                 :font "8px ui-monospace, monospace"
+                                 :letter-spacing ".12em"}]
+       [".work-sidebar button" {:display :grid
+                                :grid-template-columns "18px 1fr auto"
+                                :align-items :center :gap 4 :width "100%"
+                                :padding "7px 8px" :border 0 :border-radius 6
+                                :background :transparent :color "#9b9ba4"
+                                :text-align :left :font-size 10 :cursor :pointer}]
+       [".work-sidebar button:hover" {:background "#18181c" :color "#e6e6e9"}]
+       [".work-sidebar button.selected" {:background "#202024" :color "#f4f4f5"}]
+       [".work-sidebar button span" {:color "#777780"
+                                     :font "11px ui-monospace, monospace"}]
+       [".work-sidebar button b" {:min-width 18 :padding "1px 5px"
+                                  :border-radius 999 :background "#29292e"
+                                  :color "#a9a9b1" :text-align :center
+                                  :font "8px ui-monospace, monospace"}]
+       [".work-sidebar button.attention" {:color "#d8a06d"}]
+       [".sidebar-divider" {:height 1 :margin "7px 5px"
+                            :background "#242429"}]
+       [".work-list" {:display :grid
+                      :grid-template-rows "31px minmax(0, 1fr)"
+                      :min-width 0 :min-height 0}]
+       [".work-list-header" {:display :grid
+                             :grid-template-columns "24px minmax(220px, 2fr) minmax(150px, 1.25fr) 88px 120px 64px"
+                             :align-items :center :padding "0 10px"
+                             :border-bottom "1px solid #27272c"
+                             :color "#65656e" :font-size 8}]
+       [".work-list-body" {:overflow-y :auto}]
+       [".work-row" {:display :grid
+                     :grid-template-columns "24px minmax(220px, 2fr) minmax(150px, 1.25fr) 88px 120px 64px"
+                     :align-items :center :width "100%" :min-width 0
+                     :padding "8px 10px" :border 0
+                     :border-bottom "1px solid #202025"
+                     :background :transparent :color "#b8b8bf"
+                     :text-align :left :cursor :pointer}]
+       [".work-row:hover" {:background "#17171b"}]
+       [".row-status" {:width 8 :height 8 :border-radius "50%"
+                       :border "2px solid #4ee58d"
+                       :box-shadow "0 0 7px #4ee58d55"}]
+       [".work-row.quiet .row-status" {:border-color "#5caaff"
+                                       :box-shadow :none}]
+       [".work-row.stale .row-status" {:border-color "#d98248"
+                                       :box-shadow :none}]
+       [".row-title,.row-agent" {:display :flex :flex-direction :column
+                                 :min-width 0}]
+       [".row-title strong" {:overflow :hidden :text-overflow :ellipsis
+                             :white-space :nowrap :color "#e6e6e9"
+                             :font-size 10 :font-weight 560}]
+       [".row-title small" {:margin-top 2 :overflow :hidden
+                            :text-overflow :ellipsis :white-space :nowrap
+                            :color "#6f6f78" :font-size 8}]
+       [".row-project" {:overflow :hidden :text-overflow :ellipsis
+                        :white-space :nowrap :padding-right 10
+                        :color "#9a9aa3" :font-size 9}]
+       [".row-stage" {:justify-self :start :padding "3px 6px"
+                      :border-radius 5 :background "#242429"
+                      :color "#aaaab2" :font-size 8}]
+       [".row-stage.implement" {:color "#8ebcff" :background "#142237"}]
+       [".row-stage.review" {:color "#c6a4ff" :background "#25183a"}]
+       [".row-stage.blocked" {:color "#efae78" :background "#382013"}]
+       [".row-agent b" {:overflow :hidden :text-overflow :ellipsis
+                        :white-space :nowrap :color "#bcbcc4"
+                        :font "9px ui-monospace, monospace"}]
+       [".row-agent small" {:overflow :hidden :text-overflow :ellipsis
+                            :white-space :nowrap :color "#65656d"
+                            :font "8px ui-monospace, monospace"}]
+       [".work-row time" {:justify-self :end :color "#686870"
+                          :font "8px ui-monospace, monospace"}]
+       [".flow-columns" {:display :grid
+                         :grid-template-columns "repeat(4, minmax(0, 1fr))"
+                         :gap 8 :padding-top 8 :min-height 0}]
+       [".flow-column" {:display :grid :grid-template-rows "34px minmax(0, 1fr)"
+                        :min-width 0 :min-height 0 :border-radius 10
+                        :background "#ffffff05" :border "1px solid #ffffff0e"}]
+       [".flow-column > header" {:display :grid
+                                 :grid-template-columns "auto auto 1fr"
+                                 :align-items :center :gap 6 :padding "6px 8px"
+                                 :border-bottom "1px solid #ffffff10"}]
+       [".flow-column > header span" {:padding "1px 6px" :border-radius 999
+                                      :background "#ffffff12"
+                                      :font "9px ui-monospace, monospace"}]
+       [".flow-column > header small" {:justify-self :end :color "#776e81"
+                                       :font-size 8}]
+       [".flow-column > div" {:display :grid :align-content :start :gap 7
+                              :padding 7 :overflow-y :auto}]
+       [".flow-column p" {:margin 12 :text-align :center :color "#544d5d"
+                          :font "10px ui-monospace, monospace"}]
+       [".work-card" {:min-width 0 :padding 10 :border-radius 10
+                      :background "#0c0a12" :border "1px solid #ffffff17"
+                      :cursor :pointer :transition "border-color .15s, transform .15s"}]
+       [".work-card:hover" {:transform "translateY(-1px)"
+                            :border-color "#70ffac77"}]
+       [".work-card.live" {:border-left "3px solid #53ff94"}]
+       [".work-card.quiet" {:border-left "3px solid #55aaff"}]
+       [".work-card.stale" {:border-left "3px solid #ff9b4d"
+                            :background "#1b100aaa"}]
+       [".work-card-head" {:display :grid
+                           :grid-template-columns "8px 1fr auto"
+                           :align-items :center :gap 6}]
+       [".work-card-head .heartbeat" {:width 7 :height 7
+                                      :border-radius "50%" :background "#53ff94"
+                                      :box-shadow "0 0 9px #53ff94"}]
+       [".work-card.quiet .heartbeat" {:background "#55aaff"
+                                       :box-shadow "0 0 9px #55aaff"}]
+       [".work-card.stale .heartbeat" {:background "#ff9b4d"
+                                       :box-shadow :none}]
+       [".work-card-head b" {:color "#c9ffd9"
+                             :font "10px ui-monospace, monospace"}]
+       [".work-card-head small" {:color "#756d7e"
+                                 :font "8px ui-monospace, monospace"}]
+       [".work-project" {:display :block :margin-top 8 :overflow :hidden
+                         :white-space :nowrap :text-overflow :ellipsis
+                         :font-size 12}]
+       [".work-issue" {:display :block :margin-top 3 :color "#7ddfa2"
+                       :font "9px ui-monospace, monospace"}]
+       [".work-output" {:display :grid :grid-template-columns "1fr auto"
+                        :gap 8 :margin-top 8 :padding-top 7
+                        :border-top "1px solid #ffffff0d"}]
+       [".work-output span" {:overflow :hidden :white-space :nowrap
+                             :text-overflow :ellipsis :color "#a49aaa"
+                             :font-size 9}]
+       [".work-output em" {:color "#746c7c"
+                           :font "8px ui-monospace, monospace"
+                           :font-style :normal :white-space :nowrap}]
+       [".board-empty" {:grid-column "1 / -1" :padding 40 :text-align :center
+                        :color "#6f6678" :border "1px dashed #ffffff18"
+                        :border-radius 12}]))

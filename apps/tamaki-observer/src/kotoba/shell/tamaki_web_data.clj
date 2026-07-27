@@ -3,6 +3,7 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
+            [clojure.set :as set]
             [clojure.string]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]
@@ -364,6 +365,40 @@
         patches (set (keep patch-id (filter (partial kind :patch/created) events)))
         integrated-patches
         (set (keep patch-id (filter (partial kind :patch/integrated) events)))
+        result-patch
+        (fn [result-id]
+          (when result-id
+            (clojure.string/replace (str result-id) #"^result/" "")))
+        evaluated-patches
+        (set (keep #(result-patch
+                    (get-in % [:tamaki.event/data :evaluation/result]))
+                   (filter (partial kind :result/evaluated) events)))
+        validated-patches
+        (set (keep #(result-patch
+                    (get-in % [:tamaki.event/data :validation/result]))
+                   (filter (partial kind :result/validated) events)))
+        regressed-patches
+        (set (keep #(result-patch
+                    (get-in % [:tamaki.event/data :validation/result]))
+                   (filter (partial kind :result/regressed) events)))
+        integrated-unvalidated
+        (set/difference integrated-patches validated-patches)
+        validated-value
+        (set/difference validated-patches regressed-patches)
+        evaluation-debt
+        (set/difference integrated-patches evaluated-patches)
+        evaluation-scores
+        (keep #(get-in % [:tamaki.event/data :evaluation/score])
+              (filter (partial kind :result/evaluated) events))
+        validated-scores
+        (keep #(get-in % [:tamaki.event/data
+                          :validation/observed-score])
+              (filter (partial kind :result/validated) events))
+        mean (fn [values]
+               (if (seq values)
+                 (/ (reduce + (map double values))
+                    (double (count values)))
+                 0.0))
         active-runs (count (filter #(active-statuses (:agent.run/status %)) runs))
         recent (filter #(>= (or (:tamaki.event/at %) 0)
                             (- observed-at dynamics-window-ms))
@@ -385,7 +420,16 @@
                 :from "wip" :to "review" :rate (rate :patch/created)}
                {:id "integrate" :label "merge"
                 :from "review" :to "integrated"
-                :rate (rate :patch/integrated)}]
+                :rate (rate :patch/integrated)}
+               {:id "evaluate" :label "evaluate"
+                :from "integrated" :to "integrated-unvalidated"
+                :rate (rate :result/evaluated)}
+               {:id "validate" :label "validate"
+                :from "integrated-unvalidated" :to "validated-value"
+                :rate (rate :result/validated)}
+               {:id "regress" :label "regress"
+                :from "validated-value" :to "regression-debt"
+                :rate (rate :result/regressed)}]
         stocks [{:id "backlog" :label "Issue backlog" :value backlog
                  :unit "issues" :color "#ffb34d"}
                 {:id "wip" :label "Agent WIP" :value active-runs
@@ -394,8 +438,28 @@
                  :unit "patches" :color "#54a8ff"}
                 {:id "integrated" :label "Integrated value"
                  :value (count integrated-patches)
-                 :unit "patches" :color "#d06cff"}]
-        bottleneck (apply max-key :value (butlast stocks))
+                 :unit "patches" :color "#d06cff"}
+                {:id "integrated-unvalidated"
+                 :label "Integrated, unvalidated"
+                 :value (count integrated-unvalidated)
+                 :unit "results" :color "#c58aff"}
+                {:id "validated-value" :label "Validated value"
+                 :value (count validated-value)
+                 :unit "results" :color "#73f4a1"}
+                {:id "evaluation-debt" :label "Evaluation debt"
+                 :value (count evaluation-debt)
+                 :unit "results" :color "#ffcf66"}
+                {:id "regression-debt" :label "Regression debt"
+                 :value (count regressed-patches)
+                 :unit "results" :color "#ff6b7d"}]
+        bottleneck (apply max-key
+                          :value
+                          (filter #(contains?
+                                    #{"backlog" "wip" "review"
+                                      "evaluation-debt"
+                                      "integrated-unvalidated"}
+                                    (:id %))
+                                  stocks))
         business-dynamics (prefixed-business-dynamics events)
         business-observed? (= :observed (:status business-dynamics))]
     {:window-ms dynamics-window-ms
@@ -409,6 +473,12 @@
      :failure-pressure (if (pos? attempts) (/ failures (double attempts)) 0.0)
      :backlog-delta (- (rate :issue/discovered) (rate :patch/integrated))
      :throughput (rate :patch/integrated)
+     :validation-throughput (rate :result/validated)
+     :validated-value (count validated-value)
+     :evaluation-debt (count evaluation-debt)
+     :regression-debt (count regressed-patches)
+     :evaluation-score (mean evaluation-scores)
+     :result-control-score (mean validated-scores)
      :business-status (:status business-dynamics)
      :business-control-score (:control-score business-dynamics)
      :business-kpis (:kpis business-dynamics)
@@ -620,6 +690,19 @@
      :results (mapv #(update % :result/project workspace-path)
                     (result/result-graphs events runs
                                           (evolution/candidates events)))
+     :evaluations (->> events
+                       (filter #(= :result/evaluated
+                                   (:tamaki.event/kind %)))
+                       (mapv :tamaki.event/data))
+     :tournaments (->> events
+                       (filter #(= :result/tournament-recorded
+                                   (:tamaki.event/kind %)))
+                       (mapv :tamaki.event/data))
+     :validations (->> events
+                       (filter #(contains? #{:result/validated
+                                             :result/regressed}
+                                           (:tamaki.event/kind %)))
+                       (mapv :tamaki.event/data))
      :model-usage
      (let [run-by-id (into {} (map (juxt :agent.run/id identity)) runs)]
        (->> events

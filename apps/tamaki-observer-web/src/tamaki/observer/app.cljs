@@ -45,7 +45,7 @@
 (rf/reg-sub :activity-agent
   (fn [db _] (or (:activity-agent db) "all")))
 (rf/reg-sub :surface-view
-  (fn [db _] (or (:surface-view db) :garden)))
+  (fn [db _] (or (:surface-view db) :now)))
 
 (defn index-datoms! [snapshot]
   (d/reset-conn! topology-db (d/empty-db topology-schema))
@@ -124,6 +124,19 @@
    :cloud-itonami "cloud-itonami"
    :jk-luxury "jk-luxury"
    :gftdcojp "gftdcojp"})
+
+(def organism-project-markers
+  {:com-junkawasaki ["orgs/com-junkawasaki/" "com-junkawasaki/"
+                     "orgs/kotoba-lang/" "kotoba-lang/"]
+   :etzhayyim ["orgs/etzhayyim/" "orgs/com-etzhayyim/" "etzhayyim/"]
+   :cloud-itonami ["orgs/cloud-itonami/" "cloud-itonami/"]
+   :jk-luxury ["orgs/jk-luxury/" "jk-luxury/"]
+   :gftdcojp ["orgs/gftdcojp/" "gftdcojp/"]})
+
+(defn project-in-scope? [scope project]
+  (or (= scope :federation)
+      (some #(str/includes? (str project) %)
+            (get organism-project-markers scope []))))
 
 (defn scoped-repos [scope]
   (let [repos (visible-repos)]
@@ -1443,6 +1456,223 @@
                (str/upper-case (name (:type node))) ]))]])
        [:small "source / PR resultを待機中…"])]))
 
+(defn event-time [event]
+  (let [value (:at event)
+        time (.getTime (js/Date. value))]
+    (if (js/isNaN time) 0 time)))
+
+(defn run-id [agent]
+  (or (:agent.run/id agent) (:id agent) "unknown"))
+
+(defn agent-project [agent]
+  (or (:agent.run/source-project agent)
+      (:source-project agent)
+      (:agent.run/project agent)
+      (:project agent)
+      "workspace"))
+
+(defn latest-agent-event [snapshot agent]
+  (let [id (run-id agent)]
+    (first (sort-by event-time >
+                    (filter #(= id (or (:run %) (:agent-id %)))
+                            (:activity snapshot))))))
+
+(defn heartbeat-state [snapshot agent]
+  (let [event (latest-agent-event snapshot agent)
+        age (- (.now js/Date) (event-time event))
+        status (label (or (:agent.run/status agent) (:status agent)) "unknown")]
+    (cond
+      (not (#{"running" "leased" "queued"} status)) :idle
+      (and event (< age 180000)) :live
+      (and event (< age 900000)) :quiet
+      :else :stale)))
+
+(defn work-stage [snapshot agent]
+  (let [event (latest-agent-event snapshot agent)
+        signal (str/lower-case
+                (str (label (:kind event) "") " " (:stream event) " "
+                     (:text event)))
+        issue (or (:issue agent) (:issue event))]
+    (cond
+      (re-find #"fail|block|error|conflict" signal) :blocked
+      (re-find #"review|pr-|patch|merge" signal) :review
+      (or issue (re-find #"tool|code|test|source" signal)) :implement
+      :else :discover)))
+
+(def stage-copy
+  {:discover ["Discover" "issueを特定"]
+   :implement ["Implement" "source / test"]
+   :review ["Review" "PR / patch"]
+   :blocked ["Blocked" "判断・修復待ち"]})
+
+(defn elapsed-label [event]
+  (if event
+    (let [seconds (max 0 (js/Math.floor
+                          (/ (- (.now js/Date) (event-time event)) 1000)))]
+      (cond
+        (< seconds 60) (str seconds "s ago")
+        (< seconds 3600) (str (js/Math.floor (/ seconds 60)) "m ago")
+        :else (str (js/Math.floor (/ seconds 3600)) "h ago")))
+    "no heartbeat"))
+
+(defn work-card [snapshot agent]
+  (let [event (latest-agent-event snapshot agent)
+        heartbeat (heartbeat-state snapshot agent)
+        project (agent-project agent)
+        issue (or (:issue agent) (:issue event))
+        runner (or (:agent.run/runner agent) (:runner agent) "agent")
+        model (or (:agent.run/model agent) (:model agent) "default")]
+    [:article {:class (str "work-card " (name heartbeat))
+               :on-click #(do (rf/dispatch-sync [:select-repo agent])
+                              (rf/dispatch [:activity-agent (run-id agent)]))}
+     [:div.work-card-head
+      [:span.heartbeat]
+      [:b runner]
+      [:small (elapsed-label event)]]
+     [:strong.work-project project]
+     [:span.work-issue (if issue (str "issue " issue) "issueを探索中")]
+     [:div.work-output
+      [:span (or (:text event) (:agent.run/goal agent) "成果物を待機中")]
+      [:em (str model " · " (name heartbeat))]]]))
+
+(defn work-row [snapshot agent]
+  (let [event (latest-agent-event snapshot agent)
+        heartbeat (heartbeat-state snapshot agent)
+        stage (work-stage snapshot agent)
+        [stage-name] (get stage-copy stage)
+        project (agent-project agent)
+        issue (or (:issue agent) (:issue event))
+        runner (or (:agent.run/runner agent) (:runner agent) "agent")
+        model (or (:agent.run/model agent) (:model agent) "default")]
+    [:button {:class (str "work-row " (name heartbeat))
+              :type "button"
+              :on-click #(do (rf/dispatch-sync [:select-repo agent])
+                             (rf/dispatch [:activity-agent (run-id agent)]))}
+     [:span.row-status {:title (name heartbeat)}]
+     [:span.row-title
+      [:strong (if issue (str "Issue " issue) "次のissueを探索")]
+      [:small (or (:text event) (:agent.run/goal agent) "成果物を待機中")]]
+     [:span.row-project project]
+     [:span.row-stage {:class (name stage)} stage-name]
+     [:span.row-agent
+      [:b runner]
+      [:small model]]
+     [:time (elapsed-label event)] ]))
+
+(defn objective-title [snapshot]
+  (or (some-> snapshot :projects first :objective)
+      (some-> snapshot :organisms first :organism/objective)
+      "成果物を通じて objective を前進させる"))
+
+(defn scoped-objective-title [snapshot scope]
+  (if (= scope :federation)
+    (objective-title snapshot)
+    (or (some (fn [organism]
+                (when (= (get organism-remote scope)
+                         (or (:organism/org organism) (:org organism)))
+                  (or (:organism/objective organism) (:objective organism))))
+              (:organisms snapshot))
+        (str (name scope) " のobjectiveを前進させる"))))
+
+(defn operations-board []
+  (let [snapshot @(rf/subscribe [:snapshot])
+        view @(rf/subscribe [:surface-view])
+        scope @(rf/subscribe [:organism-scope])
+        agents (filter #(project-in-scope? scope (agent-project %))
+                       (:agents snapshot))
+        dynamics (:system-dynamics snapshot)
+        repo-stats (filter #(project-in-scope? scope (:path %))
+                           (:repo-stats snapshot))
+        results (filter #(project-in-scope? scope (:project %))
+                        (:results snapshot))
+        active (filter #(not= :idle (heartbeat-state snapshot %)) agents)
+        live-count (count (filter #(= :live (heartbeat-state snapshot %)) active))
+        stale-count (count (filter #(= :stale (heartbeat-state snapshot %)) active))
+        stages (group-by #(work-stage snapshot %) active)
+        stocks (into {} (map (juxt :id :value)) (:stocks dynamics))
+        issue-backlog (if (= scope :federation)
+                        (or (get stocks "issue-backlog") 0)
+                        (reduce + 0 (map #(or (:issues-open %) 0) repo-stats)))
+        review-backlog (if (= scope :federation)
+                         (or (get stocks "review-queue") 0)
+                         (reduce + 0 (map #(or (:patches-open %) 0) repo-stats)))]
+    [:main {:class (str style/operations
+                        (when-not (#{:now :flow} view) " hidden"))}
+     [:section.objective-strip
+      [:div
+       [:small "CURRENT OBJECTIVE"]
+       [:strong (scoped-objective-title snapshot scope)]]
+      [:div.objective-health
+       [:span.scope-label (if (= scope :federation)
+                            "ALL"
+                            (str/upper-case (name scope)))]
+       [:span.live-dot] (str live-count " live")
+       (when (pos? stale-count)
+         [:span.stale-count (str stale-count " stale")])]]
+     [:section.kpi-strip
+      (for [[title value unit tone]
+            [["Active work" (count active) "runs" "green"]
+             ["Issue backlog" issue-backlog "issues" "amber"]
+             ["Review queue" review-backlog "patches" "blue"]
+             ["Integrated" (if (= scope :federation)
+                             (or (get stocks "integrated-value") (count results))
+                             (count results))
+              "results" "violet"]]]
+        ^{:key title}
+        [:div {:class (str "board-kpi " tone)}
+         [:small title] [:strong value] [:em unit]])]
+     (if (= view :now)
+       [:section.now-board
+        [:div.section-heading
+         [:div [:small "NOW"] [:h2 "Tamakiは今、何をしているか"]]
+         [:span "heartbeatから実行状態を判定"]]
+        [:div.linear-workspace
+         [:aside.work-sidebar
+          [:small "WORKSPACE"]
+          [:button.selected [:span "◉"] "Active work" [:b (count active)]]
+          [:button [:span "◌"] "Discover" [:b (count (get stages :discover))]]
+          [:button [:span "◫"] "In progress" [:b (count (get stages :implement))]]
+          [:button [:span "◇"] "Review" [:b (count (get stages :review))]]
+          [:button.attention [:span "△"] "Needs attention"
+           [:b (+ (count (get stages :blocked)) stale-count)]]
+          [:div.sidebar-divider]
+          [:small "VIEWS"]
+          [:button {:on-click #(rf/dispatch [:surface-view :flow])}
+           [:span "⌘"] "Flow"]
+          [:button {:on-click #(rf/dispatch [:surface-view :garden])}
+           [:span "♧"] "Garden"]]
+         [:section.work-list
+          [:header.work-list-header
+           [:span]
+           [:span "Work item"]
+           [:span "Project"]
+           [:span "State"]
+           [:span "Agent / model"]
+           [:span "Updated"]]
+          [:div.work-list-body
+           (if (seq active)
+             (for [agent (sort-by #(case (heartbeat-state snapshot %)
+                                    :live 0 :quiet 1 :stale 2 3)
+                                  active)]
+               ^{:key (run-id agent)} [work-row snapshot agent])
+             [:div.board-empty "稼働中のagentはありません"])]]]]
+       [:section.flow-board
+        [:div.section-heading
+         [:div [:small "FLOW"] [:h2 "Issue → Source → Review → Integrated"]]
+         [:span "成果物の状態で判断"]]
+        [:div.flow-columns
+         (for [stage [:discover :implement :review :blocked]
+               :let [[title description] (get stage-copy stage)
+                     cards (get stages stage)]]
+           ^{:key stage}
+           [:section.flow-column
+            [:header [:b title] [:span (count cards)] [:small description]]
+            [:div
+             (if (seq cards)
+               (for [agent cards]
+                 ^{:key (run-id agent)} [work-card snapshot agent])
+               [:p "empty"])]])]])]))
+
 (defn set-garden-view! [view]
   (when-let [{:keys [camera controls]} @runtime]
     (let [[x y z target-y] (case view
@@ -1531,8 +1761,11 @@
         "No verified ledger observation yet. Missing accounting values remain N/A."])]))
 
 (defn shell-view []
+  (let [view @(rf/subscribe [:surface-view])
+        current-scope @(rf/subscribe [:organism-scope])
+        garden? (= view :garden)]
   [:div {:class (str style/app " " style/finance)}
-   [:canvas#scene {:class style/scene}]
+   [:canvas#scene {:class (str style/scene (when-not garden? " surface-hidden"))}]
    [:div#effects {:class style/effects}]
    [:header {:class (str style/glass " " style/header)}
     [:h1 "Tamaki Observatory"]
@@ -1545,17 +1778,29 @@
     [:div.garden-views
      [:span "View"]
      [:button {:type "button"
-               :on-click #(rf/dispatch [:surface-view :garden])}
-      "Living Garden"]
+               :class (when (= view :now) "selected")
+               :on-click #(rf/dispatch [:surface-view :now])}
+      "Now"]
      [:button {:type "button"
+               :class (when (= view :flow) "selected")
+               :on-click #(rf/dispatch [:surface-view :flow])}
+      "Flow"]
+     [:button {:type "button"
+               :class (when garden? "selected")
+               :on-click #(rf/dispatch [:surface-view :garden])}
+      "Garden"]
+     [:button {:type "button"
+               :class (when (= view :finance) "selected")
                :on-click #(rf/dispatch [:surface-view :finance])}
       "Finance"]
-     [:button {:type "button" :on-click #(set-garden-view! :world)}
-      "World"]
-     [:button {:type "button" :on-click #(set-garden-view! :colony)}
-      "Colony"]
-     [:button {:type "button" :on-click #(set-garden-view! :organism)}
-      "Organism"]]
+     (when garden?
+       [:<>
+        [:button {:type "button" :on-click #(set-garden-view! :world)}
+         "World"]
+        [:button {:type "button" :on-click #(set-garden-view! :colony)}
+         "Colony"]
+        [:button {:type "button" :on-click #(set-garden-view! :organism)}
+         "Organism"]])]
     [:div#bonsai-state.bonsai-state
      [:b "Bonsai care"]
      [:span "Git treeを観察中…"]]
@@ -1567,7 +1812,9 @@
                          [:jk-luxury "JK Luxury"]
                          [:gftdcojp "GFTD"]]]
        ^{:key scope}
-       [:button {:type "button" :on-click #(select-organism! scope)}
+       [:button {:type "button"
+                 :class (when (= scope current-scope) "selected")
+                 :on-click #(select-organism! scope)}
         text])]
     [:div.voice-row
      [:button.voice-button {:type "button" :on-click start-voice!}
@@ -1579,8 +1826,10 @@
       "♫ ambient off"]]
     [:div#actor-state.actor-state]
     [:div#model-usage.model-usage]]
+   [operations-board]
    [finance-panel]
-   [:aside#inspector {:class (str style/glass " " style/inspector)}
+   [:aside#inspector {:class (str style/glass " " style/inspector
+                                  (when-not garden? " surface-hidden"))}
     [:h2 "Workspace"]
     [:div#details.details "Select a repository tile"]
     [:h2 "Source / PR results"]
@@ -1588,15 +1837,17 @@
     [:h2.activity-title "Live activity"]
     [activity-panel]]
    [:section#system-dynamics
-    {:class (str style/glass " " style/dynamics)}
+    {:class (str style/glass " " style/dynamics
+                 (when-not garden? " surface-hidden"))}
     [:b "System dynamics"] [:span "Connecting…"]]
-   [:div#legend {:class (str style/glass " " style/legend)}
+   [:div#legend {:class (str style/glass " " style/legend
+                            (when-not garden? " surface-hidden"))}
     "drag rotate · wheel zoom · click repo/agent" [:br]
     [:span.live "◆ walking agent actor"] "　"
     [:span.sync "● synced"] "　"
     [:span.diff "● west Δ"] "　"
     [:span.loop "○ loop"] [:br]
-    "animated actor beam = active repo · tile height = congestion"]])
+    "animated actor beam = active repo · tile height = congestion"]]))
 
 (defn mount-shell! []
   (rdom/render [shell-view] (.getElementById js/document "app")))
