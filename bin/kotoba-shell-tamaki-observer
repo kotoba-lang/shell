@@ -79,7 +79,9 @@ fi
 mkdir -p "$web_dir/target"
 (
   cd "$app_dir"
-  exec clojure -M -m kotoba.shell.tamaki-web-data "$web_dist/snapshot.json"
+  # The projection folds a growing append-only event stream. Bound the daemon
+  # heap so a long-lived Observatory cannot consume the whole workstation.
+  exec clojure -J-Xmx1024m -M -m kotoba.shell.tamaki-web-data "$web_dist/snapshot.json"
 ) >>"$web_dir/target/data.log" 2>&1 &
 data_pid=$!
 
