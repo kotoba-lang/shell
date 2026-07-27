@@ -1367,6 +1367,41 @@
     (is (= false
            (get-in browser-only [:kotoba.cli/data :kotoba.shell/smoke-rows 0 :served?])))))
 
+(deftest provider-catalog-counts-match-the-providers-they-describe
+  ;; aiueos_provider_catalog.edn carries an `oracle-exports` map of counts and
+  ;; scores alongside the provider list. Nothing in this repo -- or anywhere in
+  ;; the kotoba-lang org -- reads those values back or produces them; they are
+  ;; hand-maintained, so a catalog edit that forgets to update them is silent.
+  ;;
+  ;; Three of them are straightforwardly derivable from the provider list, and
+  ;; this pins those so the next edit cannot drift. The other three are NOT
+  ;; reconstructible and are deliberately not asserted here:
+  ;;
+  ;;   portable-provider-command-count (10) -- no candidate rule reproduces it.
+  ;;     Commands on providers required for all four targets gives 8; on
+  ;;     providers with any required target, 12; on all-four-or-none, 11.
+  ;;   provider-catalog-digest (12688) and provider-contract-score (81302) --
+  ;;     no producer exists in the org; `65521` (the Adler-32 modulus the digest
+  ;;     blob names) appears in no code anywhere.
+  ;;
+  ;; Per-provider scores are also unpinned: the units digit is the status class
+  ;; and the tens digit is (min commands required-targets), both fitting all
+  ;; nine, but the hundreds digit equals the command count for eight of nine and
+  ;; webauthn is the lone exception, which is not enough to call it a rule.
+  (let [catalog (launcher/selfhost-seed "aiueos_provider_catalog")
+        providers (:providers catalog)
+        oracle (:oracle-exports catalog)]
+    (testing "the catalog parses and is non-empty"
+      (is (seq providers)))
+    (testing "provider-family-count is the number of providers"
+      (is (= (count providers) (get oracle "provider-family-count"))))
+    (testing "provider-command-count is the number of commands across them"
+      (is (= (count (mapcat :commands providers))
+             (get oracle "provider-command-count"))))
+    (testing "provider-status-class-count is the number of distinct statuses"
+      (is (= (count (distinct (map :status providers)))
+             (get oracle "provider-status-class-count"))))))
+
 (deftest browser-smoke-command-waits-for-static-server
   (let [command (launcher/browser-smoke-shell-command "smoke:webgpu")]
     (is (re-find #"http://127\.0\.0\.1:8702/" command))
