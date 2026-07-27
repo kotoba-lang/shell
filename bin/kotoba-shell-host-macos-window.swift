@@ -10,7 +10,17 @@ struct SurfaceNode {
   var attrs: [String: String] = [:]
 }
 
-final class KotobaActionTarget: NSObject {
+final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
+  var inputValues: [String: String] = [:]
+  var endpoints: [String: String] = [:]
+  var bodies: [String: String] = [:]
+
+  func controlTextDidChange(_ notification: Notification) {
+    guard let field = notification.object as? NSTextField,
+          let id = field.identifier?.rawValue else { return }
+    inputValues[id] = field.stringValue
+  }
+
   @objc func perform(_ sender: NSButton) {
     let action = sender.identifier?.rawValue ?? "unknown"
     if action == "ingest/pick-file" {
@@ -19,21 +29,68 @@ final class KotobaActionTarget: NSObject {
       panel.canChooseDirectories = false
       panel.allowedContentTypes = [.data]
       if panel.runModal() == .OK, let path = panel.url?.path {
-        print("{\"event\":\"input/action\",\"action\":\"ingest/file-selected\",\"path\":\"\(path)\"}"); fflush(stdout)
+        emit(["event": "input/action", "action": "ingest/file-selected", "path": path])
       } else {
         print("{\"event\":\"input/action-cancelled\",\"action\":\"\(action)\"}"); fflush(stdout)
       }
+    } else if let endpoint = endpoints[action],
+              let url = URL(string: endpoint),
+              ["127.0.0.1", "localhost"].contains(url.host ?? "") {
+      let inputIds = ((sender.cell?.representedObject as? String) ?? "")
+        .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+      let value = inputIds.first.flatMap { inputValues[$0] } ?? ""
+      func jsonEscaped(_ raw: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [raw]),
+              let encoded = String(data: data, encoding: .utf8) else { return "" }
+        return String(encoded.dropFirst().dropLast().dropFirst().dropLast())
+      }
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      var body = (bodies[action] ?? "{}")
+        .replacingOccurrences(of: "$value", with: jsonEscaped(value))
+      for inputId in inputIds {
+        body = body.replacingOccurrences(of: "$\(inputId)",
+                                         with: jsonEscaped(inputValues[inputId] ?? ""))
+      }
+      request.httpBody = body.data(using: .utf8)
+      emit(["event": "input/action-started", "action": action, "endpoint": endpoint])
+      URLSession.shared.dataTask(with: request) { data, response, error in
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        if error == nil, (200..<300).contains(status), action.contains("oauth"),
+           let data,
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let rawURL = object["url"] as? String,
+           let authorizationURL = URL(string: rawURL),
+           authorizationURL.scheme == "https",
+           ["accounts.google.com", "login.microsoftonline.com"].contains(authorizationURL.host ?? "") {
+          DispatchQueue.main.async { NSWorkspace.shared.open(authorizationURL) }
+        }
+        emit(["event": "input/action-completed", "action": action,
+              "status": status, "ok": error == nil && (200..<300).contains(status),
+              "body": String(body.prefix(2000)), "error": error?.localizedDescription ?? ""])
+      }.resume()
     } else {
-      print("{\"event\":\"input/action\",\"action\":\"\(action)\"}"); fflush(stdout)
+      var event: [String: Any] = ["event": "input/action", "action": action]
+      if let inputId = sender.cell?.representedObject as? String {
+        event["value"] = inputValues[inputId] ?? ""
+        event["input-id"] = inputId
+      }
+      emit(event)
     }
   }
 }
 
 let actionTarget = KotobaActionTarget()
-let floatingWindow = CommandLine.arguments.contains("--floating")
 
 func emit(_ value: [String: Any]) {
-  guard let data = try? JSONSerialization.data(withJSONObject: value),
+  // Keep event names grep-compatible as well as JSON-compatible. Foundation
+  // otherwise serializes `lifecycle/terminate` as `lifecycle\/terminate`,
+  // breaking the shell's line-oriented readiness contract.
+  guard let data = try? JSONSerialization.data(withJSONObject: value,
+                                                options: [.withoutEscapingSlashes]),
         let line = String(data: data, encoding: .utf8) else { return }
   print(line); fflush(stdout)
 }
@@ -167,7 +224,9 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
   stack.setHuggingPriority(.required, for: .vertical)
   stack.spacing = node.tag == "main" ? 20 : (["nav", "summary"].contains(node.tag) ? 10 : 8)
   let inset: CGFloat = ["article", "section"].contains(node.tag) ? 16 : 4
-  stack.edgeInsets = NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+  stack.edgeInsets = node.tag == "main"
+    ? NSEdgeInsets(top: 24, left: inset, bottom: inset, right: inset)
+    : NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
   for child in node.children { stack.addArrangedSubview(nativeView(id: child, nodes: nodes)) }
   if ["article", "section"].contains(node.tag) || className.contains("liquid-glass__panel") {
     stack.wantsLayer = true
@@ -294,11 +353,32 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
     guard let window = notification.object as? NSWindow else { return }
     print("{\"event\":\"input/resize\",\"width\":\(Int(window.frame.width)),\"height\":\(Int(window.frame.height))}"); fflush(stdout)
   }
+  func windowDidMiniaturize(_ notification: Notification) {
+    guard !smoke else { return }
+    DispatchQueue.main.async { [weak self] in
+      self?.window?.deminiaturize(nil)
+      self?.hideToStatusBar()
+    }
+  }
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    if smoke { return true }
+    hideToStatusBar()
+    return false
+  }
   func windowWillClose(_ notification: Notification) {
-    print("{\"event\":\"lifecycle/terminate\"}"); fflush(stdout)
+    emitTermination()
+    // `NSApplication.stop` only flips the run-loop state. When it is called
+    // from a close notification there may be no subsequent AppKit event to
+    // make `run()` observe that state, leaving smoke/visual commands alive
+    // until their parent kills them. Smoke owns no user state, so terminate
+    // the application explicitly after the receipt has been flushed.
     if smoke { NSApp.terminate(nil) }
   }
 }
+
+// AppKit delegate/target references are weak. Keep the lifecycle controller
+// alive for status-menu actions after the launch stack has unwound.
+var retainedWindowDelegate: KotobaWindowDelegate?
 
 let smoke = CommandLine.arguments.contains("--smoke")
 let title = argument("--title") ?? "Kotoba"
@@ -315,11 +395,6 @@ let delegate = KotobaWindowDelegate(smoke: smoke)
 retainedWindowDelegate = delegate
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
 window.title = title
-if floatingWindow {
-  window.level = .floating
-  window.collectionBehavior.insert(.canJoinAllSpaces)
-  window.collectionBehavior.insert(.fullScreenAuxiliary)
-}
 window.minSize = NSSize(width: minWidth, height: minHeight)
 window.level = .floating
 window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -352,16 +427,24 @@ func commitSurface(_ surface: (nodes: [Int: SurfaceNode], root: Int?), reason: S
   emit(["event": "surface/committed", "reason": reason, "ops": surface.nodes.count])
 }
 commitSurface(surface, reason: "launch")
-window.contentView?.addSubview(scroll)
+let webView: WKWebView? = webURL.map { url in
+  let configuration = WKWebViewConfiguration()
+  configuration.websiteDataStore = .default()
+  let view = WKWebView(frame: window.contentView?.bounds ?? .zero, configuration: configuration)
+  view.autoresizingMask = [.width, .height]
+  view.load(URLRequest(url: url))
+  return view
+}
+window.contentView?.addSubview(webView ?? scroll)
 window.center()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
-if let document = scroll.documentView {
+if webView == nil, let document = scroll.documentView {
   scroll.contentView.scroll(to: NSPoint(x: 0,
                                         y: max(0, document.frame.height - scroll.contentView.bounds.height - 16)))
   scroll.reflectScrolledClipView(scroll.contentView)
 }
-print("{\"event\":\"lifecycle/launch\",\"surface\":\"kotoba:dom\",\"runtime\":\"native-appkit\",\"ops\":\(surface.nodes.count)}"); fflush(stdout)
+print("{\"event\":\"lifecycle/launch\",\"surface\":\"\(webView == nil ? "kotoba:dom" : "webview")\",\"runtime\":\"native-appkit\",\"ops\":\(surface.nodes.count)}"); fflush(stdout)
 
 // Newline-delimited JSON control plane. A live reload only replaces the native
 // surface; the NSWindow and its focus, geometry and scroll identity stay alive.
