@@ -1,0 +1,70 @@
+{:schema "kotoba.shell.app-event.v0"
+ :owner "kotoba/shell"
+ :canonical-format :edn
+ :implementation "kotoba.shell.event"
+
+ ;; The app -> host half already existed (kotoba.shell.input): an app labels a
+ ;; control with :data-action and optionally :data-input-id. This file is the
+ ;; return path. Kinds mirror what the AppKit host's source actually prints, so
+ ;; the contract describes the existing wire format rather than proposing a new
+ ;; one -- see :status for how much of that host currently works.
+ :host-events
+ {"input/action"           {:kind :action
+                            :fields {:action :required :value :optional}
+                            :note "value is intended to be the current text of the control named by the action's :data-input-id; absent, not empty-string, when no input is bound. No host emits it yet -- see :status."}
+  "input/action-cancelled" {:kind :action-cancelled :fields {:action :required}}
+  "input/resize"           {:kind :resize :fields {:width :required :height :required}}
+  "lifecycle/launch"       {:kind :launch}
+  "lifecycle/activate"     {:kind :activate}
+  "lifecycle/terminate"    {:kind :terminate}
+  "lifecycle/smoke-ready"  {:kind :smoke-ready}}
+
+ ;; Deliberately NOT an app event. `visual/captured` reports a screenshot to the
+ ;; visual-test/kaizen harness; routing it to an app would let a test artifact
+ ;; drive application state. `decode` rejects it rather than passing it through.
+ :harness-events #{"visual/captured"}
+
+ ;; Host-supplied fields the decoder does not name are preserved under
+ ;; :event/data (e.g. "path" on ingest/file-selected), so a host can carry a
+ ;; payload without kotoba.shell.event being taught about it first.
+ :passthrough {:target :event/data :reserved #{"event" "action" "value" "width" "height"}}
+
+ :step {:signature "(step state event) -> {:app/state s' :kotoba.app/surface-ops ops :app/effects effects}"
+        :surface-ops "same vector `app run` already commits (kotoba:dom)"
+        :effects "data, never thunks -- the app names what should happen, the host decides whether it may"}
+
+ ;; Measured state of the world this contract is written against, recorded so
+ ;; the gaps are not rediscovered. All of this is origin/main, verified, not
+ ;; inferred from the README.
+ :status
+ {:contract :defined
+
+  ;; Nothing consumes host events. The AppKit host prints them to stdout and
+  ;; launcher.clj never reads them; `app run --execute` re-evaluates the app's
+  ;; zero-argument entry on a timer (KOTOBA_SHELL_ACTION_REFRESH_SECONDS) and
+  ;; re-commits the surface. The surface is a read-only projection.
+  :launcher-delivers-events :not-implemented
+
+  ;; Interaction is currently routed AROUND the app: a button carrying
+  ;; data-endpoint/data-body POSTs to a localhost service, so application state
+  ;; never passes through the app entry at all.
+  :interaction-path :bypasses-app-entry
+
+  ;; kotoba.shell.input/submit emits :data-input-id, the host reads it into
+  ;; button.cell.representedObject, and nothing ever reads it back or emits the
+  ;; bound control's text. The input contract has no return path today.
+  :host-emits-value :not-implemented
+
+  ;; bin/kotoba-shell-host-macos-window.swift does not compile on origin/main
+  ;; (`swiftc ... -framework AppKit`), so `app run --target macos --execute`,
+  ;; which builds it via bin/kotoba-shell-build-macos-window, cannot work:
+  ;;   94:20  KotobaActionTarget has no member 'endpoints'
+  ;;   95:20  KotobaActionTarget has no member 'bodies'
+  ;;   127:22 cannot assign KotobaActionTarget to (any NSTextFieldDelegate)?
+  ;;   144:18 KotobaActionTarget has no member 'inputValues'
+  ;;   315:1  cannot find 'retainedWindowDelegate' in scope
+  ;; Left unfixed here on purpose: that file has unlanded work in flight
+  ;; elsewhere, and fixing it from this branch would collide with it.
+  :macos-window-host :does-not-compile
+
+  :note "this file fixes the shape both sides must agree on; delivering decoded events into a running app entry, and a host that compiles and emits value, are the next steps"}}

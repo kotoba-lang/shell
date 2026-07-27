@@ -3,6 +3,9 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
+            [kotoba.shell.event-test]
+            [kotoba.shell.input-test]
+            [kotoba.shell.mangaka-app-test]
             [kotoba.shell.experience :as experience]
             [kotoba.shell.sealed-line :as sealed]
             [kotoba.shell.tamaki-observer :as tamaki-observer]
@@ -1298,5 +1301,22 @@
 
 (defn -main
   [& _]
-  (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test)]
+  ;; `clojure -M:test` runs this namespace's -main, so a test namespace that is
+  ;; not listed here never executes. kotoba.shell.{event,input,mangaka-app}-test
+  ;; existed but were unreachable; they are wired in now and pass.
+  ;;
+  ;; kotoba.shell.connector-test is deliberately NOT listed: it fails on
+  ;; origin/main, and it fails for a real reason rather than a stale
+  ;; expectation. connector/invoke! destructures
+  ;; {:keys [argv input encode decode success?]} -- :timeout-ms is never bound
+  ;; and there is no timeout, so `.waitFor` blocks unbounded. The test asks for
+  ;; a 50ms bound on `/bin/sleep 5` and measures 5048ms, :connector-failed
+  ;; instead of :connector-timeout, exit 0 instead of 124. Listing it would
+  ;; turn main red; fixing it here would collide with in-flight work on that
+  ;; file. Wire it in with the fix, not before.
+  (let [{:keys [fail error]}
+        (clojure.test/run-tests 'kotoba.shell.launcher-test
+                                'kotoba.shell.event-test
+                                'kotoba.shell.input-test
+                                'kotoba.shell.mangaka-app-test)]
     (System/exit (if (zero? (+ fail error)) 0 1))))
