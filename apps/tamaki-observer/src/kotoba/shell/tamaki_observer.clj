@@ -90,7 +90,7 @@
      :rad-rid (some-> (re-find #"rad://([^\s]+)" text) second (->> (str "rad:")))
      :rad? (str/includes? text "rad://")}))
 
-(defn read-repository-inventory []
+(defn- scan-repository-inventory []
   (let [west (read-west-projects)
         index-file (System/getenv "KOTOBA_REPO_INDEX")
         local-paths (if (and index-file (.isFile (io/file index-file)))
@@ -112,6 +112,22 @@
                local-only))
          (sort-by :path)
          vec)))
+
+(def inventory-cache-ttl-ms 60000)
+(defonce repository-inventory-cache (atom nil))
+
+(defn read-repository-inventory
+  "Cache the expensive WEST/local repository scan. Repository membership is
+  control-plane state and does not need to be reread on every five-second
+  activity frame."
+  []
+  (let [now (System/currentTimeMillis)
+        cached @repository-inventory-cache]
+    (if (and cached (< (- now (:at cached)) inventory-cache-ttl-ms))
+      (:value cached)
+      (let [value (scan-repository-inventory)]
+        (reset! repository-inventory-cache {:at now :value value})
+        value))))
 
 (defn- project-path [root project]
   (when project

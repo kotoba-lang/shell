@@ -12,6 +12,27 @@
             [kotoba.shell.tamaki-web-data :as tamaki-web-data]
             [kotoba.shell.launcher :as launcher]))
 
+(deftest tamaki-event-reader-only-parses-new-complete-records
+  (let [root (.toFile (java.nio.file.Files/createTempDirectory
+                       "tamaki-events" (make-array java.nio.file.attribute.FileAttribute 0)))
+        file (io/file root "events.edn")
+        event-1 {:tamaki.event/id "one" :tamaki.event/at 1}
+        event-2 {:tamaki.event/id "二" :tamaki.event/at 2}]
+    (reset! tamaki-web-data/event-stream-cache
+            {:path nil :offset 0 :events []})
+    (spit file (str (pr-str event-1) "\n"))
+    (is (= [event-1]
+           (tamaki-web-data/read-events-incrementally (.getPath root))))
+    (spit file (pr-str event-2) :append true)
+    (is (= [event-1]
+           (tamaki-web-data/read-events-incrementally (.getPath root))))
+    (spit file "\n" :append true)
+    (is (= [event-1 event-2]
+           (tamaki-web-data/read-events-incrementally (.getPath root))))
+    (spit file (str (pr-str event-2) "\n"))
+    (is (= [event-2]
+           (tamaki-web-data/read-events-incrementally (.getPath root))))))
+
 (deftest tamaki-observer-projects-durable-campaigns
   (let [campaign {:tamaki.loop/id "loop-1"
                   :tamaki.loop/status :active

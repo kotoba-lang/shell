@@ -8,12 +8,52 @@
             [kotoba.tamaki.actor :as actor]
             [kotoba.tamaki.business :as business]
             [kotoba.tamaki.evolution :as evolution]
-            [kotoba.tamaki.result :as result]
-            [kotoba.tamaki.store :as store]))
+            [kotoba.tamaki.result :as result]))
 
 (def active-statuses #{:queued :leased :running})
 (defonce git-tree-cache (atom {}))
+(defonce event-stream-cache
+  (atom {:path nil :offset 0 :events []}))
 (declare run-project workspace-path)
+
+(defn read-events-incrementally
+  "Read only complete records appended since the previous projection.
+  The event store is one EDN value per line. An incomplete final write is left
+  for the next pass, and truncation/rotation deterministically resets the
+  cache."
+  [state-dir]
+  (let [file (io/file state-dir "events.edn")
+        path (.getCanonicalPath file)
+        length (if (.isFile file) (.length file) 0)
+        cached @event-stream-cache
+        reset? (or (not= path (:path cached))
+                   (< length (:offset cached)))
+        base (if reset? {:path path :offset 0 :events []} cached)
+        offset (:offset base)]
+    (if (= length offset)
+      (:events base)
+      (with-open [raf (java.io.RandomAccessFile. file "r")]
+        (.seek raf offset)
+        (let [bytes (byte-array (- length offset))]
+          (.readFully raf bytes)
+          (let [last-newline
+                (loop [i (dec (alength bytes))]
+                  (cond
+                    (neg? i) -1
+                    (= 10 (aget bytes i)) i
+                    :else (recur (dec i))))]
+            (if (neg? last-newline)
+              (:events base)
+              (let [text (String. bytes 0 (inc last-newline)
+                                  java.nio.charset.StandardCharsets/UTF_8)
+                    appended (->> (clojure.string/split-lines text)
+                                  (remove clojure.string/blank?)
+                                  (mapv edn/read-string))
+                    next-state {:path path
+                                :offset (+ offset last-newline 1)
+                                :events (into (:events base) appended)}]
+                (reset! event-stream-cache next-state)
+                (:events next-state)))))))))
 
 (defn- organism-specs []
   (let [directory (io/file (observer/workspace-root)
@@ -514,7 +554,7 @@
 (defn web-snapshot []
   ;; Read and fold the append-only stream once per frame. The old path read
   ;; the entire file in observer/snapshot and immediately read it again here.
-  (let [events (store/read-local-events (observer/state-dir))
+  (let [events (read-events-incrementally (observer/state-dir))
         state (observer/snapshot events)
         registry (:registry state)
         runs (:runs state)
