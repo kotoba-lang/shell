@@ -512,9 +512,11 @@
                :patch (:patch/id data)}))))))
 
 (defn web-snapshot []
-  (let [state (observer/snapshot)
+  ;; Read and fold the append-only stream once per frame. The old path read
+  ;; the entire file in observer/snapshot and immediately read it again here.
+  (let [events (store/read-local-events (observer/state-dir))
+        state (observer/snapshot events)
         registry (:registry state)
-        events (store/read-local-events (observer/state-dir))
         runs (:runs state)
         campaigns (:campaigns state)
         agents (->> runs
@@ -620,10 +622,14 @@
 (defn -main [& [target]]
   (when-not target
     (throw (ex-info "snapshot target is required" {})))
-  (loop []
+  (let [interval-ms
+        (or (some-> (System/getenv "TAMAKI_SNAPSHOT_INTERVAL_MS")
+                    parse-long)
+            5000)]
+   (loop []
     (try
       (write-snapshot! target)
       (catch Exception e
         (binding [*out* *err*] (println "snapshot failed:" (.getMessage e)))))
-    (Thread/sleep 1000)
-    (recur)))
+    (Thread/sleep (max 1000 interval-ms))
+    (recur))))

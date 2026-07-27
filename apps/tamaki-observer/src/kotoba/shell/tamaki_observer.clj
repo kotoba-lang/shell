@@ -226,9 +226,7 @@
        vec))
 
 (defn snapshot
-  ([] (assoc (snapshot (store/read-local-events (state-dir)))
-             :activity (activity-lines)
-             :observed-at (System/currentTimeMillis)))
+  ([] (snapshot (store/read-local-events (state-dir))))
   ([events]
    (let [campaigns (agent-loop/campaigns events)
          runs (model/fold-events events)
@@ -238,6 +236,8 @@
                        (remove #(str/starts-with? (:agent.run/id %) "loop-"))
                        (sort-by :agent.run/updated-at >) vec)]
      {:events (count events)
+      :activity (activity-lines)
+      :observed-at (System/currentTimeMillis)
       :registry (registry-summary (read-repository-inventory) run-list)
       :campaigns (->> (vals campaigns)
                       (sort-by :tamaki.loop/updated-at >) vec)
