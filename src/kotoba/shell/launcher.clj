@@ -685,6 +685,27 @@
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
 
+(defn product-name-for
+  "The Xcode product/project/scheme name for `target`.
+
+  **`app scaffold` and `app build` MUST derive this the same way.** They did
+  not: scaffold read `:macos/product-name`/`:ios/product-name` while build
+  hardcoded `KotobaShell` in its missing-file check, its
+  `xcodebuild -project` path and its `-scheme`. So any consumer that set a
+  product name scaffolded a working `<name>.xcodeproj` and then had
+  `app build` fail with `'…/KotobaShell.xcodeproj' does not exist` — the one
+  configuration that worked was the one that left the name unset and got the
+  demo default, which is exactly what CI and the README examples do, so the
+  break never showed up there. Found 2026-07-27 by the first consumer with a
+  real product name (`gftdcojp/cloud-itonami`, `:macos/product-name
+  \"itonami\"`)."
+  [target manifest]
+  (or (case target
+        :macos (:macos/product-name manifest)
+        :ios (:ios/product-name manifest)
+        nil)
+      "KotobaShell"))
+
 (defn- xcodegen-project-yml
   "macOS/iOS 共通の XcodeGen spec。project.pbxproj を手書きせず、scaffold 後に
   `xcodegen generate` へ渡して実際にビルド可能な .xcodeproj を作る(xcodegen-generate!
@@ -712,10 +733,7 @@
   [target manifest]
   (let [platform (case target :macos "macOS" :ios "iOS")
         deployment (case target :macos "13.0" :ios "16.0")
-        product-name (or (case target
-                           :macos (:macos/product-name manifest)
-                           :ios (:ios/product-name manifest))
-                         "KotobaShell")
+        product-name (product-name-for target manifest)
         bundle-id (case target
                     :macos (or (:macos/bundle-id manifest) (:app/id manifest))
                     :ios (:ios/bundle-id manifest))
@@ -1053,7 +1071,7 @@
 
 (defn xcodegen-generate!
   "root(scaffold 済みディレクトリ)で `xcodegen generate --spec project.yml` を
-  実行し KotobaShell.xcodeproj を作る(macOS/iOS のみ)。project.pbxproj を
+  実行し `<product-name>.xcodeproj` を作る(macOS/iOS のみ。名前は product-name-for)。project.pbxproj を
   手書きしない代わりに xcodegen に依存する — 未インストール環境でも scaffold
   全体は落とさず、結果に :xcodegen-ok?/:xcodegen-error を残して呼び出し側が
   判断できるようにする。"
@@ -1102,13 +1120,14 @@
 (defn scaffold-check-row
   [output-dir manifest target]
   (let [root (io/file output-dir (name target))
-        ;; macOS/iOS の xcodegen 産物(KotobaShell.xcodeproj/project.pbxproj)は
+        ;; macOS/iOS の xcodegen 産物(`<product-name>.xcodeproj/project.pbxproj`)は
         ;; scaffold-files の [[path body]...] 一覧には含まれない(xcodegen
         ;; generate が別途作る)ので、app-build-row が xcodebuild を実行する前に
         ;; 本当に buildable かをここで見る — scaffold 直後に確認できないと
         ;; xcodebuild 実行時になって初めて壊れているとわかる事故を防ぐ。
         xcodeproj-paths (when (#{:macos :ios} target)
-                          ["KotobaShell.xcodeproj/project.pbxproj"])
+                          [(str (product-name-for target manifest)
+                                ".xcodeproj/project.pbxproj")])
         ;; web-assets-into! が書く index.html も scaffold-files の一覧には
         ;; 含まれない(別関数の副作用)ので、ここで見ておく — WebBundle/ 配下が
         ;; folder reference で正しくバンドルへ入るかは xcodebuild を実行する
@@ -1146,41 +1165,45 @@
   1800)
 
 (defn default-app-build-step
-  [root target]
-  (case target
-    :macos {:command "xcodebuild"
-            :args ["-project" (.getPath (io/file root "KotobaShell.xcodeproj"))
-                   "-scheme" "KotobaShell"
+  "`manifest` is required: the Xcode project/scheme is named after the
+  manifest's product name (`product-name-for`), not a constant — see that
+  fn's docstring for the break this caused."
+  [root target manifest]
+  (let [product (product-name-for target manifest)]
+    (case target
+      :macos {:command "xcodebuild"
+              :args ["-project" (.getPath (io/file root (str product ".xcodeproj")))
+                     "-scheme" product
+                     "build"]
+              :default? true
+              :platform-step :xcodebuild-macos
+              :timeout-seconds default-build-timeout-seconds}
+      :ios {:command "xcodebuild"
+            :args ["-project" (.getPath (io/file root (str product ".xcodeproj")))
+                   "-scheme" product
+                   "-sdk" "iphonesimulator"
                    "build"]
             :default? true
-            :platform-step :xcodebuild-macos
+            :platform-step :xcodebuild-ios-simulator
             :timeout-seconds default-build-timeout-seconds}
-    :ios {:command "xcodebuild"
-          :args ["-project" (.getPath (io/file root "KotobaShell.xcodeproj"))
-                 "-scheme" "KotobaShell"
-                 "-sdk" "iphonesimulator"
-                 "build"]
-          :default? true
-          :platform-step :xcodebuild-ios-simulator
-          :timeout-seconds default-build-timeout-seconds}
-    :android {:command "gradle"
-              :args ["-p" (.getPath root) "assembleDebug"]
-              :default? true
-              :platform-step :gradle-assemble-debug
-              :timeout-seconds default-build-timeout-seconds}
-    :windows {:command "msbuild"
-              :args [(.getPath (io/file root "KotobaShell.wapproj"))]
-              :default? true
-              :platform-step :msbuild-msix
-              :timeout-seconds default-build-timeout-seconds}
-    nil))
+      :android {:command "gradle"
+                :args ["-p" (.getPath root) "assembleDebug"]
+                :default? true
+                :platform-step :gradle-assemble-debug
+                :timeout-seconds default-build-timeout-seconds}
+      :windows {:command "msbuild"
+                :args [(.getPath (io/file root (str product ".wapproj")))]
+                :default? true
+                :platform-step :msbuild-msix
+                :timeout-seconds default-build-timeout-seconds}
+      nil)))
 
 (defn app-build-row
   [argv output-dir manifest target]
   (let [check-row (scaffold-check-row output-dir manifest target)
         execute? (execute-requested? argv)
         step (or (external-step argv "--build-command" [(name target)])
-                 (default-app-build-step (io/file output-dir (name target)) target))
+                 (default-app-build-step (io/file output-dir (name target)) target manifest))
         run (step-run-result execute? step)
         ok? (and (:ok? check-row) (:ok? run))]
     (assoc check-row

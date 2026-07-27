@@ -825,6 +825,57 @@
     (is (= "built\n"
            (get-in executed [:kotoba.cli/data :kotoba.shell/app-rows 0 :build-step :stdout])))))
 
+(deftest app-build-targets-the-project-scaffold-actually-generated
+  ;; Regression 2026-07-27. `app scaffold` names the Xcode project after
+  ;; :macos/product-name; `app build` hardcoded "KotobaShell" in its
+  ;; missing-file check, its -project path and its -scheme. So a consumer
+  ;; that set a product name got a working <name>.xcodeproj from scaffold and
+  ;; then `'…/KotobaShell.xcodeproj' does not exist` from build.
+  ;;
+  ;; It survived because the ONLY app-build test targets :android, which has
+  ;; no xcodeproj, and because every README example and CI invocation omits
+  ;; :macos/product-name and so lands on the default that happened to match.
+  (let [manifest (str "{:app/id \"dev.example.app\" :app/name \"example\" "
+                      ":app/version \"0.1.0\" :macos/product-name \"itonami\" "
+                      ":macos/bundle-id \"dev.example.app\"}")
+        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
+                                            (str "kotoba-shell-name-" (System/nanoTime)))
+                               (.mkdirs)))
+        scaffold (launcher/dispatch ["app" "scaffold" "--target" "macos"
+                                     "--manifest-edn" manifest
+                                     "--output-dir" output-dir])
+        plan (launcher/dispatch ["app" "build" "--target" "macos"
+                                 "--manifest-edn" manifest
+                                 "--output-dir" output-dir])
+        args (get-in plan [:kotoba.cli/data :kotoba.shell/app-rows 0 :build-step :args])]
+    (is (:kotoba.cli/ok? scaffold))
+    (testing "scaffold really wrote the product-named project"
+      (is (.exists (io/file output-dir "macos" "itonami.xcodeproj" "project.pbxproj"))))
+    (testing "build points xcodebuild at THAT project, not the default name"
+      (is (some #(str/ends-with? % "itonami.xcodeproj") args)
+          (str "-project must be the scaffolded project: " (pr-str args)))
+      (is (= "itonami" (second (drop-while #(not= "-scheme" %) args)))
+          (str "-scheme must be the product name: " (pr-str args)))
+      (is (not-any? #(str/includes? % "KotobaShell") args)
+          (str "no hardcoded default may survive: " (pr-str args))))
+    (testing "the missing-file check looks for the same project"
+      (is (not-any? #(str/includes? % "KotobaShell")
+                    (get-in plan [:kotoba.cli/data :kotoba.shell/app-rows 0 :missing-files]))))))
+
+(deftest app-build-still-defaults-when-no-product-name-is-set
+  ;; The default must not move — every existing consumer and the README
+  ;; examples rely on it.
+  (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\"}"
+        output-dir (.getPath (doto (io/file (System/getProperty "java.io.tmpdir")
+                                            (str "kotoba-shell-default-" (System/nanoTime)))
+                               (.mkdirs)))
+        plan (launcher/dispatch ["app" "build" "--target" "macos"
+                                 "--manifest-edn" manifest
+                                 "--output-dir" output-dir])
+        args (get-in plan [:kotoba.cli/data :kotoba.shell/app-rows 0 :build-step :args])]
+    (is (some #(str/ends-with? % "KotobaShell.xcodeproj") args))
+    (is (= "KotobaShell" (second (drop-while #(not= "-scheme" %) args))))))
+
 (deftest app-run-requires-kotoba-runtime-and-explicit_execution
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :runtime {:kind :kotoba-wasm :surface :kotoba/dom :namespace demo.app :start start}}"
         plan (launcher/dispatch ["app" "run" "--target" "macos"
