@@ -287,8 +287,12 @@
 
 (defn actor-states [runs]
   (let [root (.getParentFile (io/file (observer/state-dir)))
-        dir (io/file root "actors")]
-    (->> (or (.listFiles dir) (make-array java.io.File 0))
+        private-root (or (System/getenv "TAMAKI_CONTROL_ROOT")
+                         (str (observer/workspace-root)
+                              "/projects/.tamaki/tamaki-control"))
+        dirs [(io/file root "actors") (io/file private-root "actors")]]
+    (->> dirs
+         (mapcat #(or (.listFiles %) (make-array java.io.File 0)))
          (filter #(and (.isFile %) (.endsWith (.getName %) ".edn")))
          (keep (fn [file]
                  (let [value (edn/read-string (slurp file))
@@ -297,8 +301,7 @@
                                       (not (.isAbsolute (io/file project))))
                                (assoc value :actor/project
                                       (.getCanonicalPath
-                                       (io/file (.getParentFile dir)
-                                                project)))
+                                       (io/file root project)))
                                value)]
                    (when (:actor/id value)
                      (let [spec (actor/validate-spec value)
@@ -316,8 +319,11 @@
                         (into {}
                               (map (fn [[gate decision]]
                                      [(name gate) (name decision)]))
-                              (:actor/hil-policy spec))}))))
-               ))))
+                                 (:actor/hil-policy spec))})))))
+         (reduce (fn [actors actor] (assoc actors (:id actor) actor)) {})
+         vals
+         (sort-by :id)
+         vec)))
 
 (def dynamics-window-ms 3600000)
 
