@@ -7,7 +7,8 @@
             [kotoba.tamaki.store :as store]))
 
 (defn state-dir []
-  (or (System/getenv "TAMAKI_STATE_DIR") "../../../tamaki/.tamaki"))
+  (or (System/getenv "TAMAKI_STATE_DIR")
+      "../../../../etzhayyim/tamaki/.tamaki"))
 
 (defn workspace-root []
   (or (System/getenv "KOTOBA_WORKSPACE_ROOT")

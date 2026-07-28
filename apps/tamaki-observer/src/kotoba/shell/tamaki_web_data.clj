@@ -58,7 +58,7 @@
 
 (defn- organism-specs []
   (let [directory (io/file (observer/workspace-root)
-                           "orgs" "kotoba-lang" "tamaki" "organisms")]
+                           "orgs" "etzhayyim" "tamaki" "organisms")]
     (->> (or (.listFiles directory) (make-array java.io.File 0))
          (filter #(and (.isFile %)
                        (.endsWith (.getName %) ".edn")))
@@ -330,7 +330,7 @@
 
 (defn business-targets []
   (let [tamaki (io/file (observer/workspace-root)
-                        "orgs" "kotoba-lang" "tamaki")
+                        "orgs" "etzhayyim" "tamaki")
         private (io/file tamaki "actors" "revenue-targets.edn")
         example (io/file tamaki "examples" "revenue-targets.example.edn")
         path (if (.isFile private) private example)]

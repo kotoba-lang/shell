@@ -3,7 +3,7 @@ set -euo pipefail
 
 shell_dir="$(cd "$(dirname "$0")/.." && pwd)"
 app_dir="$shell_dir/apps/tamaki-observer"
-tamaki_dir="${TAMAKI_PROJECT_DIR:-$(cd "$shell_dir/../tamaki" && pwd)}"
+tamaki_dir="${TAMAKI_PROJECT_DIR:-$(cd "$shell_dir/../../etzhayyim/tamaki" && pwd)}"
 workspace_root="${KOTOBA_WORKSPACE_ROOT:-$(cd "$shell_dir/../../.." && pwd)}"
 
 export TAMAKI_STATE_DIR="${TAMAKI_STATE_DIR:-$tamaki_dir/.tamaki}"

@@ -66,13 +66,13 @@
   (let [root (.toFile (java.nio.file.Files/createTempDirectory
                        "tamaki-registry" (make-array java.nio.file.attribute.FileAttribute 0)))
         manifest (io/file root "west.yml")
-        repo-dir (io/file root "orgs/kotoba-lang/tamaki/.git")]
+        repo-dir (io/file root "orgs/etzhayyim/tamaki/.git")]
     (.mkdirs repo-dir)
     (spit manifest
           (str "manifest:\n  projects:\n"
                "    - name: tamaki\n"
-               "      remote: kotoba-lang\n"
-               "      path: orgs/kotoba-lang/tamaki\n"
+               "      remote: etzhayyim\n"
+               "      path: orgs/etzhayyim/tamaki\n"
                "      userdata:\n"
                "        rad-rid: rad:z123\n"
                "    - name: shell\n"
@@ -114,10 +114,10 @@
 
 (deftest tamaki-objective-topology-exposes-actor-walk
   (let [run {:agent.run/id "run-1"
-             :agent.run/project "orgs/kotoba-lang/tamaki"}
+             :agent.run/project "orgs/etzhayyim/tamaki"}
         campaign {:tamaki.loop/id "loop-1"
                   :tamaki.loop/status :active
-                  :tamaki.loop/project "orgs/kotoba-lang/tamaki"
+                  :tamaki.loop/project "orgs/etzhayyim/tamaki"
                   :tamaki.loop/objective "grow maturity"}
         events [{:tamaki.event/run "run-1"
                  :tamaki.event/kind :issue/discovered
