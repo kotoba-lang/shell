@@ -635,11 +635,17 @@
         registry (:registry state)
         runs (:runs state)
         campaigns (:campaigns state)
+        ao-fleet (some->> events
+                          (filter #(= :ao.fleet/reconciled
+                                      (:tamaki.event/kind %)))
+                          last
+                          :tamaki.event/data)
         agents (->> runs
                     (filter #(active-statuses (:agent.run/status %)))
                     (mapv (fn [run]
                             (merge
                              {:id (:agent.run/id run)
+                              :ao (:agent.run/organism run)
                               :status (:agent.run/status run)
                               :model (:agent.run/model run)
                               :runner (:agent.run/runner run)
@@ -656,6 +662,7 @@
                   (:repos registry))
      :dependencies (:dependencies registry)
      :organisms (organism-specs)
+     :ao-fleet ao-fleet
      :git-trees (active-git-trees registry runs)
      :projects
      (into (or @project-topologies
@@ -666,6 +673,7 @@
      :actors (actor-states runs)
      :loops (mapv (fn [campaign]
                     {:id (:tamaki.loop/id campaign)
+                     :ao (:tamaki.loop/ao campaign)
                      :status (:tamaki.loop/status campaign)
                      :project (workspace-path (:tamaki.loop/project campaign))
                      :objective (:tamaki.loop/objective campaign)
@@ -740,7 +748,8 @@
       (spit next-file (json/write-str snapshot))
       (spit (io/file (.getParentFile target-file) "topology.edn")
             (pr-str (select-keys snapshot
-                                 [:repos :dependencies :agents :loops
+                                 [:repos :dependencies :organisms :ao-fleet
+                                  :agents :loops
                                   :repo-stats :system-dynamics :finance]))))
     (java.nio.file.Files/move
      (.toPath next-file) (.toPath target-file)
