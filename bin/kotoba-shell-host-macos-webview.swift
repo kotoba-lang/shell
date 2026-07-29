@@ -82,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   var visualTimer: Timer?
   var reloadTimer: Timer?
   var bundleRevision: String?
+  var snapshotRevision: String?
   var visualSnapshotInFlight = false
   init(root: URL) { self.root = root }
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -106,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-    window.title = "Tamaki Observatory · Three.js"
+    window.title = "Tamaki Observatory"
     window.minSize = NSSize(width: 720, height: 520)
     window.level = .floating
     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -158,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
       return
     }
     bundleRevision = next
+    snapshotRevision = nil
     print("web: bundle-changed; reloading"); fflush(stdout)
     let request = URLRequest(
       url: URL(string: "tamaki://app/index.html")!,
@@ -166,11 +168,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
   }
   func pushSnapshot() {
     let file = root.appendingPathComponent("snapshot.json")
-    guard let data = try? Data(contentsOf: file),
+    let values = try? file.resourceValues(forKeys: [
+      .contentModificationDateKey, .fileSizeKey])
+    let revision = "\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values?.fileSize ?? 0)"
+    guard revision != snapshotRevision,
+          let data = try? Data(contentsOf: file),
           let json = String(data: data, encoding: .utf8) else { return }
     webView?.evaluateJavaScript(
-      "window.tamakiReceive && window.tamakiReceive(\(json))") { _, error in
-        if let error = error { print("snapshot bridge: \(error)") }
+      "window.tamakiReceive ? (window.tamakiReceive(\(json)), true) : false"
+    ) { [weak self] result, error in
+        if let error = error {
+          print("snapshot bridge: \(error)")
+        } else if (result as? Bool) == true {
+          self?.snapshotRevision = revision
+        }
       }
   }
   func writeVisualSnapshot() {

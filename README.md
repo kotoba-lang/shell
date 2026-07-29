@@ -367,6 +367,14 @@ counts, and recent AgentRuns. The shell runtime re-renders when
 bin/kotoba-shell-tamaki-observer
 ```
 
+The default `Current work`, `Flow`, and `Finance` surfaces use the same
+light-mode Digital Agency Design System contract as `cloud-itonami-app`.
+Components and vendored tokens come from the existing shared
+`kotoba-lang/jp-go-digital-design-system` repository; Observatory-specific
+layout remains local. `3D ecosystem` is a separate, on-demand Three.js view,
+so the full Git tree and living-garden renderer do not consume WebGL resources
+while the operational dashboard is open.
+
 Set `TAMAKI_PROJECT_DIR` or `TAMAKI_STATE_DIR` when observing another checkout.
 The observer never controls or mutates the agent loop; authority remains with
 Tamaki and Radicle.

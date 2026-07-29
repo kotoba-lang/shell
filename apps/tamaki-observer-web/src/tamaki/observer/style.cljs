@@ -475,3 +475,179 @@
        [".board-empty" {:grid-column "1 / -1" :padding 40 :text-align :center
                         :color "#6f6678" :border "1px dashed #ffffff18"
                         :border-radius 12}]))
+
+;; The default Observatory surface follows the same DADS-backed workspace
+;; shell as cloud-itonami-app. The immersive Three.js surface deliberately
+;; keeps the original dark glass controls through `header`.
+(def dads-shell
+  (css {:background "var(--color-neutral-solid-gray-50)"
+        :color "var(--color-neutral-solid-gray-900)"
+        :font "16px var(--font-family-sans), -apple-system, sans-serif"
+        :color-scheme :light}
+       [".surface-hidden" {:display :none}]
+       ["button,select" {:font :inherit}]
+       ["button:focus-visible,select:focus-visible"
+        {:outline "4px solid var(--color-focus-yellow)"
+         :outline-offset 2}]))
+
+(def navigation
+  (css {:position :fixed :z-index 4 :left 0 :top 0 :bottom 0 :width 244
+        :display :flex :flex-direction :column :gap 16
+        :padding "24px 16px" :overflow-y :auto
+        :background "var(--color-neutral-white)"
+        :border-right "1px solid var(--color-neutral-solid-gray-200)"
+        :color "var(--color-neutral-solid-gray-900)"}
+       ["h1" {:margin 0 :font-size 22 :line-height 1.45}]
+       [".metrics" {:color "var(--color-neutral-solid-gray-600)"
+                    :font-size 13 :line-height 1.65}]
+       ["label" {:display :grid :gap 6 :color
+                 "var(--color-neutral-solid-gray-700)"
+                 :font-size 13 :font-weight 700}]
+       ["select" {:width "100%" :min-height 44 :padding "8px 34px 8px 10px"
+                  :border "1px solid var(--color-neutral-solid-gray-300)"
+                  :border-radius 8 :background "var(--color-neutral-white)"
+                  :color "var(--color-neutral-solid-gray-900)"}]
+       [".garden-views" {:display :grid :gap 6}]
+       [".garden-views > span" {:color "var(--color-neutral-solid-gray-600)"
+                                :font-size 13 :font-weight 700}]
+       [".garden-views .dads-button" {:width "100%" :justify-content :flex-start}]
+       [".garden-views .dads-button[data-selected='true']"
+        {:box-shadow "inset 4px 0 0 var(--color-key-900)"}]
+       [".bonsai-state" {:display :none}]
+       [".organism-scopes" {:display :flex :flex-wrap :wrap :gap 6
+                            :padding-top 14
+                            :border-top "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".organism-scopes .dads-button" {:min-height 36 :padding "6px 10px"
+                                         :font-size 12}]
+       [".voice-row" {:display :grid :grid-template-columns "1fr 1fr" :gap 6}]
+       [".voice-row .dads-button" {:min-height 44 :padding "8px 6px"
+                                   :font-size 12}]
+       [".voice-status" {:position :absolute :width 1 :height 1 :overflow :hidden
+                         :clip "rect(0 0 0 0)"}]
+       [".actor-state,.model-usage" {:display :grid :gap 6}]
+       [".actor-card,.usage-card" {:min-width 0 :padding "8px 10px"
+                                   :border-radius 8
+                                   :background "var(--color-neutral-solid-gray-50)"
+                                   :border "1px solid var(--color-neutral-solid-gray-200)"
+                                   :font "11px ui-monospace, monospace"
+                                   :overflow :hidden :text-overflow :ellipsis
+                                   :white-space :nowrap}]
+       [".actor-card b,.usage-card b"
+        {:display :block :color "var(--color-key-900)"
+         :overflow :hidden :text-overflow :ellipsis}]
+       [".usage-card span" {:display :block :color
+                            "var(--color-neutral-solid-gray-600)"}]
+       [".usage-card span:last-child" {:display :none}]))
+
+(def dads-operations
+  (css {:left 244 :right 0 :top 0 :bottom 0 :z-index 3
+        :grid-template-rows "82px 88px minmax(0,1fr)"
+        :gap 16 :padding "28px clamp(20px,4vw,48px)"
+        :border 0 :border-radius 0 :box-shadow :none
+        :background "var(--color-neutral-solid-gray-50)"
+        :color "var(--color-neutral-solid-gray-900)"}
+       [".objective-strip" {:padding "14px 18px" :border-radius 12
+                            :background "var(--color-neutral-white)"
+                            :border "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".objective-strip small,.section-heading small"
+        {:color "var(--color-key-900)" :font-size 11}]
+       [".objective-strip strong" {:font-size 18 :line-height 1.55}]
+       [".objective-health" {:color "var(--color-neutral-solid-gray-700)"
+                             :font-size 12}]
+       [".live-dot" {:background "var(--color-semantic-success-1)"
+                     :box-shadow :none}]
+       [".scope-label,.stale-count" {:background
+                                     "var(--color-neutral-solid-gray-100)"
+                                     :color "var(--color-neutral-solid-gray-700)"}]
+       [".kpi-strip" {:gap 12}]
+       [".board-kpi" {:padding "14px 16px" :border-radius 12
+                      :background "var(--color-neutral-white)"
+                      :border "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".board-kpi small" {:color "var(--color-neutral-solid-gray-600)"
+                            :font-size 12}]
+       [".board-kpi strong" {:color "var(--color-neutral-solid-gray-900)"
+                             :font-size 25}]
+       [".board-kpi em" {:color "var(--color-neutral-solid-gray-500)"
+                         :font-size 10}]
+       [".board-kpi.green" {"--tone" "var(--color-semantic-success-1)"}]
+       [".board-kpi.amber" {"--tone"
+                            "var(--color-semantic-warning-yellow-1)"}]
+       [".board-kpi.blue" {"--tone" "var(--color-key-900)"}]
+       [".board-kpi.violet" {"--tone" "var(--color-primitive-purple-700)"}]
+       [".now-board,.flow-board" {:grid-template-rows "52px minmax(0,1fr)"}]
+       [".section-heading" {:border-bottom
+                            "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".section-heading h2" {:font-size 20}]
+       [".section-heading span" {:color "var(--color-neutral-solid-gray-600)"
+                                 :font-size 12}]
+       [".linear-workspace" {:margin-top 12 :border-radius 12
+                             :background "var(--color-neutral-white)"
+                             :border "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".work-sidebar" {:padding 14
+                         :background "var(--color-neutral-solid-gray-50)"
+                         :border-right "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".work-sidebar > small" {:color "var(--color-neutral-solid-gray-500)"
+                                 :font-size 11}]
+       [".work-sidebar button" {:min-height 40 :color
+                                "var(--color-neutral-solid-gray-700)"
+                                :font-size 13}]
+       [".work-sidebar button:hover,.work-sidebar button.selected"
+        {:background "var(--color-key-50)"
+         :color "var(--color-key-900)"}]
+       [".work-sidebar button b" {:background
+                                  "var(--color-neutral-solid-gray-200)"
+                                  :color "var(--color-neutral-solid-gray-700)"
+                                  :font-size 10}]
+       [".sidebar-divider,.work-list-header,.work-row"
+        {:border-color "var(--color-neutral-solid-gray-200)"}]
+       [".work-list-header" {:color "var(--color-neutral-solid-gray-500)"
+                             :font-size 11}]
+       [".work-row" {:min-height 58 :color "var(--color-neutral-solid-gray-800)"}]
+       [".work-row:hover" {:background "var(--color-neutral-solid-gray-50)"}]
+       [".row-title strong" {:color "var(--color-neutral-solid-gray-900)"
+                             :font-size 13}]
+       [".row-title small,.row-project,.row-agent small,.work-row time"
+        {:color "var(--color-neutral-solid-gray-600)" :font-size 11}]
+       [".row-agent b" {:color "var(--color-neutral-solid-gray-800)"
+                        :font-size 11}]
+       [".row-stage" {:background "var(--color-neutral-solid-gray-100)"
+                      :color "var(--color-neutral-solid-gray-700)"
+                      :font-size 10}]
+       [".row-stage.implement" {:background "var(--color-key-50)"
+                                :color "var(--color-key-900)"}]
+       [".row-stage.review" {:background
+                             "var(--color-neutral-solid-gray-100)"
+                             :color "var(--color-primitive-purple-800)"}]
+       [".row-stage.blocked" {:background "var(--color-primitive-red-50)"
+                              :color "var(--color-semantic-error-1)"}]
+       [".flow-column" {:background "var(--color-neutral-white)"
+                        :border "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".flow-column > header" {:border-bottom
+                                 "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".flow-column > header span" {:background
+                                      "var(--color-neutral-solid-gray-100)"}]
+       [".work-card" {:background "var(--color-neutral-white)"
+                      :border "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".work-card:hover" {:border-color "var(--color-key-600)"}]
+       [".work-project" {:color "var(--color-neutral-solid-gray-900)"}]
+       [".work-issue" {:color "var(--color-key-900)"}]
+       [".work-output" {:border-color "var(--color-neutral-solid-gray-200)"}]
+       [".work-output span,.work-output em,.work-card-head small"
+        {:color "var(--color-neutral-solid-gray-600)"}]))
+
+(def dads-finance
+  (css {:left 244 :right 0 :top 0 :bottom 0 :padding
+        "28px clamp(20px,4vw,48px)" :border 0 :border-radius 0
+        :box-shadow :none :background "var(--color-neutral-solid-gray-50)"
+        :color "var(--color-neutral-solid-gray-900)"}
+       [".finance-title" {:border-color "var(--color-neutral-solid-gray-200)"}]
+       [".finance-title small,.finance-card h3,.finance-segment span"
+        {:color "var(--color-key-900)"}]
+       [".finance-period,.finance-kpi small,.finance-line"
+        {:color "var(--color-neutral-solid-gray-600)"}]
+       [".finance-kpi,.finance-card,.finance-segment"
+        {:background "var(--color-neutral-white)"
+         :border "1px solid var(--color-neutral-solid-gray-200)"}]
+       [".finance-kpi strong,.finance-line strong"
+        {:color "var(--color-neutral-solid-gray-900)"}]
+       [".finance-line" {:border-color "var(--color-neutral-solid-gray-200)"}]))

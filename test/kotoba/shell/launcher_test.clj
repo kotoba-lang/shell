@@ -33,6 +33,14 @@
     (is (= [event-2]
            (tamaki-web-data/read-events-incrementally (.getPath root))))))
 
+(deftest tamaki-project-alias-follows-organism-authority
+  (is (= "orgs/etzhayyim/tamaki"
+         (tamaki-web-data/canonical-project-path
+          "orgs/kotoba-lang/tamaki")))
+  (is (= "orgs/kotoba-lang/agent"
+         (tamaki-web-data/canonical-project-path
+          "orgs/kotoba-lang/agent"))))
+
 (deftest tamaki-observer-projects-durable-campaigns
   (let [campaign {:tamaki.loop/id "loop-1"
                   :tamaki.loop/status :active
