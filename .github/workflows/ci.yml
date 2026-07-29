@@ -20,8 +20,8 @@ jobs:
       # library through the same sibling layout used by the west workspace.
       - uses: actions/checkout@v4
         with:
-          repository: kotoba-lang/tamaki
-          path: tamaki
+          repository: etzhayyim/tamaki
+          path: etzhayyim/tamaki
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/hil
