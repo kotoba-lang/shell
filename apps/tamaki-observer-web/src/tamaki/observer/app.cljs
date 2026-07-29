@@ -3,6 +3,7 @@
             ["three/addons/controls/OrbitControls.js" :refer [OrbitControls]]
             [clojure.string :as str]
             [datascript.core :as d]
+            [jp-go-dds.core :as dds]
             [re-frame.core :as rf]
             [reagent.dom :as rdom]
             [tamaki.observer.style :as style]
@@ -1249,16 +1250,23 @@
                   [:stocks :flows :bottleneck :failure-pressure
                    :backlog-delta :throughput])]))
 
+(declare play-sfx! spawn-pulse! set-garden-view! init-scene! dispose-scene!)
+
+(defn three-d-view? [view]
+  (contains? #{:garden :three-d} view))
+
 (defn apply-state! []
   (let [snapshot @(rf/subscribe [:snapshot])
         selected @(rf/subscribe [:selected])
         group-mode @(rf/subscribe [:group-mode])
-        organism-scope @(rf/subscribe [:organism-scope])]
+        organism-scope @(rf/subscribe [:organism-scope])
+        view @(rf/subscribe [:surface-view])]
     (when snapshot
-      (let [signature (scene-signature snapshot)]
-        (when (not= signature @topology-signature)
-          (reset! topology-signature signature)
-          (rebuild-scene! snapshot group-mode organism-scope)))
+      (when (and (three-d-view? view) @runtime)
+        (let [signature (scene-signature snapshot)]
+          (when (not= signature @topology-signature)
+            (reset! topology-signature signature)
+            (rebuild-scene! snapshot group-mode organism-scope))))
       (render-overlay! snapshot selected group-mode))))
 
 (defn fetch-snapshot! []
@@ -1269,7 +1277,14 @@
                   (apply-state!)))
       (.catch #(js/console.error "Tamaki snapshot" %))))
 
-(declare play-sfx! spawn-pulse! set-garden-view!)
+(defn set-surface-view! [view]
+  (rf/dispatch-sync [:surface-view view])
+  (if (three-d-view? view)
+    (do
+      (when-not @runtime (init-scene!))
+      (reset! topology-signature nil)
+      (apply-state!))
+    (dispose-scene!)))
 
 (defn group-mode-changed! [event]
   (play-sfx! :navigate)
@@ -1596,7 +1611,7 @@
         review-backlog (if (= scope :federation)
                          (or (get stocks "review-queue") 0)
                          (reduce + 0 (map #(or (:patches-open %) 0) repo-stats)))]
-    [:main {:class (str style/operations
+    [:main {:class (str style/operations " " style/dads-operations
                         (when-not (#{:now :flow} view) " hidden"))}
      [:section.objective-strip
       [:div
@@ -1637,10 +1652,10 @@
            [:b (+ (count (get stages :blocked)) stale-count)]]
           [:div.sidebar-divider]
           [:small "VIEWS"]
-          [:button {:on-click #(rf/dispatch [:surface-view :flow])}
+          [:button {:on-click #(set-surface-view! :flow)}
            [:span "⌘"] "Flow"]
-          [:button {:on-click #(rf/dispatch [:surface-view :garden])}
-           [:span "♧"] "Garden"]]
+          [:button {:on-click #(set-surface-view! :three-d)}
+           [:span "◇"] "3D view"]]
          [:section.work-list
           [:header.work-list-header
            [:span]
@@ -1704,7 +1719,7 @@
         observed? (= "observed" (label status "unavailable"))
         balanced? (and (number? (:balance-delta bs))
                        (zero? (:balance-delta bs)))]
-    [:main {:class (str "finance-dashboard"
+    [:main {:class (str "finance-dashboard " style/dads-finance
                         (when (not= view :finance) " hidden"))}
      [:div.finance-title
       [:div
@@ -1763,44 +1778,58 @@
 (defn shell-view []
   (let [view @(rf/subscribe [:surface-view])
         current-scope @(rf/subscribe [:organism-scope])
-        garden? (= view :garden)]
-  [:div {:class (str style/app " " style/finance)}
-   [:canvas#scene {:class (str style/scene (when-not garden? " surface-hidden"))}]
+        three-d? (contains? #{:garden :three-d} view)
+        view-button
+        (fn [target text]
+          [dds/button
+           text
+           {:type (if (= target view) :solid-fill :outline)
+            :size "sm"
+            :attrs {:data-selected (str (= target view))
+                    :aria-pressed (= target view)
+                    :on-click #(set-surface-view! target)}}])
+        scope-button
+        (fn [scope text]
+          [dds/button
+           text
+           {:type (if (= scope current-scope) :solid-fill :outline)
+            :size "xs"
+            :attrs {:data-selected (str (= scope current-scope))
+                    :aria-pressed (= scope current-scope)
+                    :on-click #(select-organism! scope)}}])]
+  [:div {:class (str style/app " " style/finance " " style/dads-shell
+                     (when three-d? " surface-3d"))}
+   [:canvas#scene {:class (str style/scene (when-not three-d? " surface-hidden"))}]
    [:div#effects {:class style/effects}]
-   [:header {:class (str style/glass " " style/header)}
+   [:header {:class (if three-d?
+                      (str style/glass " " style/header)
+                      style/navigation)}
+    (when-not three-d?
+      [:p.workspace-eyebrow "ARTIFICIAL ORGANISM"])
     [:h1 "Tamaki Observatory"]
     [:div#metrics.metrics "Connecting…"]
-    [:label "Group"
+    [:label "表示単位"
      [:select#grouping {:on-change group-mode-changed!}
-      [:option {:value "org"} "organization"]
-      [:option {:value "project"} "project"]
-      [:option {:value "sync"} "west sync"]]]
+      [:option {:value "org"} "組織"]
+      [:option {:value "project"} "プロジェクト"]
+      [:option {:value "sync"} "同期状態"]]]
     [:div.garden-views
-     [:span "View"]
-     [:button {:type "button"
-               :class (when (= view :now) "selected")
-               :on-click #(rf/dispatch [:surface-view :now])}
-      "Now"]
-     [:button {:type "button"
-               :class (when (= view :flow) "selected")
-               :on-click #(rf/dispatch [:surface-view :flow])}
-      "Flow"]
-     [:button {:type "button"
-               :class (when garden? "selected")
-               :on-click #(rf/dispatch [:surface-view :garden])}
-      "Garden"]
-     [:button {:type "button"
-               :class (when (= view :finance) "selected")
-               :on-click #(rf/dispatch [:surface-view :finance])}
-      "Finance"]
-     (when garden?
+     [:span "表示"]
+     (view-button :now "現在の活動")
+     (view-button :flow "成果フロー")
+     (view-button :three-d "3D 生態系")
+     (view-button :finance "会計")
+     (when three-d?
        [:<>
-        [:button {:type "button" :on-click #(set-garden-view! :world)}
-         "World"]
-        [:button {:type "button" :on-click #(set-garden-view! :colony)}
-         "Colony"]
-        [:button {:type "button" :on-click #(set-garden-view! :organism)}
-         "Organism"]])]
+        [dds/button "全体"
+         {:type :text :size "xs"
+          :attrs {:on-click #(set-garden-view! :world)}}]
+        [dds/button "群体"
+         {:type :text :size "xs"
+          :attrs {:on-click #(set-garden-view! :colony)}}]
+        [dds/button "個体"
+         {:type :text :size "xs"
+          :attrs {:on-click #(set-garden-view! :organism)}}]])]
     [:div#bonsai-state.bonsai-state
      [:b "Bonsai care"]
      [:span "Git treeを観察中…"]]
@@ -1812,24 +1841,22 @@
                          [:jk-luxury "JK Luxury"]
                          [:gftdcojp "GFTD"]]]
        ^{:key scope}
-       [:button {:type "button"
-                 :class (when (= scope current-scope) "selected")
-                 :on-click #(select-organism! scope)}
-        text])]
+       (scope-button scope text))]
     [:div.voice-row
-     [:button.voice-button {:type "button" :on-click start-voice!}
-      "🎙 Tamaki に話す"]
+     [dds/button "Tamaki に話す"
+      {:type :solid-fill :size "sm" :id "voice-button"
+       :attrs {:on-click start-voice!}}]
      [:span#voice-status.voice-status
       "voice intent → supervisor queue"]
-     [:button#sound-toggle.sound-button
-      {:type "button" :on-click toggle-sound!}
-      "♫ ambient off"]]
+     [dds/button "♫ ambient off"
+      {:type :outline :size "sm" :id "sound-toggle"
+       :attrs {:on-click toggle-sound!}}]]
     [:div#actor-state.actor-state]
     [:div#model-usage.model-usage]]
    [operations-board]
    [finance-panel]
    [:aside#inspector {:class (str style/glass " " style/inspector
-                                  (when-not garden? " surface-hidden"))}
+                                  (when-not three-d? " surface-hidden"))}
     [:h2 "Workspace"]
     [:div#details.details "Select a repository tile"]
     [:h2 "Source / PR results"]
@@ -1838,10 +1865,10 @@
     [activity-panel]]
    [:section#system-dynamics
     {:class (str style/glass " " style/dynamics
-                 (when-not garden? " surface-hidden"))}
+                 (when-not three-d? " surface-hidden"))}
     [:b "System dynamics"] [:span "Connecting…"]]
    [:div#legend {:class (str style/glass " " style/legend
-                            (when-not garden? " surface-hidden"))}
+                            (when-not three-d? " surface-hidden"))}
     "drag rotate · wheel zoom · click repo/agent" [:br]
     [:span.live "◆ walking agent actor"] "　"
     [:span.sync "● synced"] "　"
@@ -2016,7 +2043,6 @@
   (rf/dispatch-sync [:organism-scope :federation])
   (rf/dispatch-sync [:activity-agent "all"])
   (mount-shell!)
-  (init-scene!)
   (set! (.-tamakiReceive js/window)
         (fn [snapshot]
           (let [value (js->clj snapshot :keywordize-keys true)]
@@ -2029,5 +2055,6 @@
   (dispose-scene!)
   (mount-shell!)
   (reset! topology-signature nil)
-  (init-scene!)
-  (apply-state!))
+  (when (three-d-view? @(rf/subscribe [:surface-view]))
+    (init-scene!)
+    (apply-state!)))

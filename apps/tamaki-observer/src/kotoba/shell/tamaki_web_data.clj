@@ -17,6 +17,15 @@
   (atom {:path nil :offset 0 :events []}))
 (declare run-project workspace-path)
 
+(def legacy-project-aliases
+  "Paths retained in durable AgentRun history after a repository authority
+  moved. Projection canonicalizes them before repository lookup so the 2D
+  workspace and complete 3D Git tree observe the same living organism."
+  {"orgs/kotoba-lang/tamaki" "orgs/etzhayyim/tamaki"})
+
+(defn canonical-project-path [path]
+  (get legacy-project-aliases path path))
+
 (defn read-events-incrementally
   "Read only complete records appended since the previous projection.
   The event store is one EDN value per line. An incomplete final write is left
@@ -171,10 +180,13 @@
   (let [root (some-> (or (System/getenv "KOTOBA_WORKSPACE_ROOT")
                          (observer/workspace-root))
                      io/file .getAbsolutePath)
-        absolute (some-> path io/file .getAbsolutePath)]
-    (if (and root absolute (.startsWith absolute (str root java.io.File/separator)))
-      (subs absolute (inc (count root)))
-      path)))
+        absolute (some-> path io/file .getAbsolutePath)
+        relative (if (and root absolute
+                          (.startsWith absolute
+                                       (str root java.io.File/separator)))
+                   (subs absolute (inc (count root)))
+                   path)]
+    (canonical-project-path relative)))
 
 (defn- run-project [run]
   (workspace-path

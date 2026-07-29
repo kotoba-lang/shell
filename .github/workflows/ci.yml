@@ -15,42 +15,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: shell
+          path: orgs/kotoba-lang/shell
       # Shell's Tamaki Observatory and test alias consume the public Tamaki
       # library through the same sibling layout used by the west workspace.
       - uses: actions/checkout@v4
         with:
-          repository: kotoba-lang/tamaki
-          path: tamaki
+          repository: etzhayyim/tamaki
+          path: orgs/etzhayyim/tamaki
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/hil
-          path: hil
+          path: orgs/kotoba-lang/hil
       # launcher.clj's substrate-readiness check reads these siblings by
       # hardcoded relative path (../dom-gpu, ../browser).
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/dom-gpu
-          path: dom-gpu
+          path: orgs/kotoba-lang/dom-gpu
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/browser
-          path: browser
+          path: orgs/kotoba-lang/browser
       # `e2e stack` closes the actual aiueos -> kototama -> shell -> kotobase
       # receipt loop. Keep its sibling repos present in CI instead of silently
       # weakening the test when running outside the west superproject.
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/aiueos
-          path: aiueos
+          path: orgs/kotoba-lang/aiueos
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/kototama
-          path: kototama
+          path: orgs/kotoba-lang/kototama
       - uses: actions/checkout@v4
         with:
           repository: kotoba-lang/kotobase
-          path: kotobase
+          path: orgs/kotoba-lang/kotobase
       - uses: DeLaGuardo/setup-clojure@13.4
         with:
           cli: latest
@@ -59,9 +59,9 @@ jobs:
       # ブランチ)。CI にも無いと launcher_test.clj の app-scaffold テストが
       # xcodegen 不在のまま "動いたことにする" 偽陽性になる。
       - run: brew install xcodegen
-      - working-directory: shell
+      - working-directory: orgs/kotoba-lang/shell
         run: clojure -M:test
-      - working-directory: shell
+      - working-directory: orgs/kotoba-lang/shell
         run: clojure -M:lint
       # ADR-2607081015 follow-up(native-render-pipeline, build-step-timeouts):
       # unit test は :xcodegen-ok?/ファイル存在だけを確認しており、xcodegen が
@@ -71,14 +71,14 @@ jobs:
       # CI が先に検出できていたはず)。scaffold→build --execute を実行し、
       # xcodebuild が本当に成功することを毎回確認する。
       - name: app build smoke test (macOS)
-        working-directory: shell
+        working-directory: orgs/kotoba-lang/shell
         run: |
           ./bin/kotoba-shell app scaffold --target macos --app-id dev.kotoba.ci-smoke \
             --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
           ./bin/kotoba-shell app build --target macos --execute --app-id dev.kotoba.ci-smoke \
             --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
       - name: app build smoke test (iOS simulator SDK)
-        working-directory: shell
+        working-directory: orgs/kotoba-lang/shell
         run: |
           ./bin/kotoba-shell app scaffold --target ios --app-id dev.kotoba.ci-smoke \
             --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
@@ -102,7 +102,7 @@ jobs:
           distribution: temurin
           java-version: "17"
       - name: app build smoke test (Android)
-        working-directory: shell
+        working-directory: orgs/kotoba-lang/shell
         run: |
           ./bin/kotoba-shell app scaffold --target android --app-id dev.kotoba.ci-smoke \
             --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
