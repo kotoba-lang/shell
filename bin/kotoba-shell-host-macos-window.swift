@@ -10,7 +10,22 @@ struct SurfaceNode {
   var attrs: [String: String] = [:]
 }
 
-final class KotobaActionTarget: NSObject {
+final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
+  // Written when a surface is built: an action id -> its declared endpoint and
+  // request body, and an input id -> that field's current text.
+  var endpoints: [String: String] = [:]
+  var bodies: [String: String] = [:]
+  var inputValues: [String: String] = [:]
+
+  // The only reason a field takes this object as its delegate: keep the stored
+  // text current as it is typed, so an action fired later carries what the
+  // person actually wrote.
+  func controlTextDidChange(_ notification: Notification) {
+    guard let field = notification.object as? NSTextField,
+          let inputId = field.identifier?.rawValue else { return }
+    inputValues[inputId] = field.stringValue
+  }
+
   @objc func perform(_ sender: NSButton) {
     let action = sender.identifier?.rawValue ?? "unknown"
     if action == "ingest/pick-file" {
@@ -19,13 +34,24 @@ final class KotobaActionTarget: NSObject {
       panel.canChooseDirectories = false
       panel.allowedContentTypes = [.data]
       if panel.runModal() == .OK, let path = panel.url?.path {
-        print("{\"event\":\"input/action\",\"action\":\"ingest/file-selected\",\"path\":\"\(path)\"}"); fflush(stdout)
+        emit(["event": "input/action", "action": "ingest/file-selected", "path": path])
       } else {
-        print("{\"event\":\"input/action-cancelled\",\"action\":\"\(action)\"}"); fflush(stdout)
+        emit(["event": "input/action-cancelled", "action": action])
       }
-    } else {
-      print("{\"event\":\"input/action\",\"action\":\"\(action)\"}"); fflush(stdout)
+      return
     }
+    // The action consumer reads `.value` as the payload, so a button that
+    // declares data-input-id has to carry that field's text. Built through
+    // JSONSerialization because the text is arbitrary and would otherwise
+    // break the line as soon as it contained a quote or newline.
+    var event: [String: Any] = ["event": "input/action", "action": action]
+    if let inputId = sender.cell?.representedObject as? String {
+      event["input"] = inputId
+      event["value"] = inputValues[inputId] ?? ""
+    }
+    if let endpoint = endpoints[action] { event["endpoint"] = endpoint }
+    if let body = bodies[action] { event["body"] = body }
+    emit(event)
   }
 }
 
@@ -230,6 +256,94 @@ func writePNG(view: NSView, path: String) -> Bool {
   } catch { return false }
 }
 
+func writePNG(image: NSImage, path: String) -> Bool {
+  guard let tiff = image.tiffRepresentation,
+        let rep = NSBitmapImageRep(data: tiff),
+        let data = rep.representation(using: .png, properties: [:]) else { return false }
+  do {
+    try FileManager.default.createDirectory(at: URL(fileURLWithPath: path).deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    try data.write(to: URL(fileURLWithPath: path))
+    return true
+  } catch { return false }
+}
+
+// Injected before any page script, so it observes failures the page would
+// otherwise swallow. A single unresolved lookup inside DOMContentLoaded takes a
+// whole surface down, and that has to be reportable with no browser attached.
+let webErrorHook = """
+window.__kotobaErrors = [];
+window.addEventListener('error', (event) => {
+  window.__kotobaErrors.push(String(event.message)
+    + ' @ ' + String(event.filename) + ':' + String(event.lineno));
+});
+window.addEventListener('unhandledrejection', (event) => {
+  window.__kotobaErrors.push('unhandledrejection: ' + String(event.reason));
+});
+(() => {
+  const original = console.error;
+  console.error = (...args) => {
+    window.__kotobaErrors.push('console.error: ' + args.map(String).join(' '));
+    original.apply(console, args);
+  };
+})();
+"""
+
+// A web surface renders in a separate process, so `cacheDisplay` cannot see it
+// — capture through WKWebView.takeSnapshot, and only once the page has actually
+// finished loading rather than after a fixed delay.
+final class KotobaWebDelegate: NSObject, WKNavigationDelegate {
+  let smoke: Bool
+  let screenshotPath: String?
+  let settleSeconds: Double
+  private var finished = false
+
+  init(smoke: Bool, screenshotPath: String?, settleSeconds: Double) {
+    self.smoke = smoke
+    self.screenshotPath = screenshotPath
+    self.settleSeconds = settleSeconds
+  }
+
+  private func capture(_ webView: WKWebView) {
+    webView.evaluateJavaScript("JSON.stringify(window.__kotobaErrors || [])") { value, _ in
+      emit(["event": "web/errors", "errors": (value as? String) ?? "[]"])
+      guard let path = self.screenshotPath else {
+        emit(["event": "lifecycle/smoke-ready"])
+        NSApp.terminate(nil)
+        return
+      }
+      webView.takeSnapshot(with: nil) { image, error in
+        let ok = image.map { writePNG(image: $0, path: path) } ?? false
+        emit(["event": "visual/captured", "ok": ok, "path": path,
+              "error": error?.localizedDescription ?? ""])
+        emit(["event": "lifecycle/smoke-ready"])
+        NSApp.terminate(nil)
+      }
+    }
+  }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    emit(["event": "web/loaded", "url": webView.url?.absoluteString ?? "",
+          "title": webView.title ?? ""])
+    guard smoke, !finished else { return }
+    finished = true
+    // Let first paint and the page's own DOMContentLoaded work settle.
+    DispatchQueue.main.asyncAfter(deadline: .now() + settleSeconds) { self.capture(webView) }
+  }
+
+  private func fail(_ error: Error) {
+    emit(["event": "web/failed", "message": error.localizedDescription])
+    guard smoke, !finished else { return }
+    finished = true
+    NSApp.terminate(nil)
+  }
+
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
+               withError error: Error) { fail(error) }
+  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+               withError error: Error) { fail(error) }
+}
+
 // Minimal T1 native boundary. Kotoba owns application/source semantics;
 // this process owns only AppKit windowing, input, resize, and lifecycle.
 final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
@@ -309,10 +423,12 @@ let minWidth = Double(argument("--min-width") ?? "390") ?? 390
 let minHeight = Double(argument("--min-height") ?? "320") ?? 320
 let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
 let webURL = argument("--web-url").flatMap(URL.init(string:))
+let settleSeconds = Double(argument("--settle-seconds") ?? "1.5") ?? 1.5
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+// NSWindow.delegate is weak, so this top-level binding is what keeps the
+// delegate alive for the life of the process.
 let delegate = KotobaWindowDelegate(smoke: smoke)
-retainedWindowDelegate = delegate
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
 window.title = title
 if floatingWindow {
@@ -351,17 +467,60 @@ func commitSurface(_ surface: (nodes: [Int: SurfaceNode], root: Int?), reason: S
   }
   emit(["event": "surface/committed", "reason": reason, "ops": surface.nodes.count])
 }
-commitSurface(surface, reason: "launch")
-window.contentView?.addSubview(scroll)
+// `--web-url` hosts an app's web surface. Until this existed the flag was
+// parsed and discarded, so every app exporting KOTOBA_SHELL_WEB_URL silently
+// got the kotoba:dom surface instead.
+var retainedWebDelegate: KotobaWebDelegate?
+var retainedWebView: WKWebView?
+if let webURL {
+  let configuration = WKWebViewConfiguration()
+  let controller = WKUserContentController()
+  controller.addUserScript(WKUserScript(source: webErrorHook,
+                                        injectionTime: .atDocumentStart,
+                                        forMainFrameOnly: true))
+  configuration.userContentController = controller
+  let webView = WKWebView(frame: window.contentView?.bounds ?? .zero,
+                          configuration: configuration)
+  webView.autoresizingMask = [.width, .height]
+  let webDelegate = KotobaWebDelegate(smoke: smoke, screenshotPath: screenshotPath,
+                                      settleSeconds: settleSeconds)
+  webView.navigationDelegate = webDelegate
+  retainedWebDelegate = webDelegate
+  retainedWebView = webView
+  window.contentView?.addSubview(webView)
+  if webURL.isFileURL {
+    webView.loadFileURL(webURL, allowingReadAccessTo: webURL.deletingLastPathComponent())
+  } else {
+    webView.load(URLRequest(url: webURL))
+  }
+} else {
+  commitSurface(surface, reason: "launch")
+  window.contentView?.addSubview(scroll)
+}
 window.center()
-window.makeKeyAndOrderFront(nil)
-app.activate(ignoringOtherApps: true)
-if let document = scroll.documentView {
+if smoke {
+  // An observation boundary must not become the active app: this machine runs
+  // many concurrent sessions, and stealing activation corrupts whichever one is
+  // being typed into.
+  app.setActivationPolicy(.accessory)
+  window.level = .normal
+  window.orderFrontRegardless()
+} else {
+  window.makeKeyAndOrderFront(nil)
+  app.activate(ignoringOtherApps: true)
+}
+if webURL == nil, let document = scroll.documentView {
   scroll.contentView.scroll(to: NSPoint(x: 0,
                                         y: max(0, document.frame.height - scroll.contentView.bounds.height - 16)))
   scroll.reflectScrolledClipView(scroll.contentView)
 }
-print("{\"event\":\"lifecycle/launch\",\"surface\":\"kotoba:dom\",\"runtime\":\"native-appkit\",\"ops\":\(surface.nodes.count)}"); fflush(stdout)
+if let webURL {
+  emit(["event": "lifecycle/launch", "surface": "web", "runtime": "native-webkit",
+        "url": webURL.absoluteString])
+} else {
+  emit(["event": "lifecycle/launch", "surface": "kotoba:dom",
+        "runtime": "native-appkit", "ops": surface.nodes.count])
+}
 
 // Newline-delimited JSON control plane. A live reload only replaces the native
 // surface; the NSWindow and its focus, geometry and scroll identity stay alive.
@@ -381,7 +540,9 @@ FileHandle.standardInput.readabilityHandler = { handle in
     DispatchQueue.main.async { commitSurface(surfaceNodes(from: opsJSON), reason: "hot-reload") }
   }
 }
-if smoke {
+// A web surface captures from its navigation delegate once loading finishes;
+// only the kotoba:dom surface is ready after a fixed delay.
+if smoke, webURL == nil {
   DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
     // Visual capture is an observation boundary: do not inherit an IME
     // composition or focus animation from whichever app was active before us.

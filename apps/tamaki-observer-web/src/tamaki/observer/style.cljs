@@ -487,7 +487,7 @@
        [".surface-hidden" {:display :none}]
        ["button,select" {:font :inherit}]
        ["button:focus-visible,select:focus-visible"
-        {:outline "4px solid var(--color-focus-yellow)"
+        {:outline "4px solid var(--color-primitive-yellow-300)"
          :outline-offset 2}]))
 
 (def navigation

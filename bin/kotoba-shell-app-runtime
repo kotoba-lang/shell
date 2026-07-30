@@ -70,6 +70,9 @@ launch() {
     --width "${KOTOBA_SHELL_WIDTH:-430}" --height "${KOTOBA_SHELL_HEIGHT:-780}"
     --min-width "${KOTOBA_SHELL_MIN_WIDTH:-390}" --min-height "${KOTOBA_SHELL_MIN_HEIGHT:-640}"
     --ops-json "$(<"$ops")")
+  # KOTOBA_SHELL_WEB_URL was exported by apps but never reached the host, so the
+  # web surface silently fell back to kotoba:dom.
+  [[ -n "${KOTOBA_SHELL_WEB_URL:-}" ]] && host_args+=(--web-url "$KOTOBA_SHELL_WEB_URL")
   [[ "$floating_enabled" == "1" ]] && host_args+=(--floating)
   "$host" "${host_args[@]}" <"$control_pipe" >"$event_pipe" 2>>"$log" &
   child=$!
