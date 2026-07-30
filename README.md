@@ -237,7 +237,9 @@ implemented.
 Default host runners are now bundled:
 
 - `bin/kotoba-shell-host-macos`: local macOS process runner with clipboard,
-  app-data fs, http fetch, notifications, and keychain command adapters.
+  app-data fs, http fetch, notifications, keychain, and EventKit Calendar
+  adapters. Calendar reads request native macOS Calendar access and return a
+  structured denial receipt until it is granted.
 - `bin/kotoba-shell-host-ios`: iOS simulator/device bridge through
   `xcrun simctl spawn booted`.
 - `bin/kotoba-shell-host-android`: Android device bridge through `adb shell`.
@@ -253,6 +255,18 @@ and ordinary web UI libraries are first-class. `kotoba:dom` remains a
 compatibility/input ABI for older surfaces, not a competing default renderer.
 Native hosts provide the WebKit window, lifecycle, custom-scheme bundle
 delivery, diagnostics, and provider capabilities.
+
+### Typed text input actions
+
+Apps bind a field and an explicit submit action with `kotoba.shell.input/field`
+and `kotoba.shell.input/submit`. The native host owns IME/editing state and emits
+the current string as the action event's `value`; the app owns validation,
+persistence, and effects. Input changes alone never invoke an app action.
+
+While an explicit action is running, the app runtime re-evaluates and commits
+the read-only surface every `KOTOBA_SHELL_ACTION_REFRESH_SECONDS` (default
+`0.5`). This streams durable ledger/checkpoint progress without exposing a
+mutable token buffer. Set it to `0` to disable action pulses.
 
 ### Typed text input actions
 
@@ -366,14 +380,6 @@ counts, and recent AgentRuns. The shell runtime re-renders when
 ```sh
 bin/kotoba-shell-tamaki-observer
 ```
-
-The default `Current work`, `Flow`, and `Finance` surfaces use the same
-light-mode Digital Agency Design System contract as `cloud-itonami-app`.
-Components and vendored tokens come from the existing shared
-`kotoba-lang/jp-go-digital-design-system` repository; Observatory-specific
-layout remains local. `3D ecosystem` is a separate, on-demand Three.js view,
-so the full Git tree and living-garden renderer do not consume WebGL resources
-while the operational dashboard is open.
 
 Set `TAMAKI_PROJECT_DIR` or `TAMAKI_STATE_DIR` when observing another checkout.
 The observer never controls or mutates the agent loop; authority remains with
