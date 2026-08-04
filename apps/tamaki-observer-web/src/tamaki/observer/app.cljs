@@ -38,6 +38,8 @@
   (fn [db [_ agent-id]] (assoc db :activity-agent agent-id)))
 (rf/reg-event-db :surface-view
   (fn [db [_ view]] (assoc db :surface-view view)))
+(rf/reg-event-db :work-lens
+  (fn [db [_ lens]] (assoc db :work-lens lens)))
 (rf/reg-sub :snapshot (fn [db _] (:snapshot db)))
 (rf/reg-sub :selected (fn [db _] (:selected db)))
 (rf/reg-sub :group-mode (fn [db _] (or (:group-mode db) :org)))
@@ -47,6 +49,8 @@
   (fn [db _] (or (:activity-agent db) "all")))
 (rf/reg-sub :surface-view
   (fn [db _] (or (:surface-view db) :now)))
+(rf/reg-sub :work-lens
+  (fn [db _] (or (:work-lens db) :organism)))
 
 (defn index-datoms! [snapshot]
   (d/reset-conn! topology-db (d/empty-db topology-schema))
@@ -1574,6 +1578,86 @@
       [:small model]]
      [:time (elapsed-label event)] ]))
 
+(def active-loop-statuses #{"active" "running" "queued" "leased"})
+
+(defn active-loop? [loop]
+  (contains? active-loop-statuses
+             (label (or (:tamaki.loop/status loop) (:status loop)) "unknown")))
+
+(defn actor-state [actor]
+  (cond
+    (pos? (or (:blocked actor) 0)) :blocked
+    (pos? (or (:running actor) 0)) :working
+    (pos? (or (:queued actor) 0)) :queued
+    (pos? (or (:spawn actor) 0)) :needs-agent
+    :else :resident))
+
+(def actor-state-copy
+  {:blocked "blocked"
+   :working "working"
+   :queued "queued"
+   :needs-agent "agent待ち"
+   :resident "resident"})
+
+(defn actor-card [actor]
+  (let [state (actor-state actor)]
+    [:article {:class (str "organism-actor " (name state))}
+     [:header
+      [:span.actor-glyph "◉"]
+      [:div
+       [:strong (str/replace (str (:id actor)) #"^:" "")]
+       [:small (str/replace (str (:type actor)) #"^:" "")]]
+      [:em (get actor-state-copy state)]]
+     [:p (or (:objective actor) "deterministic responsibility")]
+     [:footer
+      [:span.actor-project (:project actor)]
+      [:span (str "desired " (or (:desired actor) 0))]
+      [:span (str "run " (or (:running actor) 0))]
+      (when (pos? (or (:spawn actor) 0))
+        [:b (str "+" (:spawn actor) " agent")])]]))
+
+(defn loop-card [snapshot loop]
+  (let [event (latest-agent-event snapshot loop)
+        runner (or (:tamaki.loop/runner loop) (:runner loop) "agent")
+        model (or (:tamaki.loop/model loop) (:model loop) "default")
+        cycles (or (:tamaki.loop/cycles loop) (:cycles loop) 0)
+        max-cycles (or (:tamaki.loop/max-cycles loop) (:max-cycles loop))
+        ao (or (:tamaki.loop/ao loop) (:ao loop))]
+    [:article.loop-agent
+     [:span.loop-pulse]
+     [:div
+      [:strong (or ao (run-id loop))]
+      [:small (or (:objective loop) "objectiveを観察中")]]
+     [:span.loop-project (agent-project loop)]
+     [:span.loop-model [:b runner] [:small model]]
+     [:span.loop-cycles
+      (if max-cycles (str cycles " / " max-cycles) (str cycles " cycles"))]
+     [:time (if event (elapsed-label event) "campaign active")]]))
+
+(defn organism-view [snapshot actors loops]
+  (let [working (filter #(#{:working :queued} (actor-state %)) actors)
+        waiting (filter #(= :needs-agent (actor-state %)) actors)
+        residents (filter #(= :resident (actor-state %)) actors)
+        visible-actors (concat working waiting residents)]
+    [:div.organism-map
+     [:section.organism-layer
+      [:header
+       [:div [:small "ACTORS / ORGANS"] [:h3 "Tamakiを構成する役割"]]
+       [:span (str (count actors) " actors · "
+                   (count waiting) " agent待ち")]]
+      [:div.actor-grid
+       (for [actor visible-actors]
+         ^{:key (:id actor)} [actor-card actor])]]
+     [:section.organism-layer.loop-layer
+      [:header
+       [:div [:small "AGENT LOOPS"] [:h3 "objectiveを歩いている実行系"]]
+       [:span (str (count loops) " active loops")]]
+      [:div.loop-list
+       (if (seq loops)
+         (for [loop loops]
+           ^{:key (run-id loop)} [loop-card snapshot loop])
+         [:p.organism-empty "active loopはありません"])]]]))
+
 (defn objective-title [snapshot]
   (or (some-> snapshot :projects first :objective)
       (some-> snapshot :organisms first :organism/objective)
@@ -1593,8 +1677,14 @@
   (let [snapshot @(rf/subscribe [:snapshot])
         view @(rf/subscribe [:surface-view])
         scope @(rf/subscribe [:organism-scope])
+        work-lens @(rf/subscribe [:work-lens])
         agents (filter #(project-in-scope? scope (agent-project %))
                        (:agents snapshot))
+        actors (filter #(project-in-scope? scope (:project %))
+                       (:actors snapshot))
+        active-loops (filter #(and (active-loop? %)
+                                   (project-in-scope? scope (agent-project %)))
+                             (:loops snapshot))
         dynamics (:system-dynamics snapshot)
         repo-stats (filter #(project-in-scope? scope (:path %))
                            (:repo-stats snapshot))
@@ -1603,6 +1693,7 @@
         active (filter #(not= :idle (heartbeat-state snapshot %)) agents)
         live-count (count (filter #(= :live (heartbeat-state snapshot %)) active))
         stale-count (count (filter #(= :stale (heartbeat-state snapshot %)) active))
+        spawn-count (reduce + 0 (map #(or (:spawn %) 0) actors))
         stages (group-by #(work-stage snapshot %) active)
         stocks (into {} (map (juxt :id :value)) (:stocks dynamics))
         issue-backlog (if (= scope :federation)
@@ -1626,16 +1717,13 @@
          [:span.stale-count (str stale-count " stale")])]]
      [:section.kpi-strip
       (for [[title value unit tone]
-            [["Active work" (count active) "runs" "green"]
-             ["Issue backlog" issue-backlog "issues" "amber"]
-             ["Review queue" review-backlog "patches" "blue"]
-             ["Integrated" (if (= scope :federation)
-                             (or (get stocks "integrated-value") (count results))
-                             (count results))
-              "results" "violet"]]]
+            [["Execution" (str (count active) " / " (count active-loops))
+              "agents / loops" "green"]
+             ["Actors" (count actors) (str spawn-count " need agent") "violet"]]]
         ^{:key title}
         [:div {:class (str "board-kpi " tone)}
-         [:small title] [:strong value] [:em unit]])]
+         [:small title]
+         [:div [:strong value] [:em unit]]])]
      (if (= view :now)
        [:section.now-board
         [:div.section-heading
@@ -1644,33 +1732,73 @@
         [:div.linear-workspace
          [:aside.work-sidebar
           [:small "WORKSPACE"]
-          [:button.selected [:span "◉"] "Active work" [:b (count active)]]
-          [:button [:span "◌"] "Discover" [:b (count (get stages :discover))]]
-          [:button [:span "◫"] "In progress" [:b (count (get stages :implement))]]
-          [:button [:span "◇"] "Review" [:b (count (get stages :review))]]
-          [:button.attention [:span "△"] "Needs attention"
-           [:b (+ (count (get stages :blocked)) stale-count)]]
+          [:button {:class (when (= work-lens :organism) "selected")
+                    :on-click #(rf/dispatch [:work-lens :organism])}
+           [:span "◎"] "Organism" [:b (count actors)]]
+          [:button {:class (when (= work-lens :agents) "selected")
+                    :on-click #(rf/dispatch [:work-lens :agents])}
+           [:span "◉"] "Agent runs" [:b (count active)]]
+          [:button {:class (when (= work-lens :actors) "selected")
+                    :on-click #(rf/dispatch [:work-lens :actors])}
+           [:span "◫"] "Actors" [:b (count actors)]]
+          [:button {:class (when (= work-lens :loops) "selected")
+                    :on-click #(rf/dispatch [:work-lens :loops])}
+           [:span "◇"] "Agent loops" [:b (count active-loops)]]
+          [:button.attention
+           {:class (str "attention "
+                        (when (= work-lens :attention) "selected"))
+            :on-click #(rf/dispatch [:work-lens :attention])}
+           [:span "△"] "Needs attention" [:b (+ spawn-count stale-count)]]
           [:div.sidebar-divider]
           [:small "VIEWS"]
           [:button {:on-click #(set-surface-view! :flow)}
            [:span "⌘"] "Flow"]
           [:button {:on-click #(set-surface-view! :three-d)}
            [:span "◇"] "3D view"]]
-         [:section.work-list
-          [:header.work-list-header
-           [:span]
-           [:span "Work item"]
-           [:span "Project"]
-           [:span "State"]
-           [:span "Agent / model"]
-           [:span "Updated"]]
-          [:div.work-list-body
-           (if (seq active)
-             (for [agent (sort-by #(case (heartbeat-state snapshot %)
-                                    :live 0 :quiet 1 :stale 2 3)
-                                  active)]
-               ^{:key (run-id agent)} [work-row snapshot agent])
-             [:div.board-empty "稼働中のagentはありません"])]]]]
+         [:section {:class (str "work-list " (name work-lens))}
+          (case work-lens
+            :organism
+            [organism-view snapshot actors active-loops]
+
+            :actors
+            [:div.actor-grid.actor-grid-full
+             (for [actor actors]
+               ^{:key (:id actor)} [actor-card actor])]
+
+            :loops
+            [:div.loop-list.loop-list-full
+             (if (seq active-loops)
+               (for [loop active-loops]
+                 ^{:key (run-id loop)} [loop-card snapshot loop])
+               [:p.organism-empty "active loopはありません"])]
+
+            :attention
+            [:div.actor-grid.actor-grid-full
+             (let [attention (filter #(#{:blocked :needs-agent}
+                                        (actor-state %))
+                                     actors)]
+               (if (seq attention)
+                 (for [actor attention]
+                   ^{:key (:id actor)} [actor-card actor])
+                 [:p.organism-empty "attention待ちはありません"]))]
+
+            [:<>
+             [:header.work-list-header
+              [:span]
+              [:span "Work item"]
+              [:span "Project"]
+              [:span "State"]
+              [:span "Agent / model"]
+              [:span "Updated"]]
+             [:div.work-list-body
+              (if (seq active)
+                (for [agent (sort-by #(case (heartbeat-state snapshot %)
+                                       :live 0 :quiet 1 :stale 2 3)
+                                     active)]
+                  ^{:key (run-id agent)} [work-row snapshot agent])
+                [:div.board-empty
+                 [:strong "現在liveなagent runはありません"]
+                 [:span "Organism viewでresident actorsとactive loopsを確認できます"]])]])]]]
        [:section.flow-board
         [:div.section-heading
          [:div [:small "FLOW"] [:h2 "Issue → Source → Review → Integrated"]]
