@@ -961,6 +961,19 @@
     (is (false? (:kotoba.cli/ok? missing)))
     (is (= :shell/app-icon-missing (:kotoba.cli/code missing)))))
 
+(deftest cli-wrapper-overrides-the-published-coordinate-rather-than-adding-to-it
+  ;; `clojure` reads the deps.edn of the directory the CLI is invoked from, and
+  ;; apps in this workspace depend on the published coordinate at a pinned
+  ;; :git/sha. A -Sdeps map under any other lib key leaves both copies on the
+  ;; classpath, and `repo-root` — a classpath resource lookup — then answers
+  ;; with whichever came first. Running the CLI inside such an app silently ran
+  ;; the pinned shell: it named target binaries under ~/.gitlibs and rejected
+  ;; manifests this checkout accepts. Same key, and -Sdeps replaces it.
+  (let [wrapper (slurp (launcher/sibling-path "bin/kotoba-shell"))
+        sdeps (re-find #"-Sdeps \"\{:deps \{([^ ]+)" wrapper)]
+    (is (some? sdeps) "the wrapper still passes a -Sdeps map")
+    (is (= "io.github.kotoba-lang/shell" (second sdeps)))))
+
 (deftest release-connect-gates-production-signing-updater-and_store_credentials
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
         app (doto (java.io.File/createTempFile "kotoba-shell" ".app") (.deleteOnExit))

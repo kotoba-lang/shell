@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The CLI runs the shell it lives in.
+#
+# `clojure` reads the deps.edn of whatever directory it is invoked from, and
+# many apps in this workspace depend on `io.github.kotoba-lang/shell` at a
+# pinned :git/sha. Naming the local root under a *different* lib key left both
+# copies on the classpath, and `repo-root` — which resolves paths from a
+# classpath resource — then found the pinned one. Running the CLI from an app
+# directory silently ran an older shell: the plan it printed named target
+# binaries under ~/.gitlibs and rejected manifests this checkout accepts.
+#
+# Using the same lib key makes the -Sdeps map, which is merged last, replace
+# that coordinate instead of sitting beside it.
 repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-exec clojure -Sdeps "{:deps {kotoba-lang/shell {:local/root \"$repo_dir\"}}}" -M -m kotoba.shell.launcher "$@"
+exec clojure \
+  -Sdeps "{:deps {io.github.kotoba-lang/shell {:local/root \"$repo_dir\"}}}" \
+  -M -m kotoba.shell.launcher "$@"
