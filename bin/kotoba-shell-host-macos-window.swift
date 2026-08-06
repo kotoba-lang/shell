@@ -416,6 +416,7 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
 
 let smoke = CommandLine.arguments.contains("--smoke")
 let title = argument("--title") ?? "Kotoba"
+let iconPath = argument("--icon")
 let screenshotPath = argument("--screenshot")
 let windowWidth = Double(argument("--width") ?? "720") ?? 720
 let windowHeight = Double(argument("--height") ?? "480") ?? 480
@@ -425,6 +426,18 @@ let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
 let webURL = argument("--web-url").flatMap(URL.init(string:))
 let settleSeconds = Double(argument("--settle-seconds") ?? "1.5") ?? 1.5
 let app = NSApplication.shared
+// The Dock and the ⌘-Tab switcher read applicationIconImage. Without this an
+// app declaring :app/icon still shows the generic host icon, which is the
+// failure the manifest key exists to prevent — so say so on stdout rather than
+// carrying on silently with the wrong icon.
+if let iconPath {
+  if let icon = NSImage(contentsOfFile: iconPath) {
+    app.applicationIconImage = icon
+    emit(["event": "app/icon-applied", "path": iconPath])
+  } else {
+    emit(["event": "app/icon-unreadable", "path": iconPath])
+  }
+}
 app.setActivationPolicy(.regular)
 // NSWindow.delegate is weak, so this top-level binding is what keeps the
 // delegate alive for the life of the process.

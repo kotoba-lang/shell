@@ -922,6 +922,45 @@
     (is (false? (:kotoba.cli/ok? unsupported)))
     (is (= :shell/app-run-target-unsupported (:kotoba.cli/code unsupported)))))
 
+(defn- host-arg-pair
+  "The flag and its value as they will reach the native host."
+  [result flag]
+  (->> (get-in result [:kotoba.cli/data :kotoba.shell/host-args])
+       (partition 2 1)
+       (some #(when (= flag (first %)) (vec %)))))
+
+(deftest app-run-hosts-a-declared-web-surface-at-its-url
+  (let [manifest (str "{:app/id \"kotoba.web\" :app/name \"Kotoba Web\""
+                      " :app/version \"0.1.0\""
+                      " :runtime {:surface :kotoba/web"
+                      " :window {:web-url \"http://localhost:1338/\" :width 1100}}}")
+        plan (launcher/dispatch ["app" "run" "--target" "macos"
+                                 "--manifest-edn" manifest])]
+    (is (:kotoba.cli/ok? plan))
+    (is (= :shell/app-run-planned (:kotoba.cli/code plan)))
+    ;; A web surface names a URL rather than an entry point, so it must plan
+    ;; without one — this used to fail as :shell/app-runtime-invalid.
+    (is (= ["--web-url" "http://localhost:1338/"] (host-arg-pair plan "--web-url")))
+    (is (= ["--title" "Kotoba Web"] (host-arg-pair plan "--title")))))
+
+(deftest app-run-passes-a-declared-icon-and-refuses-a-missing-one
+  (let [icon (doto (java.io.File/createTempFile "kotoba-icon" ".png") (.deleteOnExit))
+        manifest (fn [path]
+                   (str "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\""
+                        " :app/version \"0.1.0\" :app/icon \"" path "\""
+                        " :runtime {:kind :kotoba-wasm :surface :kotoba/dom"
+                        " :namespace demo.app :start start}}"))
+        with-icon (launcher/dispatch ["app" "run" "--target" "macos"
+                                      "--manifest-edn" (manifest (.getCanonicalPath icon))])
+        missing (launcher/dispatch ["app" "run" "--target" "macos"
+                                    "--manifest-edn" (manifest "/nonexistent/kotoba-icon.png")])]
+    (is (:kotoba.cli/ok? with-icon))
+    (is (= ["--icon" (.getCanonicalPath icon)] (host-arg-pair with-icon "--icon")))
+    ;; A declared icon that cannot be found must fail rather than launch with
+    ;; the generic host icon, which is indistinguishable from having set none.
+    (is (false? (:kotoba.cli/ok? missing)))
+    (is (= :shell/app-icon-missing (:kotoba.cli/code missing)))))
+
 (deftest release-connect-gates-production-signing-updater-and_store_credentials
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
         app (doto (java.io.File/createTempFile "kotoba-shell" ".app") (.deleteOnExit))

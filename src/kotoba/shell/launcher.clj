@@ -1292,6 +1292,21 @@
                                        :audit/execute? execute?
                                        :audit/ready-count (count (filter :ok? rows))})})}))
 
+(defn- resolve-app-icon
+  "An `:app/icon` is written relative to the manifest that declares it, so the
+  manifest stays portable across checkouts; an absolute path is taken as given.
+  Returns `[path nil]` when the file is there and `[nil declared]` when it is
+  not, because a declared icon that silently does not appear is the failure this
+  key exists to make impossible."
+  [app-dir icon]
+  (if (str/blank? (str icon))
+    [nil nil]
+    (let [declared (io/file (str icon))
+          resolved (if (.isAbsolute declared) declared (io/file app-dir (str icon)))]
+      (if (.isFile resolved)
+        [(.getCanonicalPath resolved) nil]
+        [nil (str icon)]))))
+
 (defn- app-runtime-plan
   [argv manifest target]
   (let [manifest-file (or (option-value argv "--manifest") "app.kotoba.edn")
@@ -1300,6 +1315,7 @@
         runtime (:runtime manifest)
         runtime-ns (or (:namespace runtime) (:runtime/namespace runtime))
         start-fn (or (:start runtime) (:runtime/start runtime) 'start)
+        [icon missing-icon] (resolve-app-icon app-dir (:app/icon manifest))
         binary (or (option-value argv "--window-command")
                    (if (= :ios target)
                      (sibling-path "bin/kotoba-shell-run-ios-app")
@@ -1310,6 +1326,8 @@
      :start-function (str start-fn)
      :window-command binary
      :window (get runtime :window)
+     :icon icon
+     :missing-icon missing-icon
      :screenshot (option-value argv "--screenshot")
      :smoke? (boolean (some #{"--smoke"} argv))}))
 
@@ -1329,20 +1347,35 @@
         run))))
 
 (defn app-run-result
-  "Evaluate a pure Kotoba app entry and hand its kotoba:dom ops to the native
-  host. Execution is explicit; without --execute this returns an auditable plan."
+  "Run a manifest's surface in the native host: either a pure Kotoba entry whose
+  kotoba:dom ops are evaluated here, or a `:kotoba/web` surface whose declared
+  URL the host loads directly. Execution is explicit; without --execute this
+  returns an auditable plan."
   [argv]
   (let [target (target-option argv)
         manifest (app-manifest argv)
         plan (app-runtime-plan argv manifest target)
         execute? (execute-requested? argv)
         supported? (contains? #{:macos :ios} target)
-        runtime-valid? (and (= :kotoba-wasm (get-in manifest [:runtime :kind]))
-                            (= :kotoba/dom (get-in manifest [:runtime :surface]))
-                            (not (str/blank? (:runtime-namespace plan))))
-        evaluation (when (and execute? supported? runtime-valid?) (evaluate-app-entry plan))
+        surface (get-in manifest [:runtime :surface])
+        dom-surface? (= :kotoba/dom surface)
+        ;; A web surface names a URL instead of an entry point. Its runtime kind
+        ;; is unconstrained: nothing here is a wasm guest, and demanding
+        ;; :kotoba-wasm would only make the manifest claim something untrue.
+        web-surface? (= :kotoba/web surface)
+        web-url (get-in plan [:window :web-url])
+        icon-declared-but-missing? (some? (:missing-icon plan))
+        runtime-valid? (and (not icon-declared-but-missing?)
+                            (or (and dom-surface?
+                                     (= :kotoba-wasm (get-in manifest [:runtime :kind]))
+                                     (not (str/blank? (:runtime-namespace plan))))
+                                (and web-surface?
+                                     (= :macos target)
+                                     (not (str/blank? (str web-url))))))
+        evaluation (when (and execute? supported? runtime-valid? dom-surface?)
+                     (evaluate-app-entry plan))
         ops (get-in evaluation [:app-result :kotoba.app/surface-ops])
-        ops-valid? (and (sequential? ops) (seq ops))
+        ops-valid? (or web-surface? (and (sequential? ops) (seq ops)))
         builder (when (= :macos target) (sibling-path "bin/kotoba-shell-build-macos-window"))
         rebuild? (boolean (some #{"--rebuild-window"} argv))
         build (when (and (= :macos target) execute? supported? runtime-valid? ops-valid?
@@ -1356,6 +1389,9 @@
                             "--ops-json" (json/write-str (json-ready ops))]
                            ["--title" (str (:app/name manifest))
                             "--ops-json" (json/write-str (json-ready ops))])
+                    (:icon plan) (conj "--icon" (:icon plan))
+                    (and (= :macos target) (not (str/blank? (str web-url))))
+                    (conj "--web-url" (str web-url))
                     (get-in plan [:window :width]) (conj "--width" (str (get-in plan [:window :width])))
                     (get-in plan [:window :height]) (conj "--height" (str (get-in plan [:window :height])))
                     (get-in plan [:window :min-width]) (conj "--min-width" (str (get-in plan [:window :min-width])))
@@ -1372,6 +1408,7 @@
     {:kotoba.cli/ok? ok?
      :kotoba.cli/code (cond
                         (not supported?) :shell/app-run-target-unsupported
+                        icon-declared-but-missing? :shell/app-icon-missing
                         (not runtime-valid?) :shell/app-runtime-invalid
                         (not execute?) :shell/app-run-planned
                         ran? :shell/app-ran
@@ -1383,6 +1420,10 @@
                         :kotoba.shell/manifest manifest
                         :kotoba.shell/execute? execute?
                         :kotoba.shell/runtime-plan plan
+                        ;; What the manifest actually becomes at the host
+                        ;; boundary. Without this a plan cannot be checked
+                        ;; against the manifest without launching a window.
+                        :kotoba.shell/host-args host-args
                         :kotoba.shell/evaluation evaluation
                         :kotoba.shell/ops-count (count (or ops []))
                         :kotoba.shell/build build

@@ -73,6 +73,15 @@ launch() {
   # KOTOBA_SHELL_WEB_URL was exported by apps but never reached the host, so the
   # web surface silently fell back to kotoba:dom.
   [[ -n "${KOTOBA_SHELL_WEB_URL:-}" ]] && host_args+=(--web-url "$KOTOBA_SHELL_WEB_URL")
+  # Same reason as the URL above: an app that sets an icon should get it, and a
+  # path that does not resolve should be visible rather than quietly dropped.
+  if [[ -n "${KOTOBA_SHELL_ICON:-}" ]]; then
+    if [[ -f "${KOTOBA_SHELL_ICON}" ]]; then
+      host_args+=(--icon "${KOTOBA_SHELL_ICON}")
+    else
+      printf 'KOTOBA_SHELL_ICON is set but not a file: %s\n' "${KOTOBA_SHELL_ICON}" >&2
+    fi
+  fi
   [[ "$floating_enabled" == "1" ]] && host_args+=(--floating)
   "$host" "${host_args[@]}" <"$control_pipe" >"$event_pipe" 2>>"$log" &
   child=$!
