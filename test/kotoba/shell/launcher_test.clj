@@ -961,6 +961,49 @@
     (is (false? (:kotoba.cli/ok? missing)))
     (is (= :shell/app-icon-missing (:kotoba.cli/code missing)))))
 
+(deftest macos-run-goes-through-an-app-bundle-the-manifest-names
+  (let [manifest {:app/id "cloud.itonami.app" :app/name "Cloud Itonami"
+                  :app/version "0.1.0"}
+        binary "/tmp/kotoba/target/kotoba-shell-host-macos-window"
+        exe (launcher/macos-bundle-executable binary manifest)
+        plist (launcher/macos-bundle-plist manifest "kotoba-shell-host-macos-window")]
+    ;; Per app id, beside the binary it wraps — two apps sharing one host
+    ;; checkout must not share one bundle, or the second to launch renames the
+    ;; first.
+    (is (= (str "/tmp/kotoba/target/apps/cloud.itonami.app/Cloud Itonami.app"
+                "/Contents/MacOS/kotoba-shell-host-macos-window")
+           exe))
+    (is (str/includes? plist "<key>CFBundleName</key><string>Cloud Itonami</string>"))
+    (is (str/includes? plist "<key>CFBundleIdentifier</key><string>cloud.itonami.app</string>"))
+    ;; CFBundleExecutable naming a file that is not there gives "the
+    ;; application cannot be opened", so it has to be the file's own name.
+    (is (str/includes? plist
+                       "<key>CFBundleExecutable</key><string>kotoba-shell-host-macos-window</string>"))
+    ;; No app to name, no bundle: an unnamed wrapper would rename the host to
+    ;; the empty string, which is worse than leaving it alone.
+    (is (nil? (launcher/macos-bundle-executable binary {:app/id "x"})))
+    (is (nil? (launcher/macos-bundle-executable binary {:app/name "X"})))))
+
+(deftest macos-bundle-plist-escapes-a-name-that-would-break-it
+  ;; An & in the name produced a plist macOS refuses to parse, and the app then
+  ;; launched under the executable's name with no sign of why.
+  (let [plist (launcher/macos-bundle-plist {:app/id "a.b" :app/name "Ann & Bob <ltd>"} "host")]
+    (is (str/includes? plist "<string>Ann &amp; Bob &lt;ltd&gt;</string>"))
+    (is (not (str/includes? plist "Bob <ltd>")))))
+
+(deftest app-run-plans-the-bundled-command-it-would-actually-launch
+  (let [manifest (str "{:app/id \"kotoba.web\" :app/name \"Kotoba Web\""
+                      " :app/version \"0.1.0\""
+                      " :runtime {:surface :kotoba/web"
+                      " :window {:web-url \"http://localhost:1338/\"}}}")
+        plan (launcher/dispatch ["app" "run" "--target" "macos"
+                                 "--manifest-edn" manifest])
+        command (get-in plan [:kotoba.cli/data :kotoba.shell/host-command])]
+    (is (:kotoba.cli/ok? plan))
+    ;; A plan that named the shared binary would not describe the run: the
+    ;; bundle is what decides the Dock name.
+    (is (str/includes? command "/apps/kotoba.web/Kotoba Web.app/Contents/MacOS/"))))
+
 (deftest macos-host-names-the-app-before-the-app-object-exists
   ;; Only the title bar reads NSWindow.title. The menu bar and the Dock read
   ;; CFBundleName, and this host is a bare executable with no Info.plist, so
