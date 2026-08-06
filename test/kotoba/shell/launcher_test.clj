@@ -961,6 +961,22 @@
     (is (false? (:kotoba.cli/ok? missing)))
     (is (= :shell/app-icon-missing (:kotoba.cli/code missing)))))
 
+(deftest macos-host-names-the-app-before-the-app-object-exists
+  ;; Only the title bar reads NSWindow.title. The menu bar and the Dock read
+  ;; CFBundleName, and this host is a bare executable with no Info.plist, so
+  ;; macOS fell back to the file name: a window called Cloud Itonami under a
+  ;; menu bar that said kotoba-shell-host-macos-window.
+  ;;
+  ;; NSApplication reads the name once while initialising, so writing it after
+  ;; `NSApplication.shared` compiles and runs and changes nothing visible —
+  ;; which is why the order is what this asserts, not the presence of the call.
+  (let [source (slurp (launcher/sibling-path "bin/kotoba-shell-host-macos-window.swift"))
+        named (str/index-of source "info[\"CFBundleName\"] = title")
+        app (str/index-of source "let app = NSApplication.shared")]
+    (is (some? named) "the host writes the declared name into CFBundleName")
+    (is (some? app))
+    (is (< named app) "CFBundleName is set before NSApplication.shared is created")))
+
 (deftest cli-wrapper-overrides-the-published-coordinate-rather-than-adding-to-it
   ;; `clojure` reads the deps.edn of the directory the CLI is invoked from, and
   ;; apps in this workspace depend on the published coordinate at a pinned

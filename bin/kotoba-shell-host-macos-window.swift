@@ -425,6 +425,21 @@ let minHeight = Double(argument("--min-height") ?? "320") ?? 320
 let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
 let webURL = argument("--web-url").flatMap(URL.init(string:))
 let settleSeconds = Double(argument("--settle-seconds") ?? "1.5") ?? 1.5
+// The menu bar and the Dock read CFBundleName; only the title bar reads
+// NSWindow.title. This host is a bare executable with no Info.plist, so macOS
+// fell back to the file name: an app declaring "Cloud Itonami" opened a window
+// called Cloud Itonami underneath a menu bar that said
+// kotoba-shell-host-macos-window.
+//
+// The info dictionary the KVC accessor returns is the bundle's own mutable
+// one, so writing the name into it is enough — no .app wrapper, which is what
+// Tauri builds for the same effect. It must happen before NSApplication.shared
+// exists, because the app object reads the name once while initialising.
+if let info = Bundle.main.value(forKey: "infoDictionary") as? NSMutableDictionary {
+  info["CFBundleName"] = title
+} else {
+  emit(["event": "app/name-not-applied", "title": title])
+}
 let app = NSApplication.shared
 // The Dock and the ⌘-Tab switcher read applicationIconImage. Without this an
 // app declaring :app/icon still shows the generic host icon, which is the
