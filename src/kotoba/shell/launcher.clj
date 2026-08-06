@@ -1292,6 +1292,72 @@
                                        :audit/execute? execute?
                                        :audit/ready-count (count (filter :ok? rows))})})}))
 
+(defn- plist-escape
+  [s]
+  (-> (str s)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")))
+
+(defn macos-bundle-plist
+  "The Info.plist for one app's wrapper around the shared host binary."
+  [{:app/keys [id name version]} executable]
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""
+       " \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+       "<plist version=\"1.0\">\n<dict>\n"
+       "  <key>CFBundleName</key><string>" (plist-escape name) "</string>\n"
+       "  <key>CFBundleDisplayName</key><string>" (plist-escape name) "</string>\n"
+       "  <key>CFBundleIdentifier</key><string>" (plist-escape id) "</string>\n"
+       "  <key>CFBundleExecutable</key><string>" (plist-escape executable) "</string>\n"
+       "  <key>CFBundleShortVersionString</key><string>"
+       (plist-escape (or version "0.0.0")) "</string>\n"
+       "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+       "  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n"
+       "  <key>NSHighResolutionCapable</key><true/>\n"
+       "</dict>\n</plist>\n"))
+
+(defn macos-bundle-executable
+  "Where this app's wrapped host lives, or nil when the manifest does not name
+  an app. Pure: `app-run` needs to report the path it will use before it is
+  asked to create anything."
+  [binary {:app/keys [id name]}]
+  (when-not (or (str/blank? (str id)) (str/blank? (str name)))
+    (let [exe (.getName (io/file binary))]
+      (.getPath (io/file (.getParentFile (io/file binary))
+                         "apps" (str id) (str name ".app")
+                         "Contents" "MacOS" exe)))))
+
+(defn ensure-macos-bundle!
+  "Put the host inside a real .app named by the manifest.
+
+  Setting CFBundleName at runtime renames the menu bar but not the Dock tile or
+  the ⌘-Tab entry: LaunchServices registers a process under the executable's
+  file name before any of the program's own code runs, and only a bundle
+  changes what it registers. This is the wrapper Tauri builds ahead of time,
+  made here from the same manifest that names the window.
+
+  The binary is copied rather than linked, because a bundle whose executable
+  resolves outside itself is not reliably treated as one. Copying again on
+  every run is what keeps a rebuilt host from being shadowed by a stale copy;
+  it is 260 KB."
+  [binary manifest]
+  (when-let [target-path (macos-bundle-executable binary manifest)]
+    (let [source (io/file binary)
+          exe (io/file target-path)
+          contents (.getParentFile (.getParentFile exe))]
+      (when (.canExecute source)
+        (.mkdirs (.getParentFile exe))
+        (spit (io/file contents "Info.plist")
+              (macos-bundle-plist manifest (.getName exe)))
+        (java.nio.file.Files/copy
+         (.toPath source) (.toPath exe)
+         (into-array java.nio.file.CopyOption
+                     [java.nio.file.StandardCopyOption/REPLACE_EXISTING
+                      java.nio.file.StandardCopyOption/COPY_ATTRIBUTES]))
+        (.setExecutable exe true false)
+        (.getPath exe)))))
+
 (defn- resolve-app-icon
   "An `:app/icon` is written relative to the manifest that declares it, so the
   manifest stays portable across checkouts; an absolute path is taken as given.
@@ -1383,6 +1449,15 @@
                 (run-native-host-command builder [(:window-command plan)] nil 120))
         binary-ready? (or (.canExecute (io/file (:window-command plan)))
                           (and build (zero? (or (:exit build) 1))))
+        ;; The command the plan names, and the one a run would actually use:
+        ;; on macOS the host goes inside an .app so the Dock and ⌘-Tab call it
+        ;; what the manifest does. The path is known without creating anything,
+        ;; so a plan can report it; only --execute writes the bundle.
+        bundle-command (when (= :macos target)
+                         (macos-bundle-executable (:window-command plan) manifest))
+        run-command (or (when (and execute? (= :macos target) binary-ready?)
+                          (ensure-macos-bundle! (:window-command plan) manifest))
+                        (:window-command plan))
         host-args (cond-> (if (= :ios target)
                            ["--bundle-id" (str (:ios/bundle-id manifest))
                             "--title" (str (:app/name manifest))
@@ -1400,7 +1475,7 @@
                     (:screenshot plan) (conj "--screenshot" (:screenshot plan))
                     (:smoke? plan) (conj "--smoke"))
         host-run (when (and execute? supported? runtime-valid? ops-valid? binary-ready?)
-                   (run-native-host-command (:window-command plan) host-args nil
+                   (run-native-host-command run-command host-args nil
                                             (if (:smoke? plan) 15 86400)))
         ran? (boolean (and host-run (zero? (or (:exit host-run) 1)) (not (:timed-out? host-run))))
         planned? (and supported? runtime-valid?)
@@ -1424,6 +1499,12 @@
                         ;; boundary. Without this a plan cannot be checked
                         ;; against the manifest without launching a window.
                         :kotoba.shell/host-args host-args
+                        ;; The bundled executable, not the shared binary the
+                        ;; plan names: which one runs decides what the Dock
+                        ;; calls the app, so a plan that hid it would not
+                        ;; describe the run.
+                        :kotoba.shell/host-command (or bundle-command
+                                                       (:window-command plan))
                         :kotoba.shell/evaluation evaluation
                         :kotoba.shell/ops-count (count (or ops []))
                         :kotoba.shell/build build
