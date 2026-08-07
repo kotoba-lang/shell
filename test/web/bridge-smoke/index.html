@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>kotoba-shell bridge smoke</title>
+  </head>
+  <body style="font:13px ui-monospace,monospace;margin:0;padding:12px;background:#111;color:#eee">
+    <pre id="out">running…</pre>
+    <script>
+      // Exercises every command the in-app bridge implements, including the
+      // two that must FAIL: a path escape and a command the policy does not
+      // allow. A smoke test that only checks the happy path would pass just as
+      // well against a bridge that allows everything.
+      (async function () {
+        var results = [];
+
+        async function step(name, command, args) {
+          try {
+            var reply = await window.kotobaShell.invoke(command, args || {});
+            results.push({
+              step: name,
+              command: command,
+              ok: reply.ok === true,
+              error: reply.error || null,
+              value: reply.value || null,
+              audit: reply.audit || null
+            });
+          } catch (err) {
+            results.push({ step: name, command: command, ok: false, error: "threw: " + err });
+          }
+        }
+
+        var available = !!(window.kotobaShell && window.kotobaShell.available);
+        if (available) {
+          await step("clipboard-write", "clipboard/write-text", { text: "kotoba-shell-smoke" });
+          await step("clipboard-read", "clipboard/read-text");
+          await step("fs-write", "fs/write-text", { path: "smoke/hello.txt", text: "hello" });
+          await step("fs-append", "fs/append-text", { path: "smoke/hello.txt", text: " world" });
+          await step("fs-read", "fs/read-text", { path: "smoke/hello.txt" });
+          // Must be refused: reaching outside the app-data scope.
+          await step("fs-escape", "fs/read-text", { path: "../escape.txt" });
+          // Must be refused by policy, not by the provider: keychain is not in
+          // the default allow list.
+          await step("keychain-denied", "keychain/write-text", { account: "smoke", text: "secret" });
+          await step("notify", "notify/show", { title: "kotoba-shell", body: "smoke" });
+          // Allowed by policy; whether the network answers is not this test's
+          // business, so only the policy decision is asserted on.
+          await step("http", "http/fetch", { url: "https://example.com/" });
+        }
+
+        var report = {
+          schema: "kotoba.shell.bridge-smoke.v0",
+          target: window.kotobaShell ? window.kotobaShell.target : null,
+          available: available,
+          results: results
+        };
+        document.getElementById("out").textContent = JSON.stringify(report, null, 2);
+        // Android surfaces console output through `adb logcat`; the Apple
+        // targets are read back from the app container instead.
+        console.log("KOTOBA_SHELL_SMOKE " + JSON.stringify(report));
+        if (available) {
+          await window.kotobaShell.invoke("fs/write-text", {
+            path: "bridge-smoke.json",
+            text: JSON.stringify(report)
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

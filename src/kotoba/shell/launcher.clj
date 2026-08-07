@@ -4,6 +4,7 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [kotoba.shell.native-bridge :as bridge]
             [kotoba.shell.stack-e2e :as stack-e2e]))
 
 (def supported-shell-targets #{:macos :ios :android :windows})
@@ -199,6 +200,7 @@
               ["app" "scaffold"]
               ["app" "check"]
               ["app" "build"]
+              ["app" "package"]
               ["app" "run"]
               ["app" "visual-test"]
               ["app" "kaizen"]
@@ -490,11 +492,20 @@
        :audit true}))
 
 (defn policy-decision
+  "Whether `policy` permits `command` on `target`.
+
+  The token list is built with `into`, not a set literal. `#{command
+  capability \"*\"}` threw `IllegalArgumentException: Duplicate key` for every
+  provider whose command and capability are spelled the same — `http/fetch`
+  and `notify/show` — so any policy check on those two crashed instead of
+  deciding. Found 2026-08-07 by the parity test that asserts this function and
+  the in-app bridge agree; the CLI path had the bug since the function was
+  written and nothing exercised it."
   [policy target command]
   (let [capability (provider-capability target command)
         allow (set (:allow policy))
         deny (set (:deny policy))
-        token-set #{command capability "*"}]
+        token-set (into #{} (remove nil?) [command capability "*"])]
     {:allowed? (and (not-any? deny token-set)
                     (or (contains? allow "*")
                         (contains? allow command)
@@ -706,6 +717,63 @@
         nil)
       "KotobaShell"))
 
+(defn team-id
+  "The Apple Developer team a target signs with, if the manifest declares one.
+
+  Per-target first (`:ios/team-id`, `:macos/team-id`) because the two can
+  legitimately differ — an app distributed through the App Store and a macOS
+  build signed with Developer ID may sit in different teams — then
+  `:apple/team-id` as the common case."
+  [target manifest]
+  (or (case target
+        :ios (:ios/team-id manifest)
+        :macos (:macos/team-id manifest)
+        nil)
+      (:apple/team-id manifest)))
+
+(defn signable?
+  "Whether this manifest asks for a signed build at all.
+
+  Absence is not a misconfiguration: a simulator build, a CI smoke test and a
+  local `xcodebuild build` all legitimately want no signing, and that is what
+  every consumer of this repo does today. So the unsigned settings stay the
+  default and signing turns on only when a team is named."
+  [target manifest]
+  (some? (team-id target manifest)))
+
+(defn- signing-settings-yml
+  [target manifest]
+  (if-let [team (team-id target manifest)]
+    (let [style (name (or (case target
+                            :ios (:ios/code-sign-style manifest)
+                            :macos (:macos/code-sign-style manifest)
+                            nil)
+                          :automatic))
+          profile (case target
+                    :ios (:ios/provisioning-profile manifest)
+                    :macos (:macos/provisioning-profile manifest)
+                    nil)
+          identity (case target
+                     :ios (:ios/code-sign-identity manifest)
+                     ;; Developer ID Application is the identity a macOS app
+                     ;; distributed outside the App Store must carry; App
+                     ;; Store builds override it via :macos/code-sign-identity.
+                     :macos (or (:macos/code-sign-identity manifest) "Developer ID Application")
+                     nil)]
+      (str "        DEVELOPMENT_TEAM: " team "\n"
+           "        CODE_SIGN_STYLE: " (str/capitalize style) "\n"
+           (when identity
+             (str "        CODE_SIGN_IDENTITY: \"" identity "\"\n"))
+           (when profile
+             (str "        PROVISIONING_PROFILE_SPECIFIER: \"" profile "\"\n"))
+           ;; Notarization rejects a macOS app without the hardened runtime,
+           ;; so a signed macOS build enables it; iOS has no such setting.
+           (when (= target :macos)
+             "        ENABLE_HARDENED_RUNTIME: YES\n")))
+    (str "        CODE_SIGNING_ALLOWED: NO\n"
+         "        CODE_SIGNING_REQUIRED: NO\n"
+         "        ENABLE_HARDENED_RUNTIME: NO\n")))
+
 (defn- xcodegen-project-yml
   "macOS/iOS 共通の XcodeGen spec。project.pbxproj を手書きせず、scaffold 後に
   `xcodegen generate` へ渡して実際にビルド可能な .xcodeproj を作る(xcodegen-generate!
@@ -777,18 +845,30 @@
          "        PRODUCT_NAME: " product-name "\n"
          "        PRODUCT_BUNDLE_IDENTIFIER: " bundle-id "\n"
          "        MARKETING_VERSION: \"" (:app/version manifest) "\"\n"
-         "        CODE_SIGNING_ALLOWED: NO\n"
-         "        CODE_SIGNING_REQUIRED: NO\n"
-         "        ENABLE_HARDENED_RUNTIME: NO\n"
+         (signing-settings-yml target manifest)
          "    dependencies:\n"
-         "      - sdk: WebKit.framework\n"
-         (when (and (= target :macos) (= :keychain-cacao (:macos/auth-bridge manifest)))
-           (str "      - sdk: LocalAuthentication.framework\n"
-                "      - sdk: Security.framework\n"
-                ;; open-authorization-url (ASWebAuthenticationSession)。
-                ;; keychain-cacao ブリッジと同じ AppDelegate に入るので、
-                ;; scheme が未設定でもリンクは必要。
-                "      - sdk: AuthenticationServices.framework\n")))))
+         ;; distinct, not concatenated: the in-app bridge and the
+         ;; keychain-cacao auth bridge both need Security.framework, and
+         ;; xcodegen fails outright on a repeated dependency rather than
+         ;; ignoring the second one.
+         (str/join
+          (map #(str "      - sdk: " % "\n")
+               (distinct
+                (concat ["WebKit.framework"
+                         ;; The in-app provider bridge imports these. Swift
+                         ;; autolinks system frameworks it imports, but naming
+                         ;; them keeps the link explicit for anyone reading
+                         ;; the generated project.
+                         "UserNotifications.framework"
+                         "Security.framework"]
+                        (when (and (= target :macos)
+                                   (= :keychain-cacao (:macos/auth-bridge manifest)))
+                          ["LocalAuthentication.framework"
+                           ;; open-authorization-url
+                           ;; (ASWebAuthenticationSession)。keychain-cacao
+                           ;; ブリッジと同じ AppDelegate に入るので、scheme が
+                           ;; 未設定でもリンクは必要。
+                           "AuthenticationServices.framework"]))))))))
 
 (def ^:private web-bundle-scheme-handler-swift
   "macOS/iOS 共通。`loadFileURL` は file:// origin をロードするため、WebKit の
@@ -859,9 +939,15 @@
        "import WebKit\n\n"
        "final class AppDelegate: NSObject, NSApplicationDelegate {\n"
        "    var window: NSWindow!\n"
-       "    private var schemeHandler: KotobaWebBundleSchemeHandler?\n\n"
+       "    private var schemeHandler: KotobaWebBundleSchemeHandler?\n"
+       "    private var bridge: KotobaShellBridge?\n\n"
        "    func applicationDidFinishLaunching(_ notification: Notification) {\n"
        "        let config = WKWebViewConfiguration()\n"
+       ;; install() must run before the WKWebView exists: userContentController
+       ;; handlers and user scripts added afterwards do not apply to an
+       ;; already-created web view.
+       "        bridge = KotobaShellBridge.install(into: config)\n"
+       "        bridge?.requestNotificationAuthorizationIfAllowed()\n"
        "        if let bundleDir = Bundle.main.url(forResource: \"WebBundle\", withExtension: nil) {\n"
        "            let handler = KotobaWebBundleSchemeHandler(bundleDir: bundleDir)\n"
        "            schemeHandler = handler\n"
@@ -924,10 +1010,13 @@
        "@main\n"
        "final class AppDelegate: UIResponder, UIApplicationDelegate {\n"
        "    var window: UIWindow?\n"
-       "    private var schemeHandler: KotobaWebBundleSchemeHandler?\n\n"
+       "    private var schemeHandler: KotobaWebBundleSchemeHandler?\n"
+       "    private var bridge: KotobaShellBridge?\n\n"
        "    func application(_ application: UIApplication,\n"
        "                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {\n"
        "        let config = WKWebViewConfiguration()\n"
+       "        bridge = KotobaShellBridge.install(into: config)\n"
+       "        bridge?.requestNotificationAuthorizationIfAllowed()\n"
        "        if let bundleDir = Bundle.main.url(forResource: \"WebBundle\", withExtension: nil) {\n"
        "            let handler = KotobaWebBundleSchemeHandler(bundleDir: bundleDir)\n"
        "            schemeHandler = handler\n"
@@ -951,13 +1040,35 @@
   [application-id]
   (str/replace (str application-id) "." "/"))
 
+(def ^:private android-app-origin
+  "The origin an Android scaffold serves its web bundle from.
+
+  Not `file:///android_asset/index.html` any more. That URL has an opaque
+  origin, which costs three things a real app needs: DOM storage and
+  IndexedDB are unavailable or unreliable, `WebViewCompat`'s document-start
+  script injection has no origin to match so the provider bridge would not be
+  installed before the page's own scripts run, and error reporting is
+  degraded the same way WKWebView degrades it on `file://` (the bug this repo
+  already root-caused and fixed on the Apple side by moving to a custom
+  scheme). `WebViewAssetLoader` serves the same assets over a real https
+  origin reserved by androidx for exactly this purpose."
+  "https://appassets.androidplatform.net")
+
 (defn- android-main-activity-java
   [manifest]
   (str "package " (:android/application-id manifest) ";\n\n"
        "import android.app.Activity;\n"
+       "import android.os.Build;\n"
        "import android.os.Bundle;\n"
+       "import android.webkit.WebResourceRequest;\n"
+       "import android.webkit.WebResourceResponse;\n"
        "import android.webkit.WebSettings;\n"
-       "import android.webkit.WebView;\n\n"
+       "import android.webkit.WebView;\n"
+       "import android.webkit.WebViewClient;\n\n"
+       "import androidx.webkit.WebViewAssetLoader;\n"
+       "import androidx.webkit.WebViewCompat;\n"
+       "import androidx.webkit.WebViewFeature;\n\n"
+       "import java.util.Collections;\n\n"
        "public class MainActivity extends Activity {\n"
        "    @Override\n"
        "    protected void onCreate(Bundle savedInstanceState) {\n"
@@ -965,18 +1076,72 @@
        "        WebView webView = new WebView(this);\n"
        "        WebSettings settings = webView.getSettings();\n"
        "        settings.setJavaScriptEnabled(true);\n"
-       "        webView.loadUrl(\"file:///android_asset/index.html\");\n"
+       "        settings.setDomStorageEnabled(true);\n\n"
+       "        final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()\n"
+       "                .addPathHandler(\"/assets/\", new WebViewAssetLoader.AssetsPathHandler(this))\n"
+       "                .build();\n"
+       "        KotobaShellBridge bridge =\n"
+       "                new KotobaShellBridge(this, webView, KotobaShellBridge.loadPolicy(this));\n"
+       "        webView.addJavascriptInterface(bridge, KotobaShellBridge.INTERFACE_NAME);\n"
+       "        final String shim = KotobaShellBridge.shimSource(this);\n"
+       ;; Document-start injection is the only placement that guarantees the
+       ;; shim exists before the page's own scripts. Where the installed
+       ;; WebView provider is too old for it, onPageStarted is the closest
+       ;; available point; the shim is idempotent, so a device that supports
+       ;; both paths is not harmed by running them both.
+       "        final boolean documentStart =\n"
+       "                shim != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);\n"
+       "        if (documentStart) {\n"
+       "            WebViewCompat.addDocumentStartJavaScript(\n"
+       "                    webView, shim, Collections.singleton(\"" android-app-origin "\"));\n"
+       "        }\n"
+       "        webView.setWebViewClient(new WebViewClient() {\n"
+       "            @Override\n"
+       "            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {\n"
+       "                return loader.shouldInterceptRequest(request.getUrl());\n"
+       "            }\n\n"
+       "            @Override\n"
+       "            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {\n"
+       "                if (!documentStart && shim != null) {\n"
+       "                    view.evaluateJavascript(shim, null);\n"
+       "                }\n"
+       "            }\n"
+       "        });\n\n"
+       ;; POST_NOTIFICATIONS is a runtime permission from API 33. Asked for at
+       ;; startup rather than at first notify/show: a permission sheet that
+       ;; appears in the middle of a provider call would make the call's
+       ;; result depend on how fast someone taps.
+       "        if (Build.VERSION.SDK_INT >= 33) {\n"
+       "            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);\n"
+       "        }\n"
+       "        webView.loadUrl(\"" android-app-origin "/assets/index.html\");\n"
        "        setContentView(webView);\n"
        "    }\n"
        "}\n"))
 
+(defn bridge-policy-json
+  "The in-app policy asset, derived from the same `:allow`/`:deny` map the CLI
+  evaluates so a command cannot be permitted in one and denied in the other."
+  [target policy]
+  (bridge/policy-json
+   {:allow (:allow policy)
+    :deny (:deny policy)
+    :capabilities (into {}
+                        (keep (fn [command]
+                                (when-let [capability (provider-capability target command)]
+                                  [command capability])))
+                        bridge/bridge-provider-commands)}))
+
 (defn scaffold-files
-  [target manifest]
+  [target manifest policy]
   (case target
     :macos [["project.yml" (xcodegen-project-yml target manifest)]
             ["Sources/main.swift" macos-main-swift]
             ["Sources/WebBundleSchemeHandler.swift" web-bundle-scheme-handler-swift]
+            ["Sources/KotobaShellBridge.swift" (bridge/apple-bridge-swift target manifest)]
             ["Sources/AppDelegate.swift" (macos-app-delegate-swift manifest)]
+            ["Resources/kotoba-shell-bridge.js" (bridge/bridge-js target)]
+            ["Resources/kotoba-shell-policy.json" (bridge-policy-json target policy)]
             ["Resources/kotoba-shell.edn"
              (pr-str {:schema "kotoba.shell.app.v0"
                       :target target
@@ -984,7 +1149,10 @@
                       :manifest manifest})]]
     :ios [["project.yml" (xcodegen-project-yml target manifest)]
           ["Sources/WebBundleSchemeHandler.swift" web-bundle-scheme-handler-swift]
+          ["Sources/KotobaShellBridge.swift" (bridge/apple-bridge-swift target manifest)]
           ["Sources/AppDelegate.swift" ios-app-delegate-swift]
+          ["Resources/kotoba-shell-bridge.js" (bridge/bridge-js target)]
+          ["Resources/kotoba-shell-policy.json" (bridge-policy-json target policy)]
           ["Resources/kotoba-shell.edn"
            (pr-str {:schema "kotoba.shell.app.v0"
                     :target target
@@ -1002,6 +1170,19 @@
                ;; 詰めると "Cannot invoke method minSdk() on null object" で
                ;; assembleDebug が落ちる) — defaultConfig 内は1行1呼び出しにする。
                (str "plugins { id 'com.android.application' }\n\n"
+                    ;; 署名材料は生成物の中に書かない。keystore.properties(生成
+                    ;; されない・.gitignore 済み)か環境変数から読む。どちらも
+                    ;; 無ければ release は「署名されない」だけで、ビルド自体は
+                    ;; 通る — 鍵を持たない環境でも scaffold と build の健全性を
+                    ;; 検証できるようにするため。署名の有無は `release check` が
+                    ;; 別途報告する。
+                    "def keystorePropertiesFile = rootProject.file('keystore.properties')\n"
+                    "def keystoreProperties = new Properties()\n"
+                    "if (keystorePropertiesFile.exists()) {\n"
+                    "    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }\n"
+                    "}\n"
+                    "def kotobaStoreFile = keystoreProperties['storeFile'] ?: System.getenv('KOTOBA_SHELL_KEYSTORE')\n"
+                    "def kotobaSigned = kotobaStoreFile != null && !kotobaStoreFile.isEmpty()\n\n"
                     "android {\n"
                     "    namespace '" (:android/application-id manifest) "'\n"
                     "    compileSdk 35\n"
@@ -1010,16 +1191,42 @@
                     "        minSdk 26\n"
                     "        targetSdk 35\n"
                     "        versionName '" (:app/version manifest) "'\n"
-                    "        versionCode 1\n"
+                    "        versionCode " (or (:android/version-code manifest) 1) "\n"
+                    "    }\n"
+                    "    signingConfigs {\n"
+                    "        release {\n"
+                    "            if (kotobaSigned) {\n"
+                    "                storeFile file(kotobaStoreFile)\n"
+                    "                storePassword keystoreProperties['storePassword'] ?: System.getenv('KOTOBA_SHELL_KEYSTORE_PASSWORD')\n"
+                    "                keyAlias keystoreProperties['keyAlias'] ?: System.getenv('KOTOBA_SHELL_KEY_ALIAS')\n"
+                    "                keyPassword keystoreProperties['keyPassword'] ?: System.getenv('KOTOBA_SHELL_KEY_PASSWORD')\n"
+                    "            }\n"
+                    "        }\n"
+                    "    }\n"
+                    "    buildTypes {\n"
+                    "        release {\n"
+                    "            minifyEnabled false\n"
+                    "            if (kotobaSigned) {\n"
+                    "                signingConfig signingConfigs.release\n"
+                    "            }\n"
+                    "        }\n"
                     "    }\n"
                     "    compileOptions {\n"
                     "        sourceCompatibility JavaVersion.VERSION_17\n"
                     "        targetCompatibility JavaVersion.VERSION_17\n"
                     "    }\n"
+                    "}\n\n"
+                    ;; androidx.webkit は WebViewAssetLoader(実 origin での asset
+                    ;; 配信)と addDocumentStartJavaScript(ページ自身の script より
+                    ;; 前に bridge を注入する唯一の確実な位置)のために要る。
+                    "dependencies {\n"
+                    "    implementation 'androidx.webkit:webkit:1.12.1'\n"
                     "}\n")]
+              [".gitignore" "keystore.properties\n*.keystore\n*.jks\n"]
               ["app/src/main/AndroidManifest.xml"
                (str "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"
                     "  <uses-permission android:name=\"android.permission.INTERNET\" />\n"
+                    "  <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />\n"
                     "  <application android:label=\"" (xml-escape (:app/name manifest)) "\" android:usesCleartextTraffic=\"true\">\n"
                     "    <activity android:name=\".MainActivity\" android:exported=\"true\">\n"
                     "      <intent-filter>\n"
@@ -1031,6 +1238,10 @@
                     "</manifest>\n")]
               [(str "app/src/main/java/" (android-package-path (:android/application-id manifest)) "/MainActivity.java")
                (android-main-activity-java manifest)]
+              [(str "app/src/main/java/" (android-package-path (:android/application-id manifest)) "/KotobaShellBridge.java")
+               (bridge/android-bridge-java manifest)]
+              ["app/src/main/assets/kotoba-shell-bridge.js" (bridge/bridge-js target)]
+              ["app/src/main/assets/kotoba-shell-policy.json" (bridge-policy-json target policy)]
               ["app/src/main/kotoba-shell.edn"
                (pr-str {:schema "kotoba.shell.app.v0"
                         :target target
@@ -1088,11 +1299,11 @@
        :xcodegen-error (.getMessage e)})))
 
 (defn scaffold-target-row
-  [output-dir manifest target]
+  [output-dir manifest policy target]
   (let [missing (missing-manifest-keys target manifest)
         known? (contains? supported-shell-targets target)
         root (io/file output-dir (name target))
-        files (scaffold-files target manifest)
+        files (scaffold-files target manifest policy)
         ok? (and known? (empty? missing))]
     (if-not ok?
       {:target target
@@ -1118,7 +1329,7 @@
            xcodegen-result))))))
 
 (defn scaffold-check-row
-  [output-dir manifest target]
+  [output-dir manifest policy target]
   (let [root (io/file output-dir (name target))
         ;; macOS/iOS の xcodegen 産物(`<product-name>.xcodeproj/project.pbxproj`)は
         ;; scaffold-files の [[path body]...] 一覧には含まれない(xcodegen
@@ -1135,7 +1346,7 @@
         ;; 見える。
         web-bundle-paths (when (#{:macos :ios} target)
                            ["Resources/WebBundle/index.html"])
-        files (concat (mapv first (scaffold-files target manifest)) xcodeproj-paths web-bundle-paths)
+        files (concat (mapv first (scaffold-files target manifest policy)) xcodeproj-paths web-bundle-paths)
         file-rows (mapv (fn [path]
                           {:path path
                            :present? (.isFile (io/file root path))})
@@ -1200,7 +1411,7 @@
 
 (defn app-build-row
   [argv output-dir manifest target]
-  (let [check-row (scaffold-check-row output-dir manifest target)
+  (let [check-row (scaffold-check-row output-dir manifest (provider-policy argv) target)
         execute? (execute-requested? argv)
         step (or (external-step argv "--build-command" [(name target)])
                  (default-app-build-step (io/file output-dir (name target)) target manifest))
@@ -1217,7 +1428,7 @@
                     [:macos :ios :android])
         manifest (app-manifest argv)
         output-dir (app-output-dir argv)
-        rows (mapv #(scaffold-target-row output-dir manifest %) targets)
+        rows (mapv #(scaffold-target-row output-dir manifest (provider-policy argv) %) targets)
         ok? (every? :ok? rows)]
     {:kotoba.cli/ok? ok?
      :kotoba.cli/code (if ok? :shell/app-scaffolded :shell/app-scaffold-blocked)
@@ -1243,7 +1454,7 @@
                     [:macos :ios :android])
         manifest (app-manifest argv)
         output-dir (app-output-dir argv)
-        rows (mapv #(scaffold-check-row output-dir manifest %) targets)
+        rows (mapv #(scaffold-check-row output-dir manifest (provider-policy argv) %) targets)
         ok? (every? :ok? rows)]
     {:kotoba.cli/ok? ok?
      :kotoba.cli/code (if ok? :shell/app-ready :shell/app-blocked)
@@ -1298,6 +1509,235 @@
       (str/replace "&" "&amp;")
       (str/replace "<" "&lt;")
       (str/replace ">" "&gt;")))
+
+;; ---------------------------------------------------------------------------
+;; app package — the distributable build.
+;;
+;; `app build` is the development loop: `-sdk iphonesimulator`,
+;; `assembleDebug`, no signing. Nothing it produces can be installed by anyone
+;; other than the person who built it, which is why "iOS/Android build works"
+;; and "iOS/Android ship" were two different claims in this repo's README for
+;; as long as only `app build` existed.
+;;
+;; `app package` is the other half: device SDK, Release configuration, an
+;; archive, and an export through the signing identity the manifest names.
+;; It deliberately refuses rather than quietly producing an unsigned artifact
+;; — an .ipa nobody can install and an .aab Play will reject both look like
+;; success at the exit-code level.
+
+(def export-methods
+  "Xcode 15+ export method names. The older spellings (`app-store`,
+  `ad-hoc`, `development`) still work but warn; these are the current ones."
+  {:ios #{"app-store-connect" "release-testing" "enterprise" "debugging"}
+   :macos #{"app-store-connect" "developer-id" "mac-application" "debugging"}})
+
+(defn export-method
+  [target manifest]
+  (name (or (case target
+              :ios (:ios/export-method manifest)
+              :macos (:macos/export-method manifest)
+              nil)
+            (case target
+              ;; TestFlight and the App Store are the same upload; a build
+              ;; meant for neither has to say so.
+              :ios :app-store-connect
+              ;; Outside the App Store, a macOS app has to be Developer ID
+              ;; signed and notarized or Gatekeeper refuses it.
+              :macos :developer-id
+              nil))))
+
+(defn export-options-plist
+  [target manifest]
+  (let [team (team-id target manifest)
+        style (name (or (case target
+                          :ios (:ios/code-sign-style manifest)
+                          :macos (:macos/code-sign-style manifest)
+                          nil)
+                        :automatic))]
+    (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+         "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+         "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+         "<plist version=\"1.0\">\n<dict>\n"
+         "  <key>method</key><string>" (plist-escape (export-method target manifest)) "</string>\n"
+         (when team
+           (str "  <key>teamID</key><string>" (plist-escape team) "</string>\n"))
+         "  <key>signingStyle</key><string>" (plist-escape style) "</string>\n"
+         "  <key>destination</key><string>export</string>\n"
+         "  <key>stripSwiftSymbols</key><true/>\n"
+         "</dict>\n</plist>\n")))
+
+(defn package-artifact-path
+  [target root manifest]
+  (let [product (product-name-for target manifest)]
+    (case target
+      :ios (.getPath (io/file root "build" "export" (str product ".ipa")))
+      :macos (.getPath (io/file root "build" "export" (str product ".app")))
+      :android (.getPath (io/file root "app" "build" "outputs" "bundle" "release" "app-release.aab"))
+      nil)))
+
+(defn package-steps
+  "The commands that turn a scaffolded project into a distributable artifact."
+  [target root manifest]
+  (let [product (product-name-for target manifest)
+        project (.getPath (io/file root (str product ".xcodeproj")))
+        archive (.getPath (io/file root "build" (str product ".xcarchive")))
+        export (.getPath (io/file root "build" "export"))
+        options (.getPath (io/file root "build" "exportOptions.plist"))
+        apple-archive (fn [sdk-args]
+                        {:command "xcodebuild"
+                         :args (vec (concat ["-project" project "-scheme" product
+                                             "-configuration" "Release"]
+                                            sdk-args
+                                            ["archive" "-archivePath" archive
+                                             ;; Lets xcodebuild create or
+                                             ;; refresh the provisioning
+                                             ;; profile instead of failing on
+                                             ;; a machine that has never built
+                                             ;; this bundle id.
+                                             "-allowProvisioningUpdates"]))
+                         :default? true
+                         :platform-step (if (= target :ios) :xcodebuild-ios-archive :xcodebuild-macos-archive)
+                         :timeout-seconds default-build-timeout-seconds})
+        apple-export {:command "xcodebuild"
+                      :args ["-exportArchive"
+                             "-archivePath" archive
+                             "-exportPath" export
+                             "-exportOptionsPlist" options
+                             "-allowProvisioningUpdates"]
+                      :default? true
+                      :platform-step :xcodebuild-export
+                      :timeout-seconds default-build-timeout-seconds}]
+    (case target
+      :ios [(apple-archive ["-sdk" "iphoneos" "-destination" "generic/platform=iOS"]) apple-export]
+      :macos [(apple-archive ["-destination" "generic/platform=macOS"]) apple-export]
+      ;; bundleRelease, not assembleRelease: Google Play takes an .aab. An
+      ;; .apk is still reachable by overriding the whole step with
+      ;; --package-command gradle --package-command-arg ... assembleRelease.
+      :android [{:command "gradle"
+                 :args ["-p" (.getPath root) "bundleRelease"]
+                 :default? true
+                 :platform-step :gradle-bundle-release
+                 :timeout-seconds default-build-timeout-seconds}]
+      [])))
+
+(defn steps-run-result
+  "Runs steps in order and stops at the first failure.
+
+  Stopping matters: `-exportArchive` against an archive that was never
+  produced fails with a path error that reads nothing like the signing error
+  that actually stopped the build."
+  [execute? steps]
+  (loop [remaining steps
+         done []]
+    (if-let [step (first remaining)]
+      (let [run (step-run-result execute? step)
+            done (conj done run)]
+        (if (:ok? run)
+          (recur (rest remaining) done)
+          done))
+      done)))
+
+(defn package-signing-row
+  "What the manifest says about signing this target, and whether that is
+  enough to produce something installable."
+  [target root manifest]
+  (case target
+    (:ios :macos)
+    (let [team (team-id target manifest)
+          method (export-method target manifest)
+          known? (contains? (get export-methods target #{}) method)]
+      {:configured? (and (some? team) known?)
+       :team team
+       :method method
+       :method-known? known?
+       :style (name (or (case target
+                          :ios (:ios/code-sign-style manifest)
+                          :macos (:macos/code-sign-style manifest)
+                          nil)
+                        :automatic))
+       :reason (cond
+                 (nil? team) :team-id-required
+                 (not known?) :unknown-export-method
+                 :else nil)})
+    :android
+    ;; Gradle resolves the keystore itself, from keystore.properties or the
+    ;; environment; the CLI only reports which of those answered so that an
+    ;; unsigned .aab is never mistaken for a signed one.
+    (let [properties (io/file root "keystore.properties")
+          env-store (System/getenv "KOTOBA_SHELL_KEYSTORE")
+          source (cond (.isFile properties) :keystore-properties
+                       env-store :environment
+                       :else nil)]
+      {:configured? (some? source)
+       :keystore-source source
+       :keystore-properties (.getPath properties)
+       :reason (when-not source :keystore-required)})
+    {:configured? false :reason :unsupported-target}))
+
+(defn app-package-row
+  [argv output-dir manifest target]
+  (let [root (io/file output-dir (name target))
+        check-row (scaffold-check-row output-dir manifest (provider-policy argv) target)
+        execute? (execute-requested? argv)
+        signing (package-signing-row target root manifest)
+        artifact (package-artifact-path target root manifest)
+        steps (if-let [override (external-step argv "--package-command" [(name target)])]
+                [override]
+                (package-steps target root manifest))]
+    (when (and (#{:ios :macos} target) (:configured? signing))
+      (write-text-file! (io/file root "build" "exportOptions.plist")
+                        (export-options-plist target manifest)))
+    (if-not (:configured? signing)
+      (assoc check-row
+             :signing signing
+             :package-steps []
+             :packaged? false
+             :artifact artifact
+             :artifact-present? false
+             :ok? false
+             :reason (:reason signing))
+      (let [runs (steps-run-result execute? steps)
+            ran-ok? (and (seq runs) (every? :ok? runs))
+            present? (and (some? artifact) (.exists (io/file artifact)))]
+        (assoc check-row
+               :signing signing
+               :package-steps runs
+               :packaged? (and execute? ran-ok?)
+               :artifact artifact
+               ;; Reported separately from the exit code on purpose: a
+               ;; zero-exit xcodebuild that wrote nothing where the artifact
+               ;; was expected is the failure mode this catches.
+               :artifact-present? present?
+               :ok? (and (:ok? check-row)
+                         ran-ok?
+                         (or (not execute?) present?)))))))
+
+(defn app-package-result
+  [argv]
+  (let [targets (or (seq (map keyword (option-values argv "--target")))
+                    [:ios])
+        manifest (app-manifest argv)
+        output-dir (app-output-dir argv)
+        execute? (execute-requested? argv)
+        rows (mapv #(app-package-row argv output-dir manifest %) targets)
+        ok? (every? :ok? rows)]
+    {:kotoba.cli/ok? ok?
+     :kotoba.cli/code (if ok? :shell/app-packaged :shell/app-package-blocked)
+     :kotoba.cli/data (merge
+                       (shell-authority-data)
+                       {:kotoba.shell/app-package-schema "kotoba.shell.app-package.v0"
+                        :kotoba.shell/execute? execute?
+                        :kotoba.shell/manifest manifest
+                        :kotoba.shell/output-dir output-dir
+                        :kotoba.shell/app-rows rows
+                        :kotoba.shell/ready-count (count (filter :ok? rows))
+                        :kotoba.shell/target-count (count rows)
+                        :kotoba.shell/audit
+                        (audit-record (if ok? :app/packaged :app/package-blocked)
+                                      {:audit/targets targets
+                                       :audit/output-dir output-dir
+                                       :audit/execute? execute?
+                                       :audit/ready-count (count (filter :ok? rows))})})}))
 
 (defn macos-bundle-plist
   "The Info.plist for one app's wrapper around the shared host binary."
@@ -3619,6 +4059,7 @@
     ["app" "scaffold"] (app-scaffold-result argv)
     ["app" "check"] (app-check-result argv)
     ["app" "build"] (app-build-result argv)
+    ["app" "package"] (app-package-result argv)
     ["app" "run"] (app-run-result argv)
     ["app" "surface"] (app-surface-result argv)
     ["app" "visual-test"] (app-visual-test-result argv)
@@ -3665,6 +4106,7 @@
                                                 ["app" "scaffold"]
                                                 ["app" "check"]
                                                 ["app" "build"]
+                                                ["app" "package"]
                                                 ["app" "run"]
                                                 ["app" "visual-test"]
                                                 ["app" "kaizen"]

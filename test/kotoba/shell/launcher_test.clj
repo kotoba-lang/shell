@@ -1,5 +1,6 @@
 (ns kotoba.shell.launcher-test
-  (:require [clojure.java.io :as io]
+  (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
@@ -10,6 +11,7 @@
             [kotoba.shell.sealed-line :as sealed]
             [kotoba.shell.tamaki-observer :as tamaki-observer]
             [kotoba.shell.tamaki-web-data :as tamaki-web-data]
+            [kotoba.shell.native-bridge :as bridge]
             [kotoba.shell.launcher :as launcher]))
 
 (deftest tamaki-event-reader-only-parses-new-complete-records
@@ -1539,6 +1541,143 @@
     (is (= 120 (get-in receipt [:kototama :result])))
     (is (= 3 (get-in receipt [:shell :ops-count])))
     (is (true? (get-in receipt [:kotobase :persisted?])))))
+
+(defn- temp-dir
+  [prefix]
+  (.getPath (.toFile (java.nio.file.Files/createTempDirectory
+                      prefix (make-array java.nio.file.attribute.FileAttribute 0)))))
+
+(deftest scaffold-carries-the-in-app-provider-bridge
+  ;; Before this, a scaffolded app had no provider implementation at all: the
+  ;; catalog's :required-targets claimed iOS/Android while the only
+  ;; implementation was `xcrun simctl spawn` / `adb shell` on a developer's
+  ;; machine, which does not exist in a distributed build.
+  (let [policy {:allow ["clipboard/text"] :deny []}
+        manifest {:app/id "dev.demo" :app/name "Demo" :app/version "0.1.0"
+                  :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}
+        paths (fn [target]
+                (set (mapv first (launcher/scaffold-files target manifest policy))))]
+    (testing "apple targets compile the bridge and carry both assets"
+      (doseq [target [:ios :macos]]
+        (let [files (paths target)]
+          (is (contains? files "Sources/KotobaShellBridge.swift") (str target))
+          (is (contains? files "Resources/kotoba-shell-bridge.js") (str target))
+          (is (contains? files "Resources/kotoba-shell-policy.json") (str target)))))
+    (testing "android carries the bridge in the app package and the assets dir"
+      (let [files (paths :android)]
+        (is (contains? files "app/src/main/java/dev/demo/KotobaShellBridge.java"))
+        (is (contains? files "app/src/main/assets/kotoba-shell-bridge.js"))
+        (is (contains? files "app/src/main/assets/kotoba-shell-policy.json"))))))
+
+(deftest bridge-policy-asset-decides-exactly-as-the-cli-does
+  ;; The bridge enforces policy inside the app, so there are now two
+  ;; evaluators. They have to agree: a command allowed by one and denied by
+  ;; the other is a security hole in whichever direction it leans.
+  (let [policy {:allow ["clipboard/text" "fs/read-text" "http/fetch"]
+                :deny ["fs/write-text"]}]
+    (doseq [target [:ios :android :macos]]
+      (let [asset (json/read-str (launcher/bridge-policy-json target policy))
+            allow (set (get asset "allow"))
+            deny (set (get asset "deny"))
+            capabilities (get asset "capabilities")]
+        (doseq [command bridge/bridge-provider-commands]
+          (let [capability (get capabilities command)
+                tokens (remove nil? [command capability "*"])
+                native-allowed? (and (not-any? deny tokens)
+                                     (boolean (some allow tokens)))
+                cli (launcher/policy-decision policy target command)]
+            (is (= (:allowed? cli) native-allowed?)
+                (str target " " command))))))))
+
+(deftest policy-decision-handles-a-command-named-like-its-capability
+  ;; Regression: `#{command capability "*"}` threw Duplicate key whenever the
+  ;; two were the same string, so `http/fetch` and `notify/show` crashed the
+  ;; policy check rather than being decided.
+  (doseq [command ["http/fetch" "notify/show"]]
+    (is (true? (:allowed? (launcher/policy-decision {:allow [command] :deny []} :ios command)))
+        command)
+    (is (false? (:allowed? (launcher/policy-decision {:allow ["*"] :deny [command]} :ios command)))
+        command)))
+
+(deftest bridge-policy-asset-drops-commands-the-bridge-cannot-serve
+  ;; Allowing webauthn on iOS grants nothing there; carrying it into the app's
+  ;; policy would suggest otherwise to anyone reading the asset.
+  (let [asset (json/read-str (launcher/bridge-policy-json
+                              :ios {:allow ["webauthn/register" "clipboard/text"] :deny []}))]
+    (is (= #{"clipboard/text"} (set (get asset "allow"))))))
+
+(deftest unsigned-stays-the-default-and-a-team-turns-signing-on
+  (let [base {:app/id "dev.demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo"}
+        yml (fn [manifest]
+              (first (keep (fn [[path body]] (when (= "project.yml" path) body))
+                           (launcher/scaffold-files :ios manifest {:allow [] :deny []}))))]
+    (testing "no team named: the simulator/CI path this repo has always had"
+      (let [text (yml base)]
+        (is (str/includes? text "CODE_SIGNING_ALLOWED: NO"))
+        (is (not (str/includes? text "DEVELOPMENT_TEAM")))
+        (is (false? (launcher/signable? :ios base)))))
+    (testing "a team named: real signing settings, no disabling flags"
+      (let [text (yml (assoc base :ios/team-id "3A5CBTEBFP"
+                             :ios/provisioning-profile "Demo Profile"))]
+        (is (str/includes? text "DEVELOPMENT_TEAM: 3A5CBTEBFP"))
+        (is (str/includes? text "CODE_SIGN_STYLE: Automatic"))
+        (is (str/includes? text "PROVISIONING_PROFILE_SPECIFIER: \"Demo Profile\""))
+        (is (not (str/includes? text "CODE_SIGNING_ALLOWED: NO")))
+        (is (true? (launcher/signable? :ios (assoc base :ios/team-id "x"))))))
+    (testing "macOS signing enables the hardened runtime notarization requires"
+      (let [text (first (keep (fn [[path body]] (when (= "project.yml" path) body))
+                              (launcher/scaffold-files
+                               :macos (assoc base :macos/team-id "3A5CBTEBFP")
+                               {:allow [] :deny []})))]
+        (is (str/includes? text "ENABLE_HARDENED_RUNTIME: YES"))))))
+
+(deftest package-targets-devices-while-build-stays-on-the-simulator
+  (let [manifest {:app/id "dev.demo" :app/name "Demo" :app/version "0.1.0"
+                  :ios/bundle-id "dev.demo" :ios/team-id "3A5CBTEBFP"}
+        root (io/file (temp-dir "kotoba-package"))
+        args-of (fn [steps step] (:args (first (filter #(= step (:platform-step %)) steps))))
+        steps (launcher/package-steps :ios root manifest)]
+    (testing "app package archives against the device SDK"
+      (is (some #{"iphoneos"} (args-of steps :xcodebuild-ios-archive)))
+      (is (some #{"archive"} (args-of steps :xcodebuild-ios-archive)))
+      (is (some #{"-exportOptionsPlist"} (args-of steps :xcodebuild-export))))
+    (testing "app build is unchanged: still the simulator development loop"
+      (is (some #{"iphonesimulator"} (:args (launcher/default-app-build-step root :ios manifest)))))
+    (testing "android packages an .aab, which is what Play accepts"
+      (is (some #{"bundleRelease"}
+                (:args (first (launcher/package-steps :android root manifest))))))))
+
+(deftest package-refuses-rather-than-emitting-an-uninstallable-artifact
+  ;; An unsigned .ipa and an unsigned .aab both build with exit 0 and are
+  ;; both useless; failing at the exit code is the only way that difference
+  ;; reaches a caller.
+  (let [output-dir (temp-dir "kotoba-package-refuse")
+        manifest {:app/id "dev.demo" :app/name "Demo" :app/version "0.1.0"
+                  :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}
+        ios (launcher/app-package-row [] output-dir manifest :ios)
+        android (launcher/app-package-row [] output-dir manifest :android)]
+    (is (false? (:ok? ios)))
+    (is (= :team-id-required (:reason ios)))
+    (is (empty? (:package-steps ios)))
+    (is (false? (:ok? android)))
+    (is (= :keystore-required (:reason android)))))
+
+(deftest export-options-name-the-method-and-the-team
+  (let [manifest {:app/id "dev.demo" :app/name "Demo" :app/version "0.1.0"
+                  :ios/bundle-id "dev.demo" :ios/team-id "3A5CBTEBFP"}
+        plist (launcher/export-options-plist :ios manifest)]
+    (is (str/includes? plist "<key>method</key><string>app-store-connect</string>"))
+    (is (str/includes? plist "<key>teamID</key><string>3A5CBTEBFP</string>"))
+    (testing "macOS defaults to Developer ID, which is what Gatekeeper needs"
+      (is (str/includes? (launcher/export-options-plist
+                          :macos (assoc manifest :macos/team-id "3A5CBTEBFP"))
+                         "<string>developer-id</string>")))
+    (testing "an unknown method is refused before a build is attempted"
+      (let [row (launcher/package-signing-row
+                 :ios (io/file "/nonexistent")
+                 (assoc manifest :ios/export-method :ad-hoc))]
+        (is (false? (:configured? row)))
+        (is (= :unknown-export-method (:reason row)))))))
 
 (defn -main
   [& _]
