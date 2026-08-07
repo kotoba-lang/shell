@@ -862,6 +862,15 @@
          "      properties:\n"
          "        CFBundleShortVersionString: \"" (:app/version manifest) "\"\n"
          "        CFBundleVersion: \"1\"\n"
+         ;; The app is called what the manifest calls it, on the Home screen
+         ;; and in every system sheet. Without these, CFBundleName falls back
+         ;; to $(PRODUCT_NAME), which is the shell's own default whenever a
+         ;; consumer has not set :ios/product-name -- so local-manimani's
+         ;; notification prompt introduced itself as "KotobaShell" on a real
+         ;; simulator. `app run` already learned this for the macOS Dock and
+         ;; menu bar (macos-bundle-plist); scaffolded apps had not.
+         "        CFBundleName: \"" (:app/name manifest) "\"\n"
+         "        CFBundleDisplayName: \"" (:app/name manifest) "\"\n"
          info-properties
          "    settings:\n"
          "      base:\n"

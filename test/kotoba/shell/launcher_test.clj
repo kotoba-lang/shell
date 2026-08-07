@@ -1631,6 +1631,28 @@
                                {:allow [] :deny []})))]
         (is (str/includes? text "ENABLE_HARDENED_RUNTIME: YES"))))))
 
+(deftest a-scaffolded-app-is-called-what-the-manifest-calls-it
+  ;; CFBundleName defaults to $(PRODUCT_NAME), which is this repo's own
+  ;; "KotobaShell" whenever a consumer has not set :ios/product-name. Observed
+  ;; on a real simulator: local-manimani's build introduced itself as
+  ;; "KotobaShell" on the Home screen and in its permission sheet.
+  (let [manifest {:app/id "jp.co.gftd.manimani" :app/name "manimani"
+                  :app/version "0.1.0" :ios/bundle-id "jp.co.gftd.manimani"}
+        yml (fn [target]
+              (first (keep (fn [[path body]] (when (= "project.yml" path) body))
+                           (launcher/scaffold-files target manifest {:allow [] :deny []}))))]
+    (doseq [target [:ios :macos]]
+      (is (str/includes? (yml target) "CFBundleName: \"manimani\"") (str target))
+      (is (str/includes? (yml target) "CFBundleDisplayName: \"manimani\"") (str target)))
+    (testing "android already labelled its activity from the manifest"
+      (is (str/includes?
+           (first (keep (fn [[path body]]
+                          (when (= "app/src/main/AndroidManifest.xml" path) body))
+                        (launcher/scaffold-files
+                         :android (assoc manifest :android/application-id "jp.co.gftd.manimani")
+                         {:allow [] :deny []})))
+           "android:label=\"manimani\"")))))
+
 (deftest package-targets-devices-while-build-stays-on-the-simulator
   (let [manifest {:app/id "dev.demo" :app/name "Demo" :app/version "0.1.0"
                   :ios/bundle-id "dev.demo" :ios/team-id "3A5CBTEBFP"}
