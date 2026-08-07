@@ -544,7 +544,30 @@
     (assoc :android/application-id (option-value argv "--android-application-id"))
 
     (option-value argv "--web-dist-dir")
-    (assoc :web/dist-dir (option-value argv "--web-dist-dir"))))
+    (assoc :web/dist-dir (option-value argv "--web-dist-dir"))
+
+    ;; Signing, for `app package`. Flags rather than manifest-only so a CI job
+    ;; can name the team without rewriting the app manifest it was handed.
+    (option-value argv "--team-id")
+    (assoc :apple/team-id (option-value argv "--team-id"))
+
+    (option-value argv "--ios-export-method")
+    (assoc :ios/export-method (keyword (option-value argv "--ios-export-method")))
+
+    (option-value argv "--macos-export-method")
+    (assoc :macos/export-method (keyword (option-value argv "--macos-export-method")))
+
+    (option-value argv "--ios-provisioning-profile")
+    (assoc :ios/provisioning-profile (option-value argv "--ios-provisioning-profile"))
+
+    (option-value argv "--code-sign-identity")
+    (assoc :macos/code-sign-identity (option-value argv "--code-sign-identity"))
+
+    (option-value argv "--code-sign-style")
+    (assoc :ios/code-sign-style (keyword (option-value argv "--code-sign-style")))
+
+    (option-value argv "--code-sign-style")
+    (assoc :macos/code-sign-style (keyword (option-value argv "--code-sign-style")))))
 
 (defn missing-manifest-keys
   [target manifest]
@@ -1060,6 +1083,9 @@
        "import android.app.Activity;\n"
        "import android.os.Build;\n"
        "import android.os.Bundle;\n"
+       "import android.content.pm.ApplicationInfo;\n"
+       "import android.webkit.ConsoleMessage;\n"
+       "import android.webkit.WebChromeClient;\n"
        "import android.webkit.WebResourceRequest;\n"
        "import android.webkit.WebResourceResponse;\n"
        "import android.webkit.WebSettings;\n"
@@ -1111,6 +1137,22 @@
        ;; startup rather than at first notify/show: a permission sheet that
        ;; appears in the middle of a provider call would make the call's
        ;; result depend on how fast someone taps.
+;; The README long claimed Android WebView logs console output to logcat
+       ;; by default. It does not: WebView 113 on a booted emulator produced
+       ;; no [INFO:CONSOLE] lines at all with no WebChromeClient set, which
+       ;; cost a debugging pass. Forwarded here, and only in a debuggable
+       ;; build -- a release app should not write its page's console output
+       ;; to a log every other app on the device can read.
+       "        if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {\n"
+       "            webView.setWebChromeClient(new WebChromeClient() {\n"
+       "                @Override\n"
+       "                public boolean onConsoleMessage(ConsoleMessage message) {\n"
+       "                    android.util.Log.i(\"kotoba-shell\", message.message()\n"
+       "                            + \" (\" + message.sourceId() + \":\" + message.lineNumber() + \")\");\n"
+       "                    return true;\n"
+       "                }\n"
+       "            });\n"
+       "        }\n"
        "        if (Build.VERSION.SDK_INT >= 33) {\n"
        "            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);\n"
        "        }\n"
@@ -1222,6 +1264,13 @@
                     "dependencies {\n"
                     "    implementation 'androidx.webkit:webkit:1.12.1'\n"
                     "}\n")]
+              ;; androidx.webkit pulls in AndroidX, which AGP refuses to
+              ;; resolve unless the project opts in — the build fails at
+              ;; checkDebugAarMetadata, not at dependency resolution, so the
+              ;; error names a runtime risk rather than the missing flag.
+              ["gradle.properties"
+               (str "android.useAndroidX=true\n"
+                    "org.gradle.jvmargs=-Xmx2048m\n")]
               [".gitignore" "keystore.properties\n*.keystore\n*.jks\n"]
               ["app/src/main/AndroidManifest.xml"
                (str "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"

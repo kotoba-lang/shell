@@ -281,16 +281,37 @@ public final class KotobaShellBridge {
 
     // clipboard: ClipboardManager is main-thread only, and the provider runs on
     // the executor, so both directions hop and wait.
+
+    /**
+     * Reads the clipboard, or says why it could not.
+     *
+     * From Android 10 the system returns nothing to an app that does not hold
+     * window focus, and it does so silently: getPrimaryClip returns null and
+     * no exception is raised. Returning "" for that would be
+     * indistinguishable from an empty clipboard, which is how the first run
+     * of this bridge reported a read that the system had actually refused
+     * (observed on a booted emulator whose System UI dialog held focus).
+     */
     private String clipboardRead() throws Exception {
-        final String[] result = new String[]{""};
+        final String[] result = new String[]{null};
+        final boolean[] focused = new boolean[]{false};
+        final boolean[] empty = new boolean[]{false};
         final CountDownLatch latch = new CountDownLatch(1);
         activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 try {
+                    focused[0] = activity.hasWindowFocus();
                     ClipboardManager manager =
                             (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-                    ClipData clip = manager == null ? null : manager.getPrimaryClip();
+                    if (manager == null) {
+                        return;
+                    }
+                    if (!manager.hasPrimaryClip()) {
+                        empty[0] = true;
+                        return;
+                    }
+                    ClipData clip = manager.getPrimaryClip();
                     if (clip != null && clip.getItemCount() > 0) {
                         CharSequence text = clip.getItemAt(0).coerceToText(activity);
                         result[0] = text == null ? "" : text.toString();
@@ -301,6 +322,14 @@ public final class KotobaShellBridge {
             }
         });
         latch.await();
+        if (empty[0]) {
+            return "";
+        }
+        if (result[0] == null) {
+            throw new IllegalStateException(focused[0]
+                    ? "clipboard read returned nothing while focused"
+                    : "clipboard read refused: Android 10+ only allows the focused app to read the clipboard");
+        }
         return result[0];
     }
 

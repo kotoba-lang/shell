@@ -15,6 +15,59 @@ is real and verified today versus still aspirational, so a consumer doesn't
 have to rediscover the gap by hitting it (as `local-manimani`'s own
 integration did more than once).
 
+- **`app build` and `app package` are different claims and were for a long
+  time confused for one.** `app build` is the development loop: `-sdk
+  iphonesimulator`, `assembleDebug`, `CODE_SIGNING_ALLOWED: NO`. Everything
+  it produces runs on the machine that built it and nowhere else, so "iOS and
+  Android build" was true while "iOS and Android ship" was not. `app package`
+  is the other half — device SDK, Release configuration, `xcodebuild archive`
+  plus `-exportArchive`, `gradle bundleRelease` — and it refuses rather than
+  emitting an unsigned artifact, because an `.ipa` nobody can install and an
+  `.aab` Google Play rejects both exit 0.
+  **Verified 2026-08-07 against real signing identities**, not by plan
+  inspection: a macOS `.app` signed `Apple Development: … (U7W6HNNJCS)` with
+  `flags=0x10000(runtime)` that passes `codesign --verify --deep --strict`; a
+  device `.ipa` carrying an auto-provisioned `iOS Team Provisioning Profile`;
+  and an `.aab` that `jarsigner -verify` reports as verified. Signing turns on
+  only when the manifest names a team (`:apple/team-id` / `--team-id`) or
+  Gradle finds a keystore; absence keeps the unsigned simulator path this repo
+  has always had.
+  **Not verified: an actual upload.** `store request` / `release submit` can
+  execute, but nothing here has been through App Store Connect review or a
+  Play track.
+- **Providers now ship inside the app.** `native-host provider` reaches iOS
+  and Android through `xcrun simctl spawn` and `adb shell` — a developer's
+  machine driving an attached device — so before this the provider catalog's
+  `:required-targets [:macos :ios :android]` described the CLI and not any
+  build a user could hold. `app scaffold` now compiles
+  `KotobaShellBridge.swift` (`WKScriptMessageHandlerWithReply`) and
+  `KotobaShellBridge.java` (`@JavascriptInterface` + `evaluateJavascript`)
+  into the app, reachable from the web bundle as `window.kotobaShell.invoke`
+  and from ClojureScript as `kotoba.shell.client`. Ten commands: clipboard,
+  app-data `fs`, keychain, `http/fetch`, `notify/show`.
+  Policy is enforced **in the app**: `app scaffold` writes the same
+  `:allow`/`:deny` map as `Resources/kotoba-shell-policy.json`, both native
+  halves reproduce `policy-decision` clause for clause, and a missing policy
+  asset denies everything. A test asserts the two evaluators agree for every
+  command rather than trusting that they do.
+  **Verified on a booted iOS Simulator and a booted Android Emulator**
+  (`test/web/bridge-smoke/`): clipboard round-trip, `fs` write/append/read
+  round-trip, a `..` path escape refused, `keychain/write-text` refused by
+  policy, a real 200 from `example.com`, and — on Android, where the
+  permission is grantable headlessly — a posted notification.
+  **`contacts`, `calendar` and `webauthn` are still macOS-only** and are
+  deliberately absent from the bridge; each needs a real per-platform
+  integration, and listing them would repeat the mistake the catalog already
+  had to correct.
+- **CI has not run since 2026-08-04.** GitHub Actions is disabled for this
+  repository (`gh api repos/kotoba-lang/shell/actions/permissions` →
+  `{"enabled": false}`), workspace-wide, per ADR-2607300900. The
+  `.github/workflows/ci.yml` described below is accurate about what it *would*
+  do and is the reference for how these builds are exercised, but it is inert:
+  every commit after `38eea7b` was verified by hand, not by a gate. The
+  replacement lives in the superproject's murakumo fleet
+  (`scripts/fleet-ci/gates.edn`).
+
 - **`app scaffold`/`app build` (macOS, iOS): real, verified.** `app scaffold`
   generates an XcodeGen `project.yml` and runs `xcodegen generate` itself
   (not a hand-written `project.pbxproj`), producing a project that
@@ -50,13 +103,16 @@ integration did more than once).
   kotoba-ui.theme.` error already found on macOS/iOS (see below) —
   independent third-platform confirmation that this is a real
   `local-manimani` bug, not a WKWebView-specific or kotoba-shell-specific
-  one. **Bonus finding**: unlike WKWebView's `loadFileURL`, Android's
-  `android.webkit.WebView` logs full JS console/error output — message,
-  source file, line, and even surrounding source context — to `adb logcat`
-  (tag `chromium`, `[INFO:CONSOLE(...)]`) by default, with no
-  `WebChromeClient.onConsoleMessage` override and no diagnostic bridge
-  needed. Android's default observability here is strictly better than
-  WKWebView's.
+  one. **Correction (2026-08-07)**: this bullet used to claim that Android's
+  `WebView` logs full JS console output to `adb logcat` by default, with no
+  `WebChromeClient.onConsoleMessage` override needed, and called that
+  "strictly better than WKWebView's". Re-measured on WebView 113.0.5672.136
+  (the `android-34;google_apis;arm64-v8a` image) it produced **no
+  `[INFO:CONSOLE]` lines at all** with no `WebChromeClient` set, which cost a
+  debugging pass on the bridge smoke test. The scaffold now installs a
+  `WebChromeClient` that forwards console output to logcat under the tag
+  `kotoba-shell`, and only in a debuggable build — a release app should not
+  write its page's console output to a log every other app can read.
 - **`app scaffold`/`app build` (Windows): scaffolding only, unverified.** The
   generated `Package.appxmanifest`/`.wapproj` skeleton has never been run
   through `msbuild` — there is no Windows CI runner and no Windows
@@ -176,6 +232,8 @@ bin/kotoba-shell surface commit --target macos --ops-edn '[[:dom/create-element 
 bin/kotoba-shell app scaffold --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
 bin/kotoba-shell app check --target macos --target ios --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :ios/bundle-id "dev.demo" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
 bin/kotoba-shell app build --target android --manifest-edn '{:app/id "demo" :app/name "Demo" :app/version "0.1.0" :android/application-id "dev.demo"}' --output-dir target/kotoba-shell/app --json
+bin/kotoba-shell app package --target ios --execute --manifest path/to/app.kotoba.edn --team-id U7W6HNNJCS --ios-export-method app-store-connect --output-dir target/kotoba-shell/app --json
+bin/kotoba-shell app package --target android --execute --manifest path/to/app.kotoba.edn --output-dir target/kotoba-shell/app --json   # KOTOBA_SHELL_KEYSTORE=… or keystore.properties
 bin/kotoba-shell app run --target macos --manifest path/to/app.kotoba.edn --execute --json
 bin/kotoba-shell app visual-test --target macos --manifest path/to/app.kotoba.edn --baseline test/visual/macos.png --actual target/visual/macos.png --execute --json
 bin/kotoba-shell app kaizen --target macos --manifest path/to/app.kotoba.edn --baseline test/visual/macos.png --actual target/visual/macos.png --execute --json
@@ -265,6 +323,41 @@ While an explicit action is running, the app runtime re-evaluates and commits
 the read-only surface every `KOTOBA_SHELL_ACTION_REFRESH_SECONDS` (default
 `0.5`). This streams durable ledger/checkpoint progress without exposing a
 mutable token buffer. Set it to `0` to disable action pulses.
+
+### The in-app provider bridge
+
+A scaffolded macOS, iOS or Android app carries its own provider
+implementations, so a distributed build reaches native capabilities without a
+CLI, a JVM, or a developer's machine attached over `simctl`/`adb`:
+
+```js
+const reply = await window.kotobaShell.invoke("clipboard/write-text", { text: "ok" });
+// {schema: "kotoba.shell.bridge.v0", ok: true, value: {...}, audit: {...}}
+```
+
+```clojure
+(require '[kotoba.shell.client :as shell])
+(-> (shell/fs-write! "notes/today.edn" (pr-str state))
+    (.then #(when-not (shell/ok? %) (handle (:error %)))))
+```
+
+`invoke` never rejects: a denied command, a missing provider and a provider
+failure all resolve with `ok: false` and a reason, and in a plain browser
+`available` is false so one bundle runs both on a device and under
+`shadow-cljs watch`. Replies carry the same `kotoba.shell.audit.v0` record the
+CLI prints.
+
+This is what makes a ClojureScript app shippable to a phone. An app whose
+interface is served by a local JVM process — `cloud-itonami-app` is the
+example in this workspace — cannot follow, and no packaging work changes that:
+there is no JVM on iOS or Android. An app whose surface is a web bundle has
+nothing to port.
+
+Android's WebView serves the bundle from a `WebViewAssetLoader` origin
+(`https://appassets.androidplatform.net/assets/…`) rather than
+`file:///android_asset/`. An opaque origin has no DOM storage, no IndexedDB,
+and nothing for document-start script injection to match — the same class of
+problem the Apple side already fixed by leaving `file://` for a custom scheme.
 
 `app scaffold` generates minimal macOS, iOS, Android, and Windows native
 project skeletons from the EDN app manifest. The generated projects carry the
