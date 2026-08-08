@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import CoreGraphics
 import Foundation
 import UniformTypeIdentifiers
 import WebKit
@@ -68,6 +70,291 @@ func argument(_ name: String) -> String? {
   guard let index = CommandLine.arguments.firstIndex(of: name),
         CommandLine.arguments.indices.contains(index + 1) else { return nil }
   return CommandLine.arguments[index + 1]
+}
+
+func installStandardMenu(appName: String) {
+  let main = NSMenu()
+
+  let appItem = NSMenuItem()
+  main.addItem(appItem)
+  let appMenu = NSMenu(title: appName)
+  appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+  appMenu.addItem(.separator())
+  appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+  let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+  hideOthers.keyEquivalentModifierMask = [.command, .option]
+  appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+  appMenu.addItem(.separator())
+  appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+  appItem.submenu = appMenu
+
+  let editItem = NSMenuItem()
+  main.addItem(editItem)
+  let edit = NSMenu(title: "Edit")
+  edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+  let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+  redo.keyEquivalentModifierMask = [.command, .shift]
+  edit.addItem(.separator())
+  edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+  edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+  edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+  edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+  editItem.submenu = edit
+
+  let windowItem = NSMenuItem()
+  main.addItem(windowItem)
+  let windowMenu = NSMenu(title: "Window")
+  windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+  windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+  windowItem.submenu = windowMenu
+  app.windowsMenu = windowMenu
+  app.mainMenu = main
+}
+
+enum ComputerPermission: String, CaseIterable {
+  case accessibility
+  case screenRecording = "screen-recording"
+
+  var title: String {
+    switch self {
+    case .accessibility: return "Accessibility"
+    case .screenRecording: return "Screen Recording"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .accessibility: return "Allows this app to access and operate app interfaces"
+    case .screenRecording: return "Allows this app to see the screen while performing tasks"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .accessibility: return "accessibility"
+    case .screenRecording: return "rectangle.inset.filled.and.person.filled"
+    }
+  }
+
+  var settingsURL: URL? {
+    let pane = self == .accessibility ? "Privacy_Accessibility" : "Privacy_ScreenCapture"
+    return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")
+  }
+
+  var granted: Bool {
+    switch self {
+    case .accessibility: return AXIsProcessTrusted()
+    case .screenRecording: return CGPreflightScreenCaptureAccess()
+    }
+  }
+}
+
+final class PermissionOnboardingController: NSObject {
+  private let appName: String
+  private let permissions: [ComputerPermission]
+  private weak var parent: NSWindow?
+  private var panel: NSPanel?
+  private var statusButtons: [ComputerPermission: NSButton] = [:]
+  private var completeButton: NSButton?
+  private var timer: Timer?
+
+  init(appName: String, permissions: [ComputerPermission]) {
+    self.appName = appName
+    self.permissions = permissions
+    super.init()
+    NotificationCenter.default.addObserver(self, selector: #selector(refresh),
+                                           name: NSApplication.didBecomeActiveNotification,
+                                           object: nil)
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+    timer?.invalidate()
+  }
+
+  func presentIfNeeded(over window: NSWindow) {
+    parent = window
+    guard permissions.contains(where: { !$0.granted }) else {
+      emitStatus()
+      return
+    }
+    if panel == nil { panel = makePanel() }
+    guard let panel else { return }
+    if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
+    let origin = NSPoint(x: window.frame.midX - panel.frame.width / 2,
+                         y: window.frame.midY - panel.frame.height / 2)
+    panel.setFrameOrigin(origin)
+    panel.makeKeyAndOrderFront(nil)
+    refresh()
+    timer?.invalidate()
+    timer = Timer.scheduledTimer(timeInterval: 1, target: self,
+                                 selector: #selector(refresh), userInfo: nil, repeats: true)
+  }
+
+  private func makePanel() -> NSPanel {
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 700, height: 510),
+                        styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered,
+                        defer: false)
+    panel.titleVisibility = .hidden
+    panel.titlebarAppearsTransparent = true
+    panel.isMovableByWindowBackground = true
+    panel.isReleasedWhenClosed = false
+    panel.standardWindowButton(.zoomButton)?.isHidden = true
+    panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+
+    let effect = NSVisualEffectView()
+    effect.material = .hudWindow
+    effect.blendingMode = .behindWindow
+    effect.state = .active
+    panel.contentView = effect
+
+    let content = NSStackView()
+    content.orientation = .vertical
+    content.alignment = .centerX
+    content.spacing = 18
+    content.translatesAutoresizingMaskIntoConstraints = false
+    effect.addSubview(content)
+    NSLayoutConstraint.activate([
+      content.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 46),
+      content.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -46),
+      content.topAnchor.constraint(equalTo: effect.topAnchor, constant: 46),
+      content.bottomAnchor.constraint(lessThanOrEqualTo: effect.bottomAnchor, constant: -36)
+    ])
+
+    let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+    icon.imageScaling = .scaleProportionallyUpOrDown
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    icon.widthAnchor.constraint(equalToConstant: 70).isActive = true
+    icon.heightAnchor.constraint(equalToConstant: 70).isActive = true
+    content.addArrangedSubview(icon)
+
+    let heading = NSTextField(labelWithString: "Enable \(appName) Computer Use")
+    heading.font = NSFont.systemFont(ofSize: 30, weight: .bold)
+    heading.alignment = .center
+    content.addArrangedSubview(heading)
+
+    let explanation = NSTextField(wrappingLabelWithString:
+      "\(appName) needs these permissions to use apps on your Mac.\nThese permissions are used only when you ask it to perform tasks.")
+    explanation.font = NSFont.systemFont(ofSize: 15)
+    explanation.textColor = .secondaryLabelColor
+    explanation.alignment = .center
+    content.addArrangedSubview(explanation)
+
+    let rows = NSStackView()
+    rows.orientation = .vertical
+    rows.spacing = 10
+    rows.translatesAutoresizingMaskIntoConstraints = false
+    rows.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+    content.addArrangedSubview(rows)
+    for (index, permission) in permissions.enumerated() {
+      rows.addArrangedSubview(makeRow(permission, tag: index))
+    }
+
+    let complete = NSButton(title: "COMPLETE IN SYSTEM SETTINGS", target: self,
+                            action: #selector(openFirstMissing))
+    complete.bezelStyle = .rounded
+    complete.controlSize = .large
+    complete.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    complete.translatesAutoresizingMaskIntoConstraints = false
+    complete.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
+    complete.heightAnchor.constraint(equalToConstant: 58).isActive = true
+    completeButton = complete
+    content.addArrangedSubview(complete)
+    return panel
+  }
+
+  private func makeRow(_ permission: ComputerPermission, tag: Int) -> NSView {
+    let row = NSStackView()
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.spacing = 14
+    row.edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
+    row.wantsLayer = true
+    row.layer?.cornerRadius = 14
+    row.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
+
+    let image = NSImageView(image: NSImage(systemSymbolName: permission.symbol,
+                                           accessibilityDescription: permission.title) ?? NSImage())
+    image.contentTintColor = .controlAccentColor
+    image.translatesAutoresizingMaskIntoConstraints = false
+    image.widthAnchor.constraint(equalToConstant: 42).isActive = true
+    image.heightAnchor.constraint(equalToConstant: 42).isActive = true
+    row.addArrangedSubview(image)
+
+    let labels = NSStackView()
+    labels.orientation = .vertical
+    labels.spacing = 3
+    let title = NSTextField(labelWithString: permission.title)
+    title.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
+    let detail = NSTextField(labelWithString: permission.detail)
+    detail.font = NSFont.systemFont(ofSize: 13)
+    detail.textColor = .secondaryLabelColor
+    labels.addArrangedSubview(title)
+    labels.addArrangedSubview(detail)
+    row.addArrangedSubview(labels)
+
+    let status = NSButton(title: "Open Settings", target: self,
+                          action: #selector(openPermission(_:)))
+    status.tag = tag
+    status.bezelStyle = .inline
+    status.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+    statusButtons[permission] = status
+    row.addArrangedSubview(status)
+    row.widthAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true
+    return row
+  }
+
+  @objc private func openPermission(_ sender: NSButton) {
+    guard permissions.indices.contains(sender.tag) else { return }
+    requestAndOpen(permissions[sender.tag])
+  }
+
+  @objc private func openFirstMissing() {
+    guard let permission = permissions.first(where: { !$0.granted }) else {
+      dismiss()
+      return
+    }
+    requestAndOpen(permission)
+  }
+
+  private func requestAndOpen(_ permission: ComputerPermission) {
+    switch permission {
+    case .accessibility:
+      let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+      _ = AXIsProcessTrustedWithOptions(options)
+    case .screenRecording:
+      _ = CGRequestScreenCaptureAccess()
+    }
+    if !permission.granted, let url = permission.settingsURL {
+      NSWorkspace.shared.open(url)
+    }
+    emit(["event": "permissions/requested", "permission": permission.rawValue])
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.refresh() }
+  }
+
+  @objc private func refresh() {
+    for permission in permissions {
+      let granted = permission.granted
+      statusButtons[permission]?.title = granted ? "Done ✓" : "Open Settings"
+      statusButtons[permission]?.isEnabled = !granted
+    }
+    emitStatus()
+    if permissions.allSatisfy({ $0.granted }) { dismiss() }
+  }
+
+  private func emitStatus() {
+    emit(["event": "permissions/status",
+          "accessibility": !permissions.contains(.accessibility) || ComputerPermission.accessibility.granted,
+          "screen-recording": !permissions.contains(.screenRecording) || ComputerPermission.screenRecording.granted])
+  }
+
+  private func dismiss() {
+    timer?.invalidate()
+    timer = nil
+    guard let panel else { return }
+    parent?.removeChildWindow(panel)
+    panel.orderOut(nil)
+  }
 }
 
 func surfaceNodes(from json: String) -> (nodes: [Int: SurfaceNode], root: Int?) {
@@ -425,6 +712,9 @@ let minHeight = Double(argument("--min-height") ?? "320") ?? 320
 let surface = surfaceNodes(from: argument("--ops-json") ?? "[]")
 let webURL = argument("--web-url").flatMap(URL.init(string:))
 let settleSeconds = Double(argument("--settle-seconds") ?? "1.5") ?? 1.5
+let requestedPermissions = (argument("--permissions") ?? "")
+  .split(separator: ",")
+  .compactMap { ComputerPermission(rawValue: String($0)) }
 // The menu bar and the Dock read CFBundleName; only the title bar reads
 // NSWindow.title. This host is a bare executable with no Info.plist, so macOS
 // fell back to the file name: an app declaring "Cloud Itonami" opened a window
@@ -441,6 +731,7 @@ if let info = Bundle.main.value(forKey: "infoDictionary") as? NSMutableDictionar
   emit(["event": "app/name-not-applied", "title": title])
 }
 let app = NSApplication.shared
+installStandardMenu(appName: title)
 // The Dock and the ⌘-Tab switcher read applicationIconImage. Without this an
 // app declaring :app/icon still shows the generic host icon, which is the
 // failure the manifest key exists to prevent — so say so on stdout rather than
@@ -457,6 +748,8 @@ app.setActivationPolicy(.regular)
 // NSWindow.delegate is weak, so this top-level binding is what keeps the
 // delegate alive for the life of the process.
 let delegate = KotobaWindowDelegate(smoke: smoke)
+let permissionOnboarding = PermissionOnboardingController(appName: title,
+                                                          permissions: requestedPermissions)
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
 window.title = title
 if floatingWindow {
@@ -536,6 +829,9 @@ if smoke {
 } else {
   window.makeKeyAndOrderFront(nil)
   app.activate(ignoringOtherApps: true)
+  DispatchQueue.main.async {
+    permissionOnboarding.presentIfNeeded(over: window)
+  }
 }
 if webURL == nil, let document = scroll.documentView {
   scroll.contentView.scroll(to: NSPoint(x: 0,
