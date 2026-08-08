@@ -1879,6 +1879,7 @@
         runtime (:runtime manifest)
         runtime-ns (or (:namespace runtime) (:runtime/namespace runtime))
         start-fn (or (:start runtime) (:runtime/start runtime) 'start)
+        permissions (->> (:macos/permissions manifest) (map name) sort vec)
         [icon missing-icon] (resolve-app-icon app-dir (:app/icon manifest))
         binary (or (option-value argv "--window-command")
                    (if (= :ios target)
@@ -1890,6 +1891,7 @@
      :start-function (str start-fn)
      :window-command binary
      :window (get runtime :window)
+     :permissions permissions
      :icon icon
      :missing-icon missing-icon
      :screenshot (option-value argv "--screenshot")
@@ -1970,6 +1972,8 @@
                     (get-in plan [:window :min-width]) (conj "--min-width" (str (get-in plan [:window :min-width])))
                     (get-in plan [:window :min-height]) (conj "--min-height" (str (get-in plan [:window :min-height])))
                     (true? (get-in plan [:window :floating])) (conj "--floating")
+                    (and (= :macos target) (seq (:permissions plan)))
+                    (conj "--permissions" (str/join "," (:permissions plan)))
                     (:screenshot plan) (conj "--screenshot" (:screenshot plan))
                     (:smoke? plan) (conj "--smoke"))
         host-run (when (and execute? supported? runtime-valid? ops-valid? binary-ready?)
