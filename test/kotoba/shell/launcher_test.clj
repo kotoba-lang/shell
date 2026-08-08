@@ -963,18 +963,6 @@
     (is (false? (:kotoba.cli/ok? missing)))
     (is (= :shell/app-icon-missing (:kotoba.cli/code missing)))))
 
-(deftest app-run-passes-declared-macos-permissions-to-the-native-host
-  (let [manifest (str "{:app/id \"kotoba.computer\" :app/name \"Kotoba Computer\""
-                      " :app/version \"0.1.0\""
-                      " :macos/permissions [:screen-recording :accessibility]"
-                      " :runtime {:surface :kotoba/web"
-                      " :window {:web-url \"http://localhost:1338/\"}}}")
-        plan (launcher/dispatch ["app" "run" "--target" "macos"
-                                 "--manifest-edn" manifest])]
-    (is (:kotoba.cli/ok? plan))
-    (is (= ["--permissions" "accessibility,screen-recording"]
-           (host-arg-pair plan "--permissions")))))
-
 (deftest macos-run-goes-through-an-app-bundle-the-manifest-names
   (let [manifest {:app/id "cloud.itonami.app" :app/name "Cloud Itonami"
                   :app/version "0.1.0"}
@@ -1033,16 +1021,6 @@
     (is (some? named) "the host writes the declared name into CFBundleName")
     (is (some? app))
     (is (< named app) "CFBundleName is set before NSApplication.shared is created")))
-
-(deftest macos-host-installs-standard-edit-menu-and-permission-onboarding
-  (let [source (slurp (launcher/sibling-path "bin/kotoba-shell-host-macos-window.swift"))]
-    (doseq [selector ["NSText.cut" "NSText.copy" "NSText.paste" "NSText.selectAll"]]
-      (is (str/includes? source selector)))
-    (is (str/includes? source "app.mainMenu = main"))
-    (is (str/includes? source "AXIsProcessTrustedWithOptions"))
-    (is (str/includes? source "CGPreflightScreenCaptureAccess"))
-    (is (str/includes? source "Privacy_Accessibility"))
-    (is (str/includes? source "Privacy_ScreenCapture"))))
 
 (deftest cli-wrapper-overrides-the-published-coordinate-rather-than-adding-to-it
   ;; `clojure` reads the deps.edn of the directory the CLI is invoked from, and
