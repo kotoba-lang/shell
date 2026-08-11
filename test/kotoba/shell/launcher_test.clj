@@ -6,6 +6,7 @@
             [kotoba.shell.connector :as connector]
             [kotoba.shell.event-test]
             [kotoba.shell.input-test]
+            [kotoba.shell.sidecar-test]
             [kotoba.shell.mangaka-app-test]
             [kotoba.shell.experience :as experience]
             [kotoba.shell.sealed-line :as sealed]
@@ -1740,6 +1741,7 @@
   ;; file. Wire it in with the fix, not before.
   (let [{:keys [fail error]}
         (clojure.test/run-tests 'kotoba.shell.launcher-test
+                                'kotoba.shell.sidecar-test
                                 'kotoba.shell.event-test
                                 'kotoba.shell.input-test
                                 'kotoba.shell.mangaka-app-test)]
