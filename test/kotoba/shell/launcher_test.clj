@@ -999,6 +999,36 @@
     (is (nil? (launcher/macos-bundle-executable binary {:app/id "x"})))
     (is (nil? (launcher/macos-bundle-executable binary {:app/name "X"})))))
 
+(deftest a-bundle-records-what-to-open-so-opening-it-opens-the-app
+  ;; Measured 2026-08-19 before this existed: double-clicking
+  ;; `Cloud Itonami.app` started the host with no arguments, so every default
+  ;; applied and a 720x512 window titled `Kotoba` came up reading
+  ;; `No kotoba:dom root`. The real 430x892 surface never appeared and nothing
+  ;; reported a problem -- it looked like the application.
+  (let [dir (java.nio.file.Files/createTempDirectory
+             "kotoba-bundle" (into-array java.nio.file.attribute.FileAttribute []))
+        binary (io/file (.toFile dir) "kotoba-shell-host-macos-window")
+        manifest {:app/id "cloud.itonami.app" :app/name "Cloud Itonami"}
+        args ["--title" "Cloud Itonami" "--ops-json" "null"
+              "--web-url" "http://localhost:1338/?surface=native"]
+        recorded (fn [] (io/file (.toFile dir) "apps" "cloud.itonami.app"
+                                 "Cloud Itonami.app" "Contents" "Resources"
+                                 "launch-arguments.json"))]
+    (spit binary "#!/bin/sh\nexit 0\n")
+    (.setExecutable binary true false)
+    (launcher/ensure-macos-bundle! (.getPath binary) manifest args)
+    (is (.isFile (recorded)) "the bundle did not record what to open")
+    (is (= args (json/read-str (slurp (recorded))))
+        "the bundle recorded something other than the arguments a run would use")
+
+    ;; A smoke run captures a PNG and closes the window. If those arguments were
+    ;; recorded, opening the application from the Dock would flash and quit --
+    ;; so `app-run` passes nil for them and nothing is written.
+    (.delete (recorded))
+    (launcher/ensure-macos-bundle! (.getPath binary) manifest nil)
+    (is (not (.isFile (recorded)))
+        "a run with no recordable arguments still wrote a launch-arguments file")))
+
 (deftest macos-bundle-plist-escapes-a-name-that-would-break-it
   ;; An & in the name produced a plist macOS refuses to parse, and the app then
   ;; launched under the executable's name with no sign of why.

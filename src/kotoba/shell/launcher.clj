@@ -1838,8 +1838,17 @@
   The binary is copied rather than linked, because a bundle whose executable
   resolves outside itself is not reliably treated as one. Copying again on
   every run is what keeps a rebuilt host from being shadowed by a stale copy;
-  it is 260 KB."
-  [binary manifest]
+  it is 260 KB.
+
+  `host-args` is written into the bundle, and that is not decoration. A .app in
+  a place a person can double-click WILL be double-clicked, and LaunchServices
+  starts it with no arguments at all. Measured 2026-08-19: opening
+  `Cloud Itonami.app` from the Dock produced a 720x512 window titled `Kotoba`
+  reading `No kotoba:dom root` — the host's argument-free defaults — while the
+  real 430x892 surface never appeared. Nothing said anything was wrong; it
+  looked like the application, and for most of a session it was mistaken for
+  it. Recording the arguments here is what lets the bundle open as itself."
+  [binary manifest host-args]
   (when-let [target-path (macos-bundle-executable binary manifest)]
     (let [source (io/file binary)
           exe (io/file target-path)
@@ -1848,6 +1857,14 @@
         (.mkdirs (.getParentFile exe))
         (spit (io/file contents "Info.plist")
               (macos-bundle-plist manifest (.getName exe)))
+        ;; A smoke run's arguments are an observation boundary — `--smoke`
+        ;; captures a PNG and closes the window — so they must not become what
+        ;; the bundle does when a person opens it.
+        (when-let [recorded (seq (remove nil? host-args))]
+          (let [resources (io/file contents "Resources")]
+            (.mkdirs resources)
+            (spit (io/file resources "launch-arguments.json")
+                  (json/write-str (vec recorded)))))
         (java.nio.file.Files/copy
          (.toPath source) (.toPath exe)
          (into-array java.nio.file.CopyOption
@@ -1955,9 +1972,6 @@
         ;; so a plan can report it; only --execute writes the bundle.
         bundle-command (when (= :macos target)
                          (macos-bundle-executable (:window-command plan) manifest))
-        run-command (or (when (and execute? (= :macos target) binary-ready?)
-                          (ensure-macos-bundle! (:window-command plan) manifest))
-                        (:window-command plan))
         host-args (cond-> (if (= :ios target)
                            ["--bundle-id" (str (:ios/bundle-id manifest))
                             "--title" (str (:app/name manifest))
@@ -1976,6 +1990,13 @@
                     (conj "--permissions" (str/join "," (:permissions plan)))
                     (:screenshot plan) (conj "--screenshot" (:screenshot plan))
                     (:smoke? plan) (conj "--smoke"))
+        ;; After `host-args`, because the bundle now records them. The bundle
+        ;; path is still knowable without creating anything, which is what lets
+        ;; a plan report it; only --execute writes.
+        run-command (or (when (and execute? (= :macos target) binary-ready?)
+                          (ensure-macos-bundle! (:window-command plan) manifest
+                                                (when-not (:smoke? plan) host-args)))
+                        (:window-command plan))
         host-run (when (and execute? supported? runtime-valid? ops-valid? binary-ready?)
                    (run-native-host-command run-command host-args nil
                                             (if (:smoke? plan) 15 86400)))

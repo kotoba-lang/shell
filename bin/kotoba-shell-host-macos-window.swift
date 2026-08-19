@@ -58,7 +58,6 @@ final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
 }
 
 let actionTarget = KotobaActionTarget()
-let floatingWindow = CommandLine.arguments.contains("--floating")
 
 func emit(_ value: [String: Any]) {
   guard let data = try? JSONSerialization.data(withJSONObject: value),
@@ -66,10 +65,44 @@ func emit(_ value: [String: Any]) {
   print(line); fflush(stdout)
 }
 
+// What this host was asked to open — from the command line, or from the bundle
+// when a person opened the bundle.
+//
+// LaunchServices starts a double-clicked .app with no arguments, and every
+// value below has a default, so the host used to come up as a 720x512 window
+// titled `Kotoba` reading `No kotoba:dom root`. It looked like an application
+// and it was not one. `kotoba-shell app run --execute` now writes the arguments
+// it would have passed into Contents/Resources/launch-arguments.json, and this
+// reads them back.
+//
+// `-psn_…` is what older systems append to a Finder launch; it is not one of
+// ours and must not count as "arguments were given".
+let hostArguments: [String] = {
+  let given = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-psn_") }
+  if !given.isEmpty { return Array(given) }
+  if let url = Bundle.main.url(forResource: "launch-arguments", withExtension: "json"),
+     let data = try? Data(contentsOf: url),
+     let recorded = (try? JSONSerialization.jsonObject(with: data)) as? [String] {
+    return recorded
+  }
+  // Inside a bundle there is nobody to read a usage line, so refusing is the
+  // only way to say this rather than opening a window that says nothing.
+  // A bare binary keeps its defaults: that is a developer running it directly.
+  if Bundle.main.bundleIdentifier != nil {
+    emit(["event": "app/no-arguments",
+          "message": "This bundle records what to open when it is built. Rebuild it with `kotoba-shell app run --target macos --manifest <app.kotoba.edn> --execute`.",
+          "bundle": Bundle.main.bundlePath])
+    exit(2)
+  }
+  return []
+}()
+
+let floatingWindow = hostArguments.contains("--floating")
+
 func argument(_ name: String) -> String? {
-  guard let index = CommandLine.arguments.firstIndex(of: name),
-        CommandLine.arguments.indices.contains(index + 1) else { return nil }
-  return CommandLine.arguments[index + 1]
+  guard let index = hostArguments.firstIndex(of: name),
+        hostArguments.indices.contains(index + 1) else { return nil }
+  return hostArguments[index + 1]
 }
 
 func installStandardMenu(appName: String) {
@@ -701,7 +734,7 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
   }
 }
 
-let smoke = CommandLine.arguments.contains("--smoke")
+let smoke = hostArguments.contains("--smoke")
 let title = argument("--title") ?? "Kotoba"
 let iconPath = argument("--icon")
 let screenshotPath = argument("--screenshot")
