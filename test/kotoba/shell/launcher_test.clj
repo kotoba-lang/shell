@@ -946,6 +946,27 @@
     (is (= ["--web-url" "http://localhost:1338/"] (host-arg-pair plan "--web-url")))
     (is (= ["--title" "Kotoba Web"] (host-arg-pair plan "--title")))))
 
+(deftest app-run-makes-titlebar-overlay-an-explicit-window-choice
+  (let [overlay (launcher/dispatch
+                 ["app" "run" "--target" "macos" "--manifest-edn"
+                  (str "{:app/id \"kotoba.overlay\" :app/name \"Overlay\""
+                       " :app/version \"0.1.0\" :runtime {:surface :kotoba/web"
+                       " :window {:web-url \"http://localhost:1338/\""
+                       " :titlebar :overlay}}}")])
+        ordinary (launcher/dispatch
+                  ["app" "run" "--target" "macos" "--manifest-edn"
+                   (str "{:app/id \"kotoba.ordinary\" :app/name \"Ordinary\""
+                        " :app/version \"0.1.0\" :runtime {:surface :kotoba/web"
+                        " :window {:web-url \"http://localhost:1338/\"}}}")])]
+    (is (some #{"--titlebar-overlay"}
+              (get-in overlay [:kotoba.cli/data :kotoba.shell/host-args])))
+    (is (not (some #{"--titlebar-overlay"}
+                   (get-in ordinary [:kotoba.cli/data :kotoba.shell/host-args]))))
+    (is (str/includes? (slurp "bin/kotoba-shell-host-macos-window.swift")
+                       "window.titleVisibility = .hidden"))
+    (is (str/includes? (slurp "bin/kotoba-shell-host-macos-window.swift")
+                       "window.titlebarAppearsTransparent = true"))))
+
 (deftest app-run-passes-a-declared-icon-and-refuses-a-missing-one
   (let [icon (doto (java.io.File/createTempFile "kotoba-icon" ".png") (.deleteOnExit))
         manifest (fn [path]

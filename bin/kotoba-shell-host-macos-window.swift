@@ -98,6 +98,11 @@ let hostArguments: [String] = {
 }()
 
 let floatingWindow = hostArguments.contains("--floating")
+// Keep the ordinary titled window (traffic lights, Window menu, zoom and
+// keyboard behaviour) while allowing an app's own chrome to occupy the band
+// behind it. This is opt-in: a web surface that has not reserved the traffic
+// light inset must retain the normal AppKit titlebar.
+let titlebarOverlay = hostArguments.contains("--titlebar-overlay")
 
 func argument(_ name: String) -> String? {
   guard let index = hostArguments.firstIndex(of: name),
@@ -783,8 +788,19 @@ app.setActivationPolicy(.regular)
 let delegate = KotobaWindowDelegate(smoke: smoke)
 let permissionOnboarding = PermissionOnboardingController(appName: title,
                                                           permissions: requestedPermissions)
-let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+var windowStyle: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+if titlebarOverlay { windowStyle.insert(.fullSizeContentView) }
+let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight), styleMask: windowStyle, backing: .buffered, defer: false)
 window.title = title
+if titlebarOverlay {
+  // The title remains on NSWindow for accessibility and the Window menu; only
+  // its redundant visual label disappears. AppKit still owns the standard
+  // buttons and their behaviours.
+  window.titleVisibility = .hidden
+  window.titlebarAppearsTransparent = true
+  window.titlebarSeparatorStyle = .none
+  window.isMovableByWindowBackground = true
+}
 if floatingWindow {
   window.level = .floating
   window.collectionBehavior.insert(.canJoinAllSpaces)
