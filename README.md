@@ -295,7 +295,9 @@ implemented.
 Default host runners are now bundled:
 
 - `bin/kotoba-shell-host-macos`: local macOS process runner with clipboard,
-  app-data fs, http fetch, notifications, and keychain command adapters.
+  app-data fs, http fetch, notifications, keychain, and EventKit Calendar
+  adapters. Calendar reads request native macOS Calendar access and return a
+  structured denial receipt until it is granted.
 - `bin/kotoba-shell-host-ios`: iOS simulator/device bridge through
   `xcrun simctl spawn booted`.
 - `bin/kotoba-shell-host-android`: Android device bridge through `adb shell`.
@@ -358,6 +360,18 @@ Android's WebView serves the bundle from a `WebViewAssetLoader` origin
 `file:///android_asset/`. An opaque origin has no DOM storage, no IndexedDB,
 and nothing for document-start script injection to match — the same class of
 problem the Apple side already fixed by leaving `file://` for a custom scheme.
+
+### Typed text input actions
+
+Apps bind a field and an explicit submit action with `kotoba.shell.input/field`
+and `kotoba.shell.input/submit`. The native host owns IME/editing state and emits
+the current string as the action event's `value`; the app owns validation,
+persistence, and effects. Input changes alone never invoke an app action.
+
+While an explicit action is running, the app runtime re-evaluates and commits
+the read-only surface every `KOTOBA_SHELL_ACTION_REFRESH_SECONDS` (default
+`0.5`). This streams durable ledger/checkpoint progress without exposing a
+mutable token buffer. Set it to `0` to disable action pulses.
 
 `app scaffold` generates minimal macOS, iOS, Android, and Windows native
 project skeletons from the EDN app manifest. The generated projects carry the
