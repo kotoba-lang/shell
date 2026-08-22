@@ -614,6 +614,44 @@ window.addEventListener('unhandledrejection', (event) => {
 })();
 """
 
+// WKWebView does not turn CSS `-webkit-app-region: drag` into an AppKit
+// window drag. Overlay apps mark their own non-interactive chrome explicitly.
+// JavaScript only reports whether the pointer is currently over such a region;
+// the native local event monitor below handles leftMouseDown synchronously.
+let windowDragHook = """
+(() => {
+  let last = null;
+  const update = (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  const region = target?.closest('[data-kotoba-window-drag]');
+  const interactive = target?.closest(
+    'a,button,input,select,textarea,summary,[role="button"],[contenteditable="true"],[data-kotoba-window-no-drag]'
+  );
+  const handler = window.webkit?.messageHandlers?.kotobaWindowDrag;
+    const draggable = Boolean(region && !interactive);
+    if (!handler || draggable === last) return;
+    last = draggable;
+    handler.postMessage(draggable);
+  };
+  document.addEventListener('mousemove', update, true);
+  document.addEventListener('mouseover', update, true);
+  window.addEventListener('blur', () => {
+    last = false;
+    window.webkit?.messageHandlers?.kotobaWindowDrag?.postMessage(false);
+  });
+})();
+"""
+
+final class KotobaWindowDragHandler: NSObject, WKScriptMessageHandler {
+  private(set) var draggable = false
+
+  func userContentController(_ userContentController: WKUserContentController,
+                             didReceive message: WKScriptMessage) {
+    guard message.name == "kotobaWindowDrag", let state = message.body as? Bool else { return }
+    draggable = state
+  }
+}
+
 // A web surface renders in a separate process, so `cacheDisplay` cannot see it
 // — capture through WKWebView.takeSnapshot, and only once the page has actually
 // finished loading rather than after a fixed delay.
@@ -842,12 +880,28 @@ func commitSurface(_ surface: (nodes: [Int: SurfaceNode], root: Int?), reason: S
 // got the kotoba:dom surface instead.
 var retainedWebDelegate: KotobaWebDelegate?
 var retainedWebView: WKWebView?
+var retainedWindowDragHandler: KotobaWindowDragHandler?
+var retainedWindowDragMonitor: Any?
 if let webURL {
   let configuration = WKWebViewConfiguration()
   let controller = WKUserContentController()
   controller.addUserScript(WKUserScript(source: webErrorHook,
                                         injectionTime: .atDocumentStart,
                                         forMainFrameOnly: true))
+  if titlebarOverlay {
+    let dragHandler = KotobaWindowDragHandler()
+    controller.add(dragHandler, name: "kotobaWindowDrag")
+    controller.addUserScript(WKUserScript(source: windowDragHook,
+                                          injectionTime: .atDocumentStart,
+                                          forMainFrameOnly: true))
+    retainedWindowDragHandler = dragHandler
+    retainedWindowDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { event in
+      guard dragHandler.draggable, event.window === window else { return event }
+      window.performDrag(with: event)
+      emit(["event": "window/drag-started"])
+      return nil
+    }
+  }
   configuration.userContentController = controller
   let webView = WKWebView(frame: window.contentView?.bounds ?? .zero,
                           configuration: configuration)
