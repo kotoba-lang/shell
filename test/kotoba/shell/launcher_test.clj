@@ -967,6 +967,15 @@
     (is (str/includes? (slurp "bin/kotoba-shell-host-macos-window.swift")
                        "window.titlebarAppearsTransparent = true"))))
 
+(deftest titlebar-overlay-turns-only-declared-web-chrome-into-a-window-drag
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (str/includes? source "[data-kotoba-window-drag]"))
+    (is (str/includes? source "[data-kotoba-window-no-drag]"))
+    (is (str/includes? source "a,button,input,select,textarea,summary"))
+    (is (str/includes? source "window.performDrag(with: event)"))
+    (is (str/includes? source "addLocalMonitorForEvents(matching: [.leftMouseDown])"))
+    (is (str/includes? source "dragHandler.draggable"))))
+
 (deftest app-run-passes-a-declared-icon-and-refuses-a-missing-one
   (let [icon (doto (java.io.File/createTempFile "kotoba-icon" ".png") (.deleteOnExit))
         manifest (fn [path]
