@@ -12,6 +12,8 @@ struct SurfaceNode {
 
 final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
   var inputValues: [String: String] = [:]
+  var endpoints: [String: String] = [:]
+  var bodies: [String: String] = [:]
 
   func controlTextDidChange(_ notification: Notification) {
     guard let field = notification.object as? NSTextField,
@@ -31,6 +33,45 @@ final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
       } else {
         print("{\"event\":\"input/action-cancelled\",\"action\":\"\(action)\"}"); fflush(stdout)
       }
+    } else if let endpoint = endpoints[action],
+              let url = URL(string: endpoint),
+              ["127.0.0.1", "localhost"].contains(url.host ?? "") {
+      let inputIds = ((sender.cell?.representedObject as? String) ?? "")
+        .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+      let value = inputIds.first.flatMap { inputValues[$0] } ?? ""
+      func jsonEscaped(_ raw: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [raw]),
+              let encoded = String(data: data, encoding: .utf8) else { return "" }
+        return String(encoded.dropFirst().dropLast().dropFirst().dropLast())
+      }
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      var body = (bodies[action] ?? "{}")
+        .replacingOccurrences(of: "$value", with: jsonEscaped(value))
+      for inputId in inputIds {
+        body = body.replacingOccurrences(of: "$\(inputId)",
+                                         with: jsonEscaped(inputValues[inputId] ?? ""))
+      }
+      request.httpBody = body.data(using: .utf8)
+      emit(["event": "input/action-started", "action": action, "endpoint": endpoint])
+      URLSession.shared.dataTask(with: request) { data, response, error in
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        if error == nil, (200..<300).contains(status), action.contains("oauth"),
+           let data,
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let rawURL = object["url"] as? String,
+           let authorizationURL = URL(string: rawURL),
+           authorizationURL.scheme == "https",
+           ["accounts.google.com", "login.microsoftonline.com"].contains(authorizationURL.host ?? "") {
+          DispatchQueue.main.async { NSWorkspace.shared.open(authorizationURL) }
+        }
+        emit(["event": "input/action-completed", "action": action,
+              "status": status, "ok": error == nil && (200..<300).contains(status),
+              "body": String(body.prefix(2000)), "error": error?.localizedDescription ?? ""])
+      }.resume()
     } else {
       var event: [String: Any] = ["event": "input/action", "action": action]
       if let inputId = sender.cell?.representedObject as? String {
@@ -45,7 +86,11 @@ final class KotobaActionTarget: NSObject, NSTextFieldDelegate {
 let actionTarget = KotobaActionTarget()
 
 func emit(_ value: [String: Any]) {
-  guard let data = try? JSONSerialization.data(withJSONObject: value),
+  // Keep event names grep-compatible as well as JSON-compatible. Foundation
+  // otherwise serializes `lifecycle/terminate` as `lifecycle\/terminate`,
+  // breaking the shell's line-oriented readiness contract.
+  guard let data = try? JSONSerialization.data(withJSONObject: value,
+                                                options: [.withoutEscapingSlashes]),
         let line = String(data: data, encoding: .utf8) else { return }
   print(line); fflush(stdout)
 }
@@ -102,6 +147,10 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
     let button = NSButton(title: directText, target: actionTarget, action: #selector(KotobaActionTarget.perform(_:)))
     button.identifier = NSUserInterfaceItemIdentifier(node.attrs["data-action"] ?? "unknown")
     button.cell?.representedObject = node.attrs["data-input-id"]
+    if let endpoint = node.attrs["data-endpoint"] {
+      actionTarget.endpoints[button.identifier?.rawValue ?? "unknown"] = endpoint
+      actionTarget.bodies[button.identifier?.rawValue ?? "unknown"] = node.attrs["data-body"] ?? "{}"
+    }
     button.bezelStyle = .rounded
     button.controlSize = .large
     button.font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -115,6 +164,18 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
     }
     return button
   }
+  if node.tag == "img" {
+    let imageView = NSImageView(frame: .zero)
+    imageView.imageScaling = .scaleProportionallyUpOrDown
+    imageView.imageAlignment = .alignCenter
+    if let source = node.attrs["src"] {
+      imageView.image = NSImage(contentsOfFile: source)
+    }
+    imageView.setAccessibilityLabel(node.attrs["alt"] ?? "image")
+    imageView.widthAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+    imageView.heightAnchor.constraint(equalToConstant: 560).isActive = true
+    return imageView
+  }
   if node.tag == "input" || node.tag == "textarea" {
     let field = NSTextField(string: node.attrs["value"] ?? "")
     let inputId = node.attrs["id"] ?? "input-\(id)"
@@ -124,6 +185,19 @@ func nativeView(id: Int, nodes: [Int: SurfaceNode]) -> NSView {
     field.font = NSFont.systemFont(ofSize: 14)
     field.bezelStyle = .roundedBezel
     field.focusRingType = .default
+    if node.tag == "textarea" {
+      field.maximumNumberOfLines = 4
+      field.usesSingleLineMode = false
+      field.cell?.wraps = true
+      field.cell?.isScrollable = false
+      field.heightAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
+    }
+    if node.attrs["readonly"] == "true" {
+      field.isEditable = false
+    }
+    if node.attrs["disabled"] == "true" {
+      field.isEnabled = false
+    }
     actionTarget.inputValues[inputId] = field.stringValue
     field.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
     return field
@@ -221,7 +295,16 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
   let smoke: Bool
   weak var window: NSWindow?
   var statusItem: NSStatusItem?
+  private var terminationEmitted = false
   init(smoke: Bool) { self.smoke = smoke }
+
+  private func emitTermination(source: String? = nil) {
+    guard !terminationEmitted else { return }
+    terminationEmitted = true
+    var event: [String: Any] = ["event": "lifecycle/terminate"]
+    if let source { event["source"] = source }
+    emit(event)
+  }
 
   func configure(window: NSWindow, title: String) {
     self.window = window
@@ -253,7 +336,7 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
   }
 
   @objc func quitApp() {
-    emit(["event": "lifecycle/terminate", "source": "status-bar"])
+    emitTermination(source: "status-bar")
     NSApp.terminate(nil)
   }
 
@@ -283,8 +366,13 @@ final class KotobaWindowDelegate: NSObject, NSWindowDelegate {
     return false
   }
   func windowWillClose(_ notification: Notification) {
-    print("{\"event\":\"lifecycle/terminate\"}"); fflush(stdout)
-    if smoke { NSApp.stop(nil) }
+    emitTermination()
+    // `NSApplication.stop` only flips the run-loop state. When it is called
+    // from a close notification there may be no subsequent AppKit event to
+    // make `run()` observe that state, leaving smoke/visual commands alive
+    // until their parent kills them. Smoke owns no user state, so terminate
+    // the application explicitly after the receipt has been flushed.
+    if smoke { NSApp.terminate(nil) }
   }
 }
 
@@ -378,6 +466,10 @@ FileHandle.standardInput.readabilityHandler = { handle in
 }
 if smoke {
   DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+    // Visual capture is an observation boundary: do not inherit an IME
+    // composition or focus animation from whichever app was active before us.
+    window.makeFirstResponder(nil)
+    window.displayIfNeeded()
     if let path = screenshotPath {
       let captured = writePNG(view: window.contentView!, path: path)
       print("{\"event\":\"visual/captured\",\"ok\":\(captured),\"path\":\"\(path)\"}"); fflush(stdout)

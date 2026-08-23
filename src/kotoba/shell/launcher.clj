@@ -21,6 +21,7 @@
                        "fs/write-text"
                        "fs/append-text"
                        "http/fetch"
+                       "browser/open-url"
                        "notify/show"
                        "keychain/read-text"
                        "keychain/write-text"
@@ -36,6 +37,7 @@
                      "fs/write-text"
                      "fs/append-text"
                      "http/fetch"
+                     "browser/open-url"
                      "notify/show"
                      "keychain/read-text"
                      "keychain/write-text"
@@ -49,6 +51,7 @@
                          "fs/write-text"
                          "fs/append-text"
                          "http/fetch"
+                         "browser/open-url"
                          "notify/show"
                          "keychain/read-text"
                          "keychain/write-text"
@@ -62,6 +65,7 @@
                          "fs/write-text"
                          "fs/append-text"
                          "http/fetch"
+                         "browser/open-url"
                          "notify/show"
                          "keychain/read-text"
                          "keychain/write-text"]}})
@@ -443,6 +447,7 @@
                "fs/write-text"
                "fs/append-text"
                "http/fetch"
+               "browser/open-url"
                "notify/show"]
        :deny []
        :audit true}))
@@ -1267,7 +1272,9 @@
   (let [target (target-option argv)
         target-known? (contains? supported-shell-targets target)
         provider-command (option-value argv "--provider-command")
-        text (or (option-value argv "--text") "")
+        text (if (some #{"--text-stdin"} argv)
+               (slurp *in*)
+               (or (option-value argv "--text") ""))
         host-command (option-value argv "--host-command")
         host-args (vec (option-values argv "--host-arg"))
         policy (provider-policy argv)
@@ -1283,7 +1290,7 @@
       {:kotoba.cli/ok? false
        :kotoba.cli/code :shell/provider-command-required
        :kotoba.cli/data (merge (shell-authority-data)
-                               {:kotoba.shell/usage "kotoba-shell native-host provider --target <target> --provider-command <command> [--text text]"})}
+                               {:kotoba.shell/usage "kotoba-shell native-host provider --target <target> --provider-command <command> [--text text | --text-stdin]"})}
 
       (not (provider-command-known? target provider-command))
       {:kotoba.cli/ok? false

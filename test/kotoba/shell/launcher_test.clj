@@ -3,7 +3,10 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
+            [kotoba.shell.connector-test]
             [kotoba.shell.experience :as experience]
+            [kotoba.shell.input-test]
+            [kotoba.shell.mangaka-app-test]
             [kotoba.shell.sealed-line :as sealed]
             [kotoba.shell.launcher :as launcher]))
 
@@ -57,7 +60,7 @@
            (get-in macos-result [:kotoba.cli/data :kotoba.shell/authority])))
     (is (false? (get-in macos-result [:kotoba.cli/data :kotoba.shell/deprecated-shim?])))
     (is (= :shell/native-host-ready (:kotoba.cli/code macos-result)))
-    (is (= 15 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
+    (is (= 16 (get-in macos-result [:kotoba.cli/data :kotoba.shell/provider-command-count])))
     (is (string? (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-command])))
     (is (= :process (get-in macos-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
     (is (= :simctl (get-in ios-result [:kotoba.cli/data :kotoba.shell/default-host-runner :kind])))
@@ -867,6 +870,24 @@
   (is (launcher/host-smoke-ok? :android "List of devices attached\nserial1 device\n" 0 false))
   (is (false? (launcher/host-smoke-ok? :android "List of devices attached\n" 0 false))))
 
+(deftest native-window-smoke-uses-terminal-appkit-shutdown
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (re-find #"if smoke \{ NSApp\.terminate\(nil\) \}" source))
+    (is (not (re-find #"if smoke \{ NSApp\.stop\(nil\) \}" source)))
+    (is (str/includes? source "NSStatusBar.system.statusItem"))
+    (is (str/includes? source "window.level = .floating"))
+    (is (str/includes? source "func windowDidMiniaturize"))
+    (is (str/includes? source "lifecycle/status-bar"))))
+
+(deftest macos-calendar-provider-is-backed-by-eventkit
+  (let [host (slurp "bin/kotoba-shell-host-macos")
+        helper (slurp "bin/kotoba-shell-calendar-macos.swift")]
+    (is (str/includes? host "calendar/list-events)"))
+    (is (str/includes? host "--from and --to"))
+    (is (str/includes? helper "EKEventStore"))
+    (is (str/includes? helper "requestFullAccessToEvents"))
+    (is (not (str/includes? helper "Application('Calendar')")))))
+
 (deftest ui-check-connects-browser-and-wasm-ui-substrates
   (let [result (launcher/dispatch ["ui" "check"])
         strict-result (launcher/dispatch ["ui" "check" "--strict"])]
@@ -929,7 +950,34 @@
     (is (= 3 (get-in receipt [:shell :ops-count])))
     (is (true? (get-in receipt [:kotobase :persisted?])))))
 
+(deftest macos-visual-capture-isolated-from-focus-and-ime
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (str/includes? source "node.attrs[\"readonly\"] == \"true\""))
+    (is (str/includes? source "field.isEditable = false"))
+    (is (str/includes? source "window.makeFirstResponder(nil)"))
+    (is (str/includes? source "window.displayIfNeeded()"))))
+
+(deftest action-runtime-streams-checkpoint-surfaces
+  (let [source (slurp "bin/kotoba-shell-app-runtime")]
+    (is (str/includes? source "KOTOBA_SHELL_ACTION_REFRESH_SECONDS"))
+    (is (str/includes? source "while kill -0 \"$action_pid\""))
+    (is (str/includes? source "action pulse:"))
+    (is (str/includes? source "commit_surface"))))
+
 (defn -main
   [& _]
-  (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test)]
+  (let [{:keys [fail error]} (clojure.test/run-tests 'kotoba.shell.launcher-test
+                                                      'kotoba.shell.connector-test
+                                                      'kotoba.shell.input-test
+                                                      'kotoba.shell.mangaka-app-test)]
     (System/exit (if (zero? (+ fail error)) 0 1))))
+(deftest provider-can-read-secret-text-from-stdin
+  (let [result (with-in-str "not-on-argv"
+                 (launcher/dispatch ["native-host" "provider"
+                                     "--target" "macos"
+                                     "--provider-command" "keychain/write-text"
+                                     "--policy-edn" "{:allow [\"keychain/write-text\"]}"
+                                     "--host-command" "/bin/echo"
+                                     "--text-stdin"]))]
+    (is (:kotoba.cli/ok? result))
+    (is (= "not-on-argv" (get-in result [:kotoba.cli/data :kotoba.shell/provider-output])))))

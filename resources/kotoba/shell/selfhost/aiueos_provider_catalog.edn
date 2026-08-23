@@ -3,8 +3,8 @@
  :canonical-format :edn
  :json-role :interop
  :oracle-exports {"provider-family-count" 9
-                  "provider-command-count" 15
-                  "portable-provider-command-count" 10
+                  "provider-command-count" 16
+                  "portable-provider-command-count" 11
                   "provider-status-class-count" 2
                   "provider-contract-score" 81302
                   "provider-catalog-digest" 12688
@@ -50,7 +50,8 @@
                      "contacts/list" 312
                      "calendar/list-events" 313
                      "webauthn/register" 314
-                     "webauthn/assert" 315}
+                     "webauthn/assert" 315
+                     "browser/open-url" 316}
           :statuses {"implemented-shell-provider" 1
                      "aiueos-audit-provider" 2}}
  :providers [{:id "aiueos/ledger-audit"
@@ -84,8 +85,8 @@
              {:id "shell/http-fetch"
               :oracle-label "http-fetch"
               :capability "http/fetch"
-              :matches ["http/fetch" "net/fetch" "http/*"]
-              :commands ["http/fetch"]
+              :matches ["http/fetch" "net/fetch" "http/*" "browser/open-url" "browser/*"]
+              :commands ["http/fetch" "browser/open-url"]
               :required-targets [:macos :ios :android :windows]
               :status "implemented-shell-provider"}
              {:id "shell/keychain"
