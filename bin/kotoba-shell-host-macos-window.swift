@@ -954,7 +954,10 @@ if let webURL {
 var inputBuffer = Data()
 FileHandle.standardInput.readabilityHandler = { handle in
   let data = handle.availableData
-  guard !data.isEmpty else { return }
+  guard !data.isEmpty else {
+    handle.readabilityHandler = nil
+    return
+  }
   inputBuffer.append(data)
   while let newline = inputBuffer.firstIndex(of: 0x0A) {
     let lineData = Data(inputBuffer[inputBuffer.startIndex..<newline])

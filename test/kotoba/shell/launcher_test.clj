@@ -976,6 +976,17 @@
     (is (str/includes? source "addLocalMonitorForEvents(matching: [.leftMouseDown])"))
     (is (str/includes? source "dragHandler.draggable"))))
 
+(deftest macos-host-stops-monitoring-standard-input-at-eof
+  ;; A packaged app is launched with stdin connected to /dev/null. Foundation
+  ;; keeps invoking a readability handler at EOF until the handler removes
+  ;; itself, so merely returning on empty data spins one CPU core forever.
+  (let [source (slurp "bin/kotoba-shell-host-macos-window.swift")]
+    (is (str/includes? source
+                       (str "guard !data.isEmpty else {\n"
+                            "    handle.readabilityHandler = nil\n"
+                            "    return\n"
+                            "  }")))))
+
 (deftest app-run-passes-a-declared-icon-and-refuses-a-missing-one
   (let [icon (doto (java.io.File/createTempFile "kotoba-icon" ".png") (.deleteOnExit))
         manifest (fn [path]
