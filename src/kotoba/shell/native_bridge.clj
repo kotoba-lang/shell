@@ -23,7 +23,7 @@
   canonical: the JSON is generated from the same `:allow`/`:deny` map the CLI
   evaluates, and both native implementations reproduce
   `kotoba.shell.launcher/policy-decision` exactly."
-  (:require [clojure.data.json :as json]
+  (:require [json.data-json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 

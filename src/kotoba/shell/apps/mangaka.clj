@@ -2,7 +2,7 @@
   "Kotoba-native local control surface for the Mangaka LangGraph/Genko loop."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.data.json :as json]))
+            [json.data-json :as json]))
 
 (defn- workspace-root []
   (or (System/getenv "MANGAKA_WORKSPACE")
