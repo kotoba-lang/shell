@@ -4214,6 +4214,9 @@
                                                 ["native-host" "provider"]]})}))
 
 (defn -main
+  "Leftover JVM library dispatch. Operator start is
+  `kotoba run kotoba/launcher.kotoba` / `kotoba compile`. There is no
+  :run alias and no clojure -M start path."
   [& argv]
   (let [argv (vec argv)
         json? (boolean (some #{"--json"} argv))

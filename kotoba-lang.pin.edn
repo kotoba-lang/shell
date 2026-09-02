@@ -1,0 +1,12 @@
+;; Language pin for this repository's Kotoba surface.
+;; Keeper-named last green SHA. Green main test run: 33620750254.
+;; Previous pin 48d7d3cb (murakumo#359) is left in history; it is not current here.
+;; Do not treat kotoba-lang main HEAD as production. Do not claim compiler 8d9f3e8f.
+;; Do not vendor HEAD past this SHA. HOLD/Release is not lifted.
+{:kotoba-lang/git "https://github.com/kotoba-lang/kotoba-lang"
+ :kotoba-lang/sha "245493fc68404e0ae0b0cfb426f3881fdba64b5f"
+ :kotoba-lang/short "245493fc"
+ :kotoba-lang/green-run 33620750254
+ :previous-pin "48d7d3cb6ccde4a0f8910bc6c7f4276de2b77fdd"
+ :previous-pin-used-on "murakumo#359"
+ :operator-entries "kotoba/operator-entries.edn"}

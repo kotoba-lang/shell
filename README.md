@@ -7,6 +7,45 @@ contracts.
 The old `kotoba-lang/kotoba` CLI no longer keeps a compatibility shim for
 `kotoba shell ...`; shell work and shell gates should call this CLI directly.
 
+## How to start now
+
+Operator start is `kotoba run` / `kotoba compile`. There is no `kotoba -M`
+and no `clojure -M` / `clj -M` start path. `:run` is gone.
+
+```sh
+kotoba compile kotoba/launcher.kotoba --target wasm --output target/kotoba/launcher.wasm --json
+kotoba compile kotoba/launcher.kotoba --target web --output target/kotoba/launcher.mjs --json
+kotoba run kotoba/launcher.kotoba
+sh scripts/kotoba-compile.sh
+sh scripts/kotoba-run.sh
+```
+
+Language pin is `kotoba-lang@245493fc68404e0ae0b0cfb426f3881fdba64b5f`
+(green main test run 33620750254). See `kotoba-lang.pin.edn`.
+Previous pin `48d7d3cb` (murakumo#359) is not current for this repo.
+Emit CLI is Release kotoba; the pin is the language SHA. HOLD/Release is
+not lifted.
+
+`resources/kotoba/shell/app/tauri_equivalent.kotoba` is an app-readiness
+program, not this launcher. Do not compile it as a stand-in kexe.
+
+Native sealed kexe (only if/when `bin/amu` is on aarch64-macos). Not short
+`aarch64`. Not a host OS binary:
+
+```sh
+bin/amu check kotoba/launcher.kotoba --jvm-free
+bin/amu compile kotoba/launcher.kotoba --target aarch64-macos --jvm-free --output launcher.kexe
+bin/amu verify launcher.kexe
+```
+
+Linux kexe-verify is HOLD (`scripts/amu-native.sh` exits 78, not fake `:ok`).
+Host scripts (`bin/kotoba-shell-host-*`) stay OS binaries. Do not wrap
+`KotobaShellBridge.java` (Android WebView) or Datalevin/LMDB JNI.
+
+Leftover JVM library tests live in `.github/workflows/leftover-jvm.yml`
+(`workflow_dispatch` only, labeled leftover). Default CI is job
+`kotoba-operator`.
+
 ## Status
 
 Everything below this section is a command reference for the full CLI
@@ -59,30 +98,32 @@ integration did more than once).
   deliberately absent from the bridge; each needs a real per-platform
   integration, and listing them would repeat the mistake the catalog already
   had to correct.
-- **CI has not run since 2026-08-04.** GitHub Actions is disabled for this
-  repository (`gh api repos/kotoba-lang/shell/actions/permissions` →
-  `{"enabled": false}`), workspace-wide, per ADR-2607300900. The
-  `.github/workflows/ci.yml` described below is accurate about what it *would*
-  do and is the reference for how these builds are exercised, but it is inert:
-  every commit after `38eea7b` was verified by hand, not by a gate. The
-  replacement lives in the superproject's murakumo fleet
-  (`scripts/fleet-ci/gates.edn`).
+- **Default CI is `kotoba compile` / guest-run, not `clojure -M`.** Job
+  `kotoba-operator` in `.github/workflows/ci.yml` installs Release kotoba
+  CLI, compiles `kotoba/launcher.kotoba` to wasm+web, checks files on disk,
+  then guest-runs via `instantiateKotoba`. Linux kexe-verify is HOLD (exit
+  78). Leftover JVM tests and leftover app-scaffold smoke live in
+  `.github/workflows/leftover-jvm.yml` (`workflow_dispatch` only). GitHub
+  Actions was previously disabled for this repository
+  (`{"enabled": false}`, ADR-2607300900); the workflow files are the
+  reference for how these builds are exercised.
 
 - **`app scaffold`/`app build` (macOS, iOS): real, verified.** `app scaffold`
   generates an XcodeGen `project.yml` and runs `xcodegen generate` itself
   (not a hand-written `project.pbxproj`), producing a project that
   `xcodebuild` actually builds — confirmed end to end, including installing
   and launching the built app on a real booted iOS Simulator and
-  screenshotting real WKWebView-rendered content. CI (`.github/workflows/
-  ci.yml`) runs a real `app scaffold` + `app build --execute` for both
-  targets on every push, not just a file-presence check.
+  screenshotting real WKWebView-rendered content. Leftover JVM
+  (`leftover-jvm.yml`, workflow_dispatch only) still has a leftover
+  `app scaffold` + `app build --execute` smoke for both targets. Default
+  CI does not run that path.
 - **`app scaffold`/`app build` (Android): real, verified end to end,
   including a real booted emulator install+launch.** Generates a real
   WebView-hosting `MainActivity.java` and a Gradle project that `gradle
-  assembleDebug` builds into a real `app-debug.apk`. CI now runs a real
-  `app scaffold` + `app build --execute` for Android on every push (same
-  pattern as the macOS/iOS smoke tests), after installing `gradle` via
-  Homebrew. **Real gotcha found while wiring this up**: Gradle 9.x lets AGP's
+  assembleDebug` builds into a real `app-debug.apk`. Leftover JVM
+  (`leftover-jvm.yml`, workflow_dispatch only) still has a leftover
+  Android `app scaffold` + `app build --execute` smoke. Default CI does
+  not run that path. **Real gotcha found while wiring this up**: Gradle 9.x lets AGP's
   `androidJdkImage` transform (the `jlink` step over `core-for-system-
   modules.jar`, needed for `compileSdk` 33+) auto-detect whichever JDK it
   finds newest among all installed JDKs, not whatever `java` resolves to on
@@ -212,18 +253,25 @@ integration did more than once).
   {...}`/`:capabilities {...}`) must translate it before calling this CLI;
   there is no schema auto-detection.
 - **Not published anywhere.** No npm package, no Homebrew formula, no
-  GitHub Release — `bin/kotoba-shell` is a thin `clojure -Sdeps` wrapper, so
-  even a hypothetical `brew install`/`npm install -g` would still require a
-  working Clojure CLI + JVM on the consumer's machine. Use it today as a
-  sibling checkout with `KOTOBA_SHELL_BIN` pointed at `bin/kotoba-shell`, or
-  a git dependency pinned to a specific commit (as `local-manimani/mobile`
-  already does for the underlying `kotoba-lang/kotoba` crates).
+  GitHub Release. `bin/kotoba-shell` is `kotoba run kotoba/launcher.kotoba`.
+  Leftover JVM library dispatch (`clojure -M -m kotoba.shell.launcher`) is
+  not a start path and has no `:run` alias. Use it today as a sibling
+  checkout with the Release kotoba CLI on PATH, or a git dependency pinned
+  to a specific commit (as `local-manimani/mobile` already does for the
+  underlying `kotoba-lang/kotoba` crates).
 
 ## Commands
 
 ```sh
-bin/kotoba-shell native-host check --target macos --json
-bin/kotoba-shell native-host run --target macos --host-command /bin/echo --host-arg ok --json
+kotoba compile kotoba/launcher.kotoba --target wasm --output target/kotoba/launcher.wasm --json
+kotoba compile kotoba/launcher.kotoba --target web --output target/kotoba/launcher.mjs --json
+kotoba run kotoba/launcher.kotoba
+bin/kotoba-shell
+# leftover JVM library (not a start path; no :run alias).
+# Guest treats native-host / app / store / doctor / e2e as host-listen HOLD.
+# clojure -M -m kotoba.shell.launcher native-host check --target macos --json
+# Remaining leftover-library subcommands used to ride bin/kotoba-shell when
+# that wrapper was `exec clojure -M -m kotoba.shell.launcher`.
 bin/kotoba-shell native-host provider --target macos --provider-command clipboard/write-text --text ok --json
 bin/kotoba-shell native-host provider --target macos --provider-command clipboard/read-text --json
 bin/kotoba-shell native-host provider --target macos --provider-command calendar/list-events --host-arg --from --host-arg 2026-07-01T00:00:00Z --host-arg --to --host-arg 2026-08-01T00:00:00Z --json

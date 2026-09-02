@@ -1,0 +1,206 @@
+(ns launcher
+  (:schemas {;; Whole-component operator entry. Not tauri_equivalent.kotoba
+             ;; (that file is an app-readiness program, not this launcher).
+             :launcher/policy-in [:record :launcher/policy-in
+                                  [[:command :string]
+                                   [:capability :string]
+                                   [:allow-star :bool]
+                                   [:allow-command :bool]
+                                   [:allow-capability :bool]
+                                   [:deny-star :bool]
+                                   [:deny-command :bool]
+                                   [:deny-capability :bool]]]})
+  (:export [main run
+            cmd-policy cmd-adapter cmd-api cmd-plugin
+            cmd-native-host cmd-app cmd-surface
+            cmd-release cmd-store cmd-distribution cmd-updater
+            cmd-doctor cmd-device-farm cmd-e2e cmd-ui
+            code-ready code-usage code-admitted
+            code-policy-denied code-host-listen-hold
+            target-macos target-ios target-android target-windows
+            cap-clipboard cap-fs cap-http cap-notify cap-keychain
+            cap-contacts cap-calendar cap-webauthn
+            blank? target-ok? capability-of
+            policy-allowed? policy-status
+            admitted? host-listen?]))
+
+;; Operator start for kotoba-lang/shell.
+;; Replaces bin/kotoba-shell `exec clojure -M -m kotoba.shell.launcher`
+;; and deps.edn :run. Public start:
+;;   kotoba run kotoba/launcher.kotoba
+;;   kotoba compile kotoba/launcher.kotoba --target wasm|web
+;; Native (sealed kexe, aarch64-macos only; Linux kexe-verify is HOLD):
+;;   bin/amu check kotoba/launcher.kotoba --jvm-free
+;;   bin/amu compile kotoba/launcher.kotoba --target aarch64-macos --jvm-free --output launcher.kexe
+;;   bin/amu verify launcher.kexe
+;;
+;; Guest owns command admission, target admission, capability mapping, and
+;; policy-decision (deny wins, then allow * / command / capability).
+;; main is not the constant 0.
+;;
+;; Host-listen HOLD (not implemented in this guest, not a fake ok):
+;; native-host process/simctl/adb, app scaffold/build/package, surface commit,
+;; store/release/device-farm HTTP, doctor/e2e/ui smoke that spawn OS tools.
+;; KotobaShellBridge.java is the Android WebView bridge — leave it; it is not
+;; Datalevin/LMDB/JNI to wrap. Host scripts stay OS binaries, not kexe.
+
+(defn cmd-policy [] :string "policy")
+(defn cmd-adapter [] :string "adapter")
+(defn cmd-api [] :string "api")
+(defn cmd-plugin [] :string "plugin")
+(defn cmd-native-host [] :string "native-host")
+(defn cmd-app [] :string "app")
+(defn cmd-surface [] :string "surface")
+(defn cmd-release [] :string "release")
+(defn cmd-store [] :string "store")
+(defn cmd-distribution [] :string "distribution")
+(defn cmd-updater [] :string "updater")
+(defn cmd-doctor [] :string "doctor")
+(defn cmd-device-farm [] :string "device-farm")
+(defn cmd-e2e [] :string "e2e")
+(defn cmd-ui [] :string "ui")
+
+(defn code-ready [] :i64 42)
+(defn code-usage [] :i64 2)
+(defn code-admitted [] :i64 11)
+(defn code-policy-denied [] :i64 21)
+(defn code-host-listen-hold [] :i64 90)
+
+(defn target-macos [] :string "macos")
+(defn target-ios [] :string "ios")
+(defn target-android [] :string "android")
+(defn target-windows [] :string "windows")
+
+(defn cap-clipboard [] :string "clipboard/text")
+(defn cap-fs [] :string "fs/app-data")
+(defn cap-http [] :string "http/fetch")
+(defn cap-notify [] :string "notify/show")
+(defn cap-keychain [] :string "keychain/text")
+(defn cap-contacts [] :string "contacts/read")
+(defn cap-calendar [] :string "calendar/read")
+(defn cap-webauthn [] :string "webauthn/passkey")
+
+(defn blank? [s :string] :bool
+  (string=? s ""))
+
+(defn target-ok? [target :string] :bool
+  (if (string=? target (target-macos))
+    true
+    (if (string=? target (target-ios))
+      true
+      (if (string=? target (target-android))
+        true
+        (string=? target (target-windows))))))
+
+(defn capability-of [command :string] :string
+  (if (string=? command "clipboard/read-text")
+    (cap-clipboard)
+    (if (string=? command "clipboard/write-text")
+      (cap-clipboard)
+      (if (string=? command "fs/read-text")
+        (cap-fs)
+        (if (string=? command "fs/write-text")
+          (cap-fs)
+          (if (string=? command "fs/append-text")
+            (cap-fs)
+            (if (string=? command "http/fetch")
+              (cap-http)
+              (if (string=? command "notify/show")
+                (cap-notify)
+                (if (string=? command "keychain/read-text")
+                  (cap-keychain)
+                  (if (string=? command "keychain/write-text")
+                    (cap-keychain)
+                    (if (string=? command "keychain/delete")
+                      (cap-keychain)
+                      (if (string=? command "contacts/list")
+                        (cap-contacts)
+                        (if (string=? command "calendar/list-events")
+                          (cap-calendar)
+                          (if (string=? command "webauthn/register")
+                            (cap-webauthn)
+                            (if (string=? command "webauthn/assert")
+                              (cap-webauthn)
+                              "")))))))))))))))
+
+(defn policy-allowed? [x [:ref :launcher/policy-in]] :bool
+  ;; Same decision as leftover launcher.clj policy-decision:
+  ;; deny {command, capability, *} wins; else allow {command, capability, *}.
+  (if (record-get x :deny-star)
+    false
+    (if (record-get x :deny-command)
+      false
+      (if (record-get x :deny-capability)
+        false
+        (if (record-get x :allow-star)
+          true
+          (if (record-get x :allow-command)
+            true
+            (record-get x :allow-capability)))))))
+
+(defn default-allow? [command :string] :bool
+  ;; leftover launcher.clj default-provider-policy allow list.
+  (if (string=? command "clipboard/read-text")
+    true
+    (if (string=? command "clipboard/write-text")
+      true
+      (if (string=? command "fs/read-text")
+        true
+        (if (string=? command "fs/write-text")
+          true
+          (if (string=? command "fs/append-text")
+            true
+            (if (string=? command "http/fetch")
+              true
+              (if (string=? command "browser/open-url")
+                true
+                (string=? command "notify/show")))))))))
+
+(defn policy-status [command :string] :i64
+  (if (blank? command)
+    (code-usage)
+    (if (default-allow? command)
+      (code-admitted)
+      (code-policy-denied))))
+
+(defn admitted? [command :string] :bool
+  (if (string=? command (cmd-policy))
+    true
+    (if (string=? command (cmd-adapter))
+      true
+      (if (string=? command (cmd-api))
+        true
+        (string=? command (cmd-plugin))))))
+
+(defn host-listen? [command :string] :bool
+  (if (string=? command (cmd-native-host))
+    true
+    (if (string=? command (cmd-app))
+      true
+      (if (string=? command (cmd-surface))
+        true
+        (if (string=? command (cmd-release))
+          true
+          (if (string=? command (cmd-store))
+            true
+            (if (string=? command (cmd-distribution))
+              true
+              (if (string=? command (cmd-updater))
+                true
+                (if (string=? command (cmd-doctor))
+                  true
+                  (if (string=? command (cmd-device-farm))
+                    true
+                    (if (string=? command (cmd-e2e))
+                      true
+                      (string=? command (cmd-ui)))))))))))))
+
+(defn run [command :string] :i64
+  (if (admitted? command)
+    (code-admitted)
+    (if (host-listen? command)
+      (code-host-listen-hold)
+      (code-usage))))
+
+(defn main [] :i64
+  (code-ready))

@@ -6,107 +6,39 @@ on:
   pull_request:
 
 jobs:
-  test:
-    # macos-latest, not ubuntu: launcher_test.clj's native-host tests shell
-    # out to real macOS tools (/usr/bin/pbpaste, /usr/bin/pbcopy, the
-    # kotoba-shell-host-macos* binaries) -- this repo's substrate is
-    # macOS-specific by design (WebAuthn PRF passkey provider, #1).
-    runs-on: macos-latest
+  kotoba-operator:
+    # Default CI is kotoba compile / guest-run. Not clojure -M.
+    # Language pin: kotoba-lang@245493fc68404e0ae0b0cfb426f3881fdba64b5f
+    # (green main test run 33620750254). Emit CLI is Release kotoba.
+    # This job does not claim compiler 8d9f3e8f. There is no kotoba -M.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: orgs/kotoba-lang/shell
-      # Shell's Tamaki Observatory and test alias consume the public Tamaki
-      # library through the same sibling layout used by the west workspace.
-      - uses: actions/checkout@v4
-        with:
-          repository: etzhayyim/tamaki
-          path: orgs/etzhayyim/tamaki
-      - uses: actions/checkout@v4
-        with:
-          repository: kotoba-lang/hil
-          path: orgs/kotoba-lang/hil
-      # launcher.clj's substrate-readiness check reads these siblings by
-      # hardcoded relative path (../dom-gpu, ../browser).
-      - uses: actions/checkout@v4
-        with:
-          repository: kotoba-lang/dom-gpu
-          path: orgs/kotoba-lang/dom-gpu
-      - uses: actions/checkout@v4
-        with:
-          repository: kotoba-lang/browser
-          path: orgs/kotoba-lang/browser
-      # `e2e stack` closes the actual aiueos -> kototama -> shell -> kotobase
-      # receipt loop. Keep its sibling repos present in CI instead of silently
-      # weakening the test when running outside the west superproject.
-      - uses: actions/checkout@v4
-        with:
-          repository: kotoba-lang/aiueos
-          path: orgs/kotoba-lang/aiueos
-      - uses: actions/checkout@v4
-        with:
-          repository: kotoba-lang/kototama
-          path: orgs/kotoba-lang/kototama
-      - uses: actions/checkout@v4
-        with:
-          repository: kotoba-lang/kotobase
-          path: orgs/kotoba-lang/kotobase
-      - uses: DeLaGuardo/setup-clojure@13.4
-        with:
-          cli: latest
-      # app scaffold(macOS/iOS)は project.pbxproj を手書きせず xcodegen で
-      # 生成する(ADR-2607081015 の WKWebView 実用優先決定、native-render-pipeline
-      # ブランチ)。CI にも無いと launcher_test.clj の app-scaffold テストが
-      # xcodegen 不在のまま "動いたことにする" 偽陽性になる。
-      - run: brew install xcodegen
-      - working-directory: orgs/kotoba-lang/shell
-        run: clojure -M:test
-      - working-directory: orgs/kotoba-lang/shell
-        run: clojure -M:lint
-      # ADR-2607081015 follow-up(native-render-pipeline, build-step-timeouts):
-      # unit test は :xcodegen-ok?/ファイル存在だけを確認しており、xcodegen が
-      # 吐いた project.pbxproj が実際に xcodebuild を通るかは手動確認でしか
-      # 担保していなかった(実 gap — 見つかった実バグ2件、project.yml の
-      # resources: キー無視と10秒 timeout はどちらもここを自動化していれば
-      # CI が先に検出できていたはず)。scaffold→build --execute を実行し、
-      # xcodebuild が本当に成功することを毎回確認する。
-      - name: app build smoke test (macOS)
-        working-directory: orgs/kotoba-lang/shell
+      - name: Install Release kotoba CLI
         run: |
-          ./bin/kotoba-shell app scaffold --target macos --app-id dev.kotoba.ci-smoke \
-            --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
-          ./bin/kotoba-shell app build --target macos --execute --app-id dev.kotoba.ci-smoke \
-            --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
-      - name: app build smoke test (iOS simulator SDK)
-        working-directory: orgs/kotoba-lang/shell
+          set -eu
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/kotoba-linux-amd64.tar.gz \
+            "https://github.com/kotoba-lang/kotoba/releases/download/v0.7.3/kotoba-linux-amd64.tar.gz"
+          tar -xzf /tmp/kotoba-linux-amd64.tar.gz -C /tmp
+          bin=$(find /tmp -type f -name kotoba | head -n 1)
+          test -n "$bin"
+          install -m 755 "$bin" "$HOME/.local/bin/kotoba"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          test -x "$HOME/.local/bin/kotoba"
+      - name: kotoba compile (wasm and web)
+        run: sh scripts/kotoba-compile.sh
+      - name: prove artifacts exist before any emit claim
         run: |
-          ./bin/kotoba-shell app scaffold --target ios --app-id dev.kotoba.ci-smoke \
-            --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
-            --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
-          ./bin/kotoba-shell app build --target ios --execute --app-id dev.kotoba.ci-smoke \
-            --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
-            --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
-      # Android の app build は README で "Not yet wired into CI" と明記していた
-      # gap — default-app-build-step が呼ぶのは `gradle`(`./gradlew` ではなく
-      # bare command)なので、macos-latest ランナーに無ければ brew で入れる。
-      - run: brew install gradle
-      # 実機確認(この worktree で AGP 8.5.0 / compileSdk 35 を再現): Gradle 9.x が
-      # AGP の androidJdkImage 変換(core-for-system-modules.jar 用 jlink)に使う
-      # JDK を Homebrew の無印 `openjdk`(執筆時点で 26)から自動検出してしまうと
-      # `Could not resolve all files for configuration ':app:androidJdkImage'`
-      # で assembleDebug が落ちる(AGP 8.5.0 は compileSdk 34 までしか検証されて
-      # おらず JDK 17/21 系を前提にしている)。JAVA_HOME を明示して Gradle 自身と
-      # そのツールチェーン検出を JDK 17 に固定することで解消する。
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: app build smoke test (Android)
-        working-directory: orgs/kotoba-lang/shell
+          set -eu
+          test -s target/kotoba/launcher.wasm
+          test -s target/kotoba/launcher.mjs
+          echo "bytes launcher.wasm=$(wc -c < target/kotoba/launcher.wasm)"
+          echo "bytes launcher.mjs=$(wc -c < target/kotoba/launcher.mjs)"
+      - name: guest run (instantiateKotoba + exports)
+        run: sh scripts/kotoba-run.sh
+      - name: Linux kexe-verify is HOLD (exit 78, not fake ok)
         run: |
-          ./bin/kotoba-shell app scaffold --target android --app-id dev.kotoba.ci-smoke \
-            --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
-            --output-dir /tmp/kotoba-shell-ci-smoke-android --json
-          ./bin/kotoba-shell app build --target android --execute --app-id dev.kotoba.ci-smoke \
-            --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
-            --output-dir /tmp/kotoba-shell-ci-smoke-android --json
+          set +e
+          sh scripts/amu-native.sh kotoba/launcher.kotoba
+          test $? -eq 78

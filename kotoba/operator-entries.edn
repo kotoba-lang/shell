@@ -1,0 +1,29 @@
+;; Disk inventory for kotoba-amu / language-pin audits.
+;; Do not compile tauri_equivalent.kotoba or a host OS binary as a kexe.
+{:kotoba-lang/pin "245493fc68404e0ae0b0cfb426f3881fdba64b5f"
+ :operator-entries ["kotoba/launcher.kotoba"]
+ :not-operator-start
+ {:tauri-equivalent "resources/kotoba/shell/app/tauri_equivalent.kotoba — app readiness program, not the launcher"
+  :android-webview-bridge "resources/kotoba/shell/app/KotobaShellBridge.java — Android WebView, not Clojure JNI"
+  :host-os-binaries ["bin/kotoba-shell-host-macos"
+                     "bin/kotoba-shell-host-macos-passkey.swift"
+                     "bin/kotoba-shell-host-macos-webview.swift"
+                     "bin/kotoba-shell-host-macos-window.swift"
+                     "bin/kotoba-shell-host-ios"
+                     "bin/kotoba-shell-host-ios-app.swift"
+                     "bin/kotoba-shell-host-android"
+                     "bin/kotoba-shell-host-windows.cmd"
+                     "bin/kotoba-shell-host-windows.ps1"]
+  :leftover-jvm-aliases [":test" ":lint"]
+  :leftover-jvm-main "kotoba.shell.launcher/-main is leftover library dispatch, not a start alias"}
+ :kexe {:emitted []
+        :linux-verify :hold
+        :release-target "aarch64-macos"
+        :short-aarch64-not-release true
+        :invocation ["bin/amu check kotoba/launcher.kotoba --jvm-free"
+                     "bin/amu compile kotoba/launcher.kotoba --target aarch64-macos --jvm-free --output launcher.kexe"
+                     "bin/amu verify launcher.kexe"]}
+ :do-not-wrap ["Datalevin/LMDB JNI"
+               "KotobaShellBridge.java"
+               "tech.kwik/kwik"
+               "org.bouncycastle/bcpkix-jdk18on"]}
