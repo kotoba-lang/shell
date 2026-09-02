@@ -9,16 +9,21 @@ The old `kotoba-lang/kotoba` CLI no longer keeps a compatibility shim for
 
 ## How to start now
 
-Operator start is `kotoba run` / `kotoba compile`. There is no `kotoba -M`
-and no `clojure -M` / `clj -M` start path. `:run` is gone.
+Working operator start is compile + `instantiateKotoba`. There is no
+`kotoba -M` and no `clojure -M` / `clj -M` start path. `:run` is gone.
 
 ```sh
 kotoba compile kotoba/launcher.kotoba --target wasm --output target/kotoba/launcher.wasm --json
 kotoba compile kotoba/launcher.kotoba --target web --output target/kotoba/launcher.mjs --json
-kotoba run kotoba/launcher.kotoba
 sh scripts/kotoba-compile.sh
 sh scripts/kotoba-run.sh
+bin/kotoba-shell
 ```
+
+`kotoba run kotoba/launcher.kotoba` is the intended public command. On
+Release CLI it is `kotoba/runtime-rejected` (typed forms) until the CLI
+accepts this guest. That is a named CLI source-run gap, not a working
+start. Do not treat `exec kotoba run` as the live operator path.
 
 Language pin is `kotoba-lang@245493fc68404e0ae0b0cfb426f3881fdba64b5f`
 (green main test run 33620750254). See `kotoba-lang.pin.edn`.
@@ -253,20 +258,27 @@ integration did more than once).
   {...}`/`:capabilities {...}`) must translate it before calling this CLI;
   there is no schema auto-detection.
 - **Not published anywhere.** No npm package, no Homebrew formula, no
-  GitHub Release. `bin/kotoba-shell` is `kotoba run kotoba/launcher.kotoba`.
-  Leftover JVM library dispatch (`clojure -M -m kotoba.shell.launcher`) is
-  not a start path and has no `:run` alias. Use it today as a sibling
-  checkout with the Release kotoba CLI on PATH, or a git dependency pinned
-  to a specific commit (as `local-manimani/mobile` already does for the
-  underlying `kotoba-lang/kotoba` crates).
+  GitHub Release. `bin/kotoba-shell` is compile + `instantiateKotoba`
+  (`scripts/kotoba-compile.sh` then `scripts/kotoba-run.sh`). `kotoba run
+  kotoba/launcher.kotoba` is the intended public command and a CLI
+  source-run gap (`kotoba/runtime-rejected` on Release CLI) until the CLI
+  accepts this guest. Leftover JVM library dispatch
+  (`clojure -M -m kotoba.shell.launcher`) is not a start path and has no
+  `:run` alias. Use it today as a sibling checkout with the Release kotoba
+  CLI on PATH, or a git dependency pinned to a specific commit (as
+  `local-manimani/mobile` already does for the underlying
+  `kotoba-lang/kotoba` crates).
 
 ## Commands
 
 ```sh
 kotoba compile kotoba/launcher.kotoba --target wasm --output target/kotoba/launcher.wasm --json
 kotoba compile kotoba/launcher.kotoba --target web --output target/kotoba/launcher.mjs --json
-kotoba run kotoba/launcher.kotoba
+sh scripts/kotoba-compile.sh
+sh scripts/kotoba-run.sh
 bin/kotoba-shell
+# intended public command (CLI source-run gap until the CLI accepts this guest):
+# kotoba run kotoba/launcher.kotoba
 # leftover JVM library (not a start path; no :run alias).
 # Guest treats native-host / app / store / doctor / e2e as host-listen HOLD.
 # clojure -M -m kotoba.shell.launcher native-host check --target macos --json

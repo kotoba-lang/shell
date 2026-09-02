@@ -24,11 +24,13 @@
             policy-allowed? policy-status
             admitted? host-listen?]))
 
-;; Operator start for kotoba-lang/shell.
+;; Operator entry for kotoba-lang/shell.
 ;; Replaces bin/kotoba-shell `exec clojure -M -m kotoba.shell.launcher`
-;; and deps.edn :run. Public start:
-;;   kotoba run kotoba/launcher.kotoba
+;; and deps.edn :run. Working start is compile + instantiateKotoba:
 ;;   kotoba compile kotoba/launcher.kotoba --target wasm|web
+;;   sh scripts/kotoba-compile.sh && sh scripts/kotoba-run.sh
+;; Intended public command (CLI source-run gap until the CLI accepts this guest):
+;;   kotoba run kotoba/launcher.kotoba
 ;; Native (sealed kexe, aarch64-macos only; Linux kexe-verify is HOLD):
 ;;   bin/amu check kotoba/launcher.kotoba --jvm-free
 ;;   bin/amu compile kotoba/launcher.kotoba --target aarch64-macos --jvm-free --output launcher.kexe

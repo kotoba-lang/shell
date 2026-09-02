@@ -7,7 +7,8 @@ on:
 
 jobs:
   kotoba-operator:
-    # Default CI is kotoba compile / guest-run. Not clojure -M.
+    # Default CI is kotoba compile + instantiateKotoba. Not clojure -M.
+    # Not `kotoba run` of the .kotoba source (CLI source-run gap).
     # Language pin: kotoba-lang@245493fc68404e0ae0b0cfb426f3881fdba64b5f
     # (green main test run 33620750254). Emit CLI is Release kotoba.
     # This job does not claim compiler 8d9f3e8f. There is no kotoba -M.

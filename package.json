@@ -1,7 +1,7 @@
 {
   "name": "@kotoba-lang/shell",
   "version": "0.1.0",
-  "description": "Kotoba Shell: Kotoba operator (kotoba run / kotoba compile) and native-host bridge"
+  "description": "Kotoba Shell: Kotoba operator (compile + instantiateKotoba) and native-host bridge",
   "bin": {
     "kotoba-shell": "bin/kotoba-shell"
   },
@@ -15,7 +15,7 @@
   "scripts": {
     "compile": "sh scripts/kotoba-compile.sh",
     "test": "sh scripts/kotoba-run.sh",
-    "check": "kotoba run kotoba/launcher.kotoba"
+    "check": "sh scripts/kotoba-compile.sh && sh scripts/kotoba-run.sh"
   },
   "license": "UNLICENSED",
   "private": false

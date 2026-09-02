@@ -1,7 +1,7 @@
 name: leftover-jvm
 
 # Leftover JVM library tests and leftover app-scaffold smoke.
-# Not operator start. Default CI is kotoba compile / kotoba run.
+# Not operator start. Default CI is kotoba compile + instantiateKotoba.
 # :run is gone. This workflow may invoke leftover
 # `clojure -M -m kotoba.shell.launcher` as a library, not a start alias.
 on:

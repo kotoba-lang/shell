@@ -4214,9 +4214,11 @@
                                                 ["native-host" "provider"]]})}))
 
 (defn -main
-  "Leftover JVM library dispatch. Operator start is
-  `kotoba run kotoba/launcher.kotoba` / `kotoba compile`. There is no
-  :run alias and no clojure -M start path."
+  "Leftover JVM library dispatch. Working operator start is
+  compile + instantiateKotoba (`scripts/kotoba-compile.sh` then
+  `scripts/kotoba-run.sh`). `kotoba run kotoba/launcher.kotoba` is the
+  intended public command and a CLI source-run gap until the CLI accepts
+  this guest. There is no :run alias and no clojure -M start path."
   [& argv]
   (let [argv (vec argv)
         json? (boolean (some #{"--json"} argv))

@@ -1116,13 +1116,18 @@
     (is (str/includes? source "Privacy_Accessibility"))
     (is (str/includes? source "Privacy_ScreenCapture"))))
 
-(deftest cli-wrapper-is-kotoba-run-not-clojure-m
-  ;; Operator start is kotoba run. The former `exec clojure -Sdeps ... -M -m
-  ;; kotoba.shell.launcher` wrapper is gone, not leftover-jvm-run-path exit 2.
+(deftest cli-wrapper-is-compile-then-instantiate-not-clojure-m
+  ;; Working operator start is compile + instantiateKotoba. Do not exec
+  ;; `kotoba run` of the .kotoba source: Release CLI source-run of typed
+  ;; forms is kotoba/runtime-rejected. The former `exec clojure -Sdeps ...
+  ;; -M -m kotoba.shell.launcher` wrapper is gone, not leftover-jvm-run-path
+  ;; exit 2.
   (let [wrapper (slurp (launcher/sibling-path "bin/kotoba-shell"))]
-    (is (str/includes? wrapper "kotoba run kotoba/launcher.kotoba"))
+    (is (str/includes? wrapper "scripts/kotoba-compile.sh"))
+    (is (str/includes? wrapper "scripts/kotoba-run.sh"))
     (is (nil? (re-find #"exec clojure" wrapper)))
-    (is (nil? (re-find #"-M -m kotoba\.shell\.launcher" wrapper)))))
+    (is (nil? (re-find #"-M -m kotoba\.shell\.launcher" wrapper)))
+    (is (nil? (re-find #"exec kotoba run" wrapper)))))
 
 (deftest release-connect-gates-production-signing-updater-and_store_credentials
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"

@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Operator start is kotoba run / kotoba compile. There is no kotoba -M
-# and no clojure -M / clj -M start path.
+# Working operator start is compile + instantiateKotoba.
+# There is no kotoba -M and no clojure -M / clj -M start path.
 #
 # Replaces the former:
 #   exec clojure -Sdeps ... -M -m kotoba.shell.launcher
 # That wrapper is gone, not leftover-jvm-run-path exit 2.
+#
+# Do not exec `kotoba run kotoba/launcher.kotoba` here. On Release CLI,
+# source-run of this guest is kotoba/runtime-rejected (typed forms). That
+# is the intended public command and a named CLI gap, not a working start.
 repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
-if ! command -v kotoba >/dev/null 2>&1; then
-  echo "kotoba CLI is not on PATH. Operator start is:" >&2
+if [ "$#" -gt 0 ]; then
+  echo "working operator start is compile + instantiateKotoba." >&2
+  echo "leftover subcommands are not dispatched from this wrapper." >&2
+  echo "intended public command (CLI source-run gap until the CLI accepts this guest):" >&2
   echo "  kotoba run kotoba/launcher.kotoba" >&2
-  echo "  kotoba compile kotoba/launcher.kotoba --target wasm --output target/kotoba/launcher.wasm --json" >&2
-  echo "  kotoba compile kotoba/launcher.kotoba --target web --output target/kotoba/launcher.mjs --json" >&2
-  echo "There is no kotoba -M and no clojure -M start." >&2
-  exit 127
+  echo "leftover JVM library (not start): clojure -M -m kotoba.shell.launcher $*" >&2
 fi
 
-exec kotoba run kotoba/launcher.kotoba "$@"
+sh scripts/kotoba-compile.sh
+exec sh scripts/kotoba-run.sh
