@@ -1116,18 +1116,18 @@
     (is (str/includes? source "Privacy_Accessibility"))
     (is (str/includes? source "Privacy_ScreenCapture"))))
 
-(deftest cli-wrapper-overrides-the-published-coordinate-rather-than-adding-to-it
-  ;; `clojure` reads the deps.edn of the directory the CLI is invoked from, and
-  ;; apps in this workspace depend on the published coordinate at a pinned
-  ;; :git/sha. A -Sdeps map under any other lib key leaves both copies on the
-  ;; classpath, and `repo-root` — a classpath resource lookup — then answers
-  ;; with whichever came first. Running the CLI inside such an app silently ran
-  ;; the pinned shell: it named target binaries under ~/.gitlibs and rejected
-  ;; manifests this checkout accepts. Same key, and -Sdeps replaces it.
-  (let [wrapper (slurp (launcher/sibling-path "bin/kotoba-shell"))
-        sdeps (re-find #"-Sdeps \"\{:deps \{([^ ]+)" wrapper)]
-    (is (some? sdeps) "the wrapper still passes a -Sdeps map")
-    (is (= "io.github.kotoba-lang/shell" (second sdeps)))))
+(deftest cli-wrapper-is-compile-then-instantiate-not-clojure-m
+  ;; Working operator start is compile + instantiateKotoba. Do not exec
+  ;; `kotoba run` of the .kotoba source: Release CLI source-run of typed
+  ;; forms is kotoba/runtime-rejected. The former `exec clojure -Sdeps ...
+  ;; -M -m kotoba.shell.launcher` wrapper is gone, not leftover-jvm-run-path
+  ;; exit 2.
+  (let [wrapper (slurp (launcher/sibling-path "bin/kotoba-shell"))]
+    (is (str/includes? wrapper "scripts/kotoba-compile.sh"))
+    (is (str/includes? wrapper "scripts/kotoba-run.sh"))
+    (is (nil? (re-find #"exec clojure" wrapper)))
+    (is (nil? (re-find #"-M -m kotoba\.shell\.launcher" wrapper)))
+    (is (nil? (re-find #"exec kotoba run" wrapper)))))
 
 (deftest release-connect-gates-production-signing-updater-and_store_credentials
   (let [manifest "{:app/id \"kotoba.demo\" :app/name \"Kotoba Demo\" :app/version \"0.1.0\" :ios/bundle-id \"dev.kotoba.demo\" :android/application-id \"dev.kotoba.demo\"}"
@@ -1797,7 +1797,8 @@
 
 (defn -main
   [& _]
-  ;; `clojure -M:test` runs this namespace's -main, so a test namespace that is
+  ;; leftover `clojure -M:test` (workflow_dispatch leftover-jvm.yml only) runs
+  ;; this namespace's -main, so a test namespace that is
   ;; not listed here never executes. kotoba.shell.{event,input,mangaka-app}-test
   ;; existed but were unreachable; they are wired in now and pass.
   ;;

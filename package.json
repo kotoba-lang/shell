@@ -1,7 +1,7 @@
 {
   "name": "@kotoba-lang/shell",
   "version": "0.1.0",
-  "description": "Kotoba Shell: Clojure/Kotoba-native shell adapter and native-host bridge",
+  "description": "Kotoba Shell: Kotoba operator (compile + instantiateKotoba) and native-host bridge",
   "bin": {
     "kotoba-shell": "bin/kotoba-shell"
   },
@@ -13,8 +13,9 @@
     "deps.edn"
   ],
   "scripts": {
-    "test": "clojure -M:test",
-    "check": "clojure -M -m kotoba.shell.launcher native-host check --target macos --json"
+    "compile": "sh scripts/kotoba-compile.sh",
+    "test": "sh scripts/kotoba-run.sh",
+    "check": "sh scripts/kotoba-compile.sh && sh scripts/kotoba-run.sh"
   },
   "license": "UNLICENSED",
   "private": false

@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The CLI runs the shell it lives in.
+# Working operator start is compile + instantiateKotoba.
+# There is no kotoba -M and no clojure -M / clj -M start path.
 #
-# `clojure` reads the deps.edn of whatever directory it is invoked from, and
-# many apps in this workspace depend on `io.github.kotoba-lang/shell` at a
-# pinned :git/sha. Naming the local root under a *different* lib key left both
-# copies on the classpath, and `repo-root` — which resolves paths from a
-# classpath resource — then found the pinned one. Running the CLI from an app
-# directory silently ran an older shell: the plan it printed named target
-# binaries under ~/.gitlibs and rejected manifests this checkout accepts.
+# Replaces the former:
+#   exec clojure -Sdeps ... -M -m kotoba.shell.launcher
+# That wrapper is gone, not leftover-jvm-run-path exit 2.
 #
-# Using the same lib key makes the -Sdeps map, which is merged last, replace
-# that coordinate instead of sitting beside it.
+# Do not exec `kotoba run kotoba/launcher.kotoba` here. On Release CLI,
+# source-run of this guest is kotoba/runtime-rejected (typed forms). That
+# is the intended public command and a named CLI gap, not a working start.
 repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-exec clojure \
-  -Sdeps "{:deps {io.github.kotoba-lang/shell {:local/root \"$repo_dir\"}}}" \
-  -M -m kotoba.shell.launcher "$@"
+cd "$repo_dir"
+
+if [ "$#" -gt 0 ]; then
+  echo "working operator start is compile + instantiateKotoba." >&2
+  echo "leftover subcommands are not dispatched from this wrapper." >&2
+  echo "intended public command (CLI source-run gap until the CLI accepts this guest):" >&2
+  echo "  kotoba run kotoba/launcher.kotoba" >&2
+  echo "leftover JVM library (not start): clojure -M -m kotoba.shell.launcher $*" >&2
+fi
+
+sh scripts/kotoba-compile.sh
+exec sh scripts/kotoba-run.sh

@@ -1,0 +1,87 @@
+name: leftover-jvm
+
+# Leftover JVM library tests and leftover app-scaffold smoke.
+# Not operator start. Default CI is kotoba compile + instantiateKotoba.
+# :run is gone. This workflow may invoke leftover
+# `clojure -M -m kotoba.shell.launcher` as a library, not a start alias.
+on:
+  workflow_dispatch:
+
+jobs:
+  leftover-jvm-test:
+    # macos-latest: leftover launcher_test.clj still shells out to real
+    # macOS tools (/usr/bin/pbpaste, bin/kotoba-shell-host-macos*).
+    # That is leftover library coverage, not operator start.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: orgs/kotoba-lang/shell
+      - uses: actions/checkout@v4
+        with:
+          repository: etzhayyim/tamaki
+          path: orgs/etzhayyim/tamaki
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/hil
+          path: orgs/kotoba-lang/hil
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/dom-gpu
+          path: orgs/kotoba-lang/dom-gpu
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/browser
+          path: orgs/kotoba-lang/browser
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/aiueos
+          path: orgs/kotoba-lang/aiueos
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/kototama
+          path: orgs/kotoba-lang/kototama
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/kotobase
+          path: orgs/kotoba-lang/kotobase
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: brew install xcodegen
+      - name: leftover JVM tests (not operator start)
+        working-directory: orgs/kotoba-lang/shell
+        run: clojure -M:test
+      - name: leftover JVM lint (not operator start)
+        working-directory: orgs/kotoba-lang/shell
+        run: clojure -M:lint
+      - name: leftover app build smoke test (macOS)
+        working-directory: orgs/kotoba-lang/shell
+        run: |
+          clojure -M -m kotoba.shell.launcher app scaffold --target macos --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
+          clojure -M -m kotoba.shell.launcher app build --target macos --execute --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --output-dir /tmp/kotoba-shell-ci-smoke-macos --json
+      - name: leftover app build smoke test (iOS simulator SDK)
+        working-directory: orgs/kotoba-lang/shell
+        run: |
+          clojure -M -m kotoba.shell.launcher app scaffold --target ios --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
+          clojure -M -m kotoba.shell.launcher app build --target ios --execute --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --ios-bundle-id dev.kotoba.ci-smoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-ios --json
+      - run: brew install gradle
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: leftover app build smoke test (Android)
+        working-directory: orgs/kotoba-lang/shell
+        run: |
+          clojure -M -m kotoba.shell.launcher app scaffold --target android --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-android --json
+          clojure -M -m kotoba.shell.launcher app build --target android --execute --app-id dev.kotoba.ci-smoke \
+            --app-name CISmoke --version 0.1.0 --android-application-id dev.kotoba.cismoke \
+            --output-dir /tmp/kotoba-shell-ci-smoke-android --json
