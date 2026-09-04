@@ -1,6 +1,6 @@
 ;; Disk inventory for kotoba-amu / language-pin audits.
 ;; Do not compile tauri_equivalent.kotoba or a host OS binary as a kexe.
-{:kotoba-lang/pin "6b2f2e8e807361a9728b9d00c498a9e8d48bfc02"
+{:kotoba-lang/pin "b19e058603e30a0ea8f6f8b4ec8c5622d4371a16"
  :operator-entries ["kotoba/launcher.kotoba"]
  :not-operator-start
  {:tauri-equivalent "resources/kotoba/shell/app/tauri_equivalent.kotoba — app readiness program, not the launcher"

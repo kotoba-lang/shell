@@ -9,8 +9,8 @@ jobs:
   kotoba-operator:
     # Default CI is kotoba compile + instantiateKotoba. Not clojure -M.
     # Not `kotoba run` of the .kotoba source (CLI source-run gap).
-    # Language pin: kotoba-lang@6b2f2e8e807361a9728b9d00c498a9e8d48bfc02
-    # (green main test run 33723368124). Emit CLI is Release kotoba.
+    # Language pin: kotoba-lang@b19e058603e30a0ea8f6f8b4ec8c5622d4371a16
+    # (green main test run 33838649365). Emit CLI is Release kotoba.
     # This job does not claim compiler 8d9f3e8f. There is no kotoba -M.
     runs-on: ubuntu-latest
     steps:
