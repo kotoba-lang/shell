@@ -25,9 +25,10 @@ Release CLI it is `kotoba/runtime-rejected` (typed forms) until the CLI
 accepts this guest. That is a named CLI source-run gap, not a working
 start. Do not treat `exec kotoba run` as the live operator path.
 
-Language pin is `kotoba-lang@245493fc68404e0ae0b0cfb426f3881fdba64b5f`
-(green main test run 33620750254). See `kotoba-lang.pin.edn`.
-Previous pin `48d7d3cb` (murakumo#359) is not current for this repo.
+Language pin is `kotoba-lang@b19e058603e30a0ea8f6f8b4ec8c5622d4371a16`
+(green main test run 33838649365). See `kotoba-lang.pin.edn`.
+Previous pin `6b2f2e8e` is not current for this repo. Older pin
+`245493fc` (shell#29) remains in history.
 Emit CLI is Release kotoba; the pin is the language SHA. HOLD/Release is
 not lifted.
 
