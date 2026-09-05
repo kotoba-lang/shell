@@ -597,6 +597,7 @@ func writePNG(image: NSImage, path: String) -> Bool {
 // otherwise swallow. A single unresolved lookup inside DOMContentLoaded takes a
 // whole surface down, and that has to be reportable with no browser attached.
 let webErrorHook = """
+window.__kotobaShell = Object.freeze({runtime: 'native-webkit'});
 window.__kotobaErrors = [];
 window.addEventListener('error', (event) => {
   window.__kotobaErrors.push(String(event.message)
@@ -655,7 +656,7 @@ final class KotobaWindowDragHandler: NSObject, WKScriptMessageHandler {
 // A web surface renders in a separate process, so `cacheDisplay` cannot see it
 // — capture through WKWebView.takeSnapshot, and only once the page has actually
 // finished loading rather than after a fixed delay.
-final class KotobaWebDelegate: NSObject, WKNavigationDelegate {
+final class KotobaWebDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
   let smoke: Bool
   let screenshotPath: String?
   let settleSeconds: Double
@@ -665,6 +666,20 @@ final class KotobaWebDelegate: NSObject, WKNavigationDelegate {
     self.smoke = smoke
     self.screenshotPath = screenshotPath
     self.settleSeconds = settleSeconds
+  }
+
+  func webView(_ webView: WKWebView,
+               createWebViewWith configuration: WKWebViewConfiguration,
+               for navigationAction: WKNavigationAction,
+               windowFeatures: WKWindowFeatures) -> WKWebView? {
+    // A target=_blank handoff is an explicit request to leave the embedded
+    // surface. Passkey authentication then runs in the person's real browser,
+    // whose credential store is authorized for WebAuthn.
+    if navigationAction.targetFrame == nil,
+       let url = navigationAction.request.url {
+      NSWorkspace.shared.open(url)
+    }
+    return nil
   }
 
   private func capture(_ webView: WKWebView) {
@@ -909,6 +924,7 @@ if let webURL {
   let webDelegate = KotobaWebDelegate(smoke: smoke, screenshotPath: screenshotPath,
                                       settleSeconds: settleSeconds)
   webView.navigationDelegate = webDelegate
+  webView.uiDelegate = webDelegate
   retainedWebDelegate = webDelegate
   retainedWebView = webView
   window.contentView?.addSubview(webView)
