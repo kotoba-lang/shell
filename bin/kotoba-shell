@@ -14,12 +14,38 @@ set -euo pipefail
 repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+# A subcommand is REFUSED, not ignored.
+#
+# This block used to print the note below and then fall through to the compile
+# + run demo, so `kotoba-shell app scaffold --target ios --target android ...`
+# wrote nothing and exited 0. Measured 2026-09-06: cloud-itonami-app's
+# mobile/README documents exactly that command as the way to build the iOS and
+# Android apps, and running it produced no output directory and no error — a
+# request that could not be served returning the value of one that was
+# (ADR-2608136000).
+#
+# Exit 2 and not 1: this wrapper did not run and refuse the operation, it
+# cannot dispatch it at all. 1 would say the operation was attempted.
+#
+# The decision NOT to exec the JVM library from here is unchanged — that is
+# what the comment above rejects, and it is a different thing from telling the
+# caller their command was not served.
 if [ "$#" -gt 0 ]; then
-  echo "working operator start is compile + instantiateKotoba." >&2
-  echo "leftover subcommands are not dispatched from this wrapper." >&2
+  echo "kotoba-shell: subcommands are not dispatched from this wrapper: $*" >&2
+  echo >&2
+  echo "working operator start is compile + instantiateKotoba, with NO arguments:" >&2
+  echo "  kotoba-shell" >&2
+  echo >&2
   echo "intended public command (CLI source-run gap until the CLI accepts this guest):" >&2
   echo "  kotoba run kotoba/launcher.kotoba" >&2
-  echo "leftover JVM library (not start): clojure -M -m kotoba.shell.launcher $*" >&2
+  echo >&2
+  echo "the library that implements this subcommand today, run from the CONSUMER" >&2
+  echo "repository (it resolves --manifest and :web/dist-dir against the working" >&2
+  echo "directory, and this wrapper cd's into kotoba-lang/shell, which is why it" >&2
+  echo "could not serve it even if it dispatched):" >&2
+  echo "  clojure -Sdeps '{:deps {io.github.kotoba-lang/shell {:local/root \"<path-to>/kotoba-lang/shell\"}}}' \\" >&2
+  echo "    -M -m kotoba.shell.launcher $*" >&2
+  exit 2
 fi
 
 sh scripts/kotoba-compile.sh
