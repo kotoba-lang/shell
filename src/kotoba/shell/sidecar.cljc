@@ -23,12 +23,13 @@
 
   Pure `.cljc`: no process, no filesystem. `resolve-dir` takes the directory
   listing it should decide over, so the same code decides identically on every
-  runtime and a test needs no temp directories.")
+  runtime and a test needs no temp directories."
+  (:require [kotoba.lang.text]))
 
 (def schema "kotoba.shell.sidecar.v0")
 
 (defn- non-blank-string? [s]
-  (and (string? s) (not= "" (clojure.string/trim s))))
+  (and (string? s) (not= "" (kotoba.lang.text/trim s))))
 
 (defn- command-ok? [command]
   (and (vector? command)
@@ -113,7 +114,7 @@
   (let [m (apply-env-overrides manifest (or env {}))
         issues (problems m)]
     (if (seq issues)
-      {:error (clojure.string/join "; " issues)}
+      {:error (kotoba.lang.text/join "; " issues)}
       (let [{:keys [dir error]} (resolve-dir host m)]
         (if error
           {:error error}

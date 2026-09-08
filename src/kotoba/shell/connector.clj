@@ -5,7 +5,7 @@
   argv-only process, stdin/stdout framing, bounded result shape, and redacted
   failure data."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str])
+            [kotoba.lang.text :as str])
   (:import [java.io ByteArrayOutputStream InputStream]
            [java.util.concurrent TimeUnit]))
 

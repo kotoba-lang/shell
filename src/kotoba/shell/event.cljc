@@ -19,7 +19,7 @@
   parsed map (string keys, as JSON gives them) rather than a JSON string, so
   this namespace stays portable and free of a parser dependency -- the caller
   owns transport."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (def contract "kotoba.shell.app-event.v0")
 
