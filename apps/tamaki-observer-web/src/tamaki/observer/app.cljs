@@ -1,7 +1,7 @@
 (ns tamaki.observer.app
   (:require ["three" :as THREE]
             ["three/addons/controls/OrbitControls.js" :refer [OrbitControls]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [datascript.core :as d]
             [jp-go-dds.core :as dds]
             [re-frame.core :as rf]
@@ -273,7 +273,7 @@
   (let [entries (:files git-tree)
         position
         (fn [{:keys [path type]}]
-          (let [depth (count (clojure.string/split (or path "") #"/"))
+          (let [depth (count (str/split (or path "") #"/"))
                 angle (* 6.28318 (hex-unit path 0))
                 radius (+ 2.4 (* 0.3 depth)
                           (if (= type "blob") (* 0.65 (hex-unit path 4)) 0))]
@@ -703,7 +703,7 @@
                                       :github "GITHUB CONSERVATORY"
                                       :review "REVIEW BLOOM"
                                       :merge "MERGE CANOPY"
-                                      (str/upper-case (name kind)))
+                                      (str/upper (name kind)))
                                     " · "
                                     (let [value (str (:value node))]
                                       (subs value 0 (min 12 (count value)))))
@@ -932,7 +932,7 @@
           :let [key (organism-key organism)
                 {:keys [color label]} (get organism-grove-style key
                                            {:color 0x75c69b
-                                            :label (str/upper-case (name key))})
+                                            :label (str/upper (name key))})
                 angle (+ (- (/ js/Math.PI 2)) (* index (/ (* 2 js/Math.PI)
                                                           (max 1 (count organisms)))))
                 focused? (or (= selected-scope :federation)
@@ -1472,7 +1472,7 @@
               ^{:key (:id node)}
               [:span {:class (str "result-node " (name (:type node)))
                       :title (str (:value node))}
-               (str/upper-case (name (:type node))) ]))]])
+               (str/upper (name (:type node))) ]))]])
        [:small "source / PR resultを待機中…"])]))
 
 (defn event-time [event]
@@ -1508,7 +1508,7 @@
 
 (defn work-stage [snapshot agent]
   (let [event (latest-agent-event snapshot agent)
-        signal (str/lower-case
+        signal (str/lower
                 (str (label (:kind event) "") " " (:stream event) " "
                      (:text event)))
         issue (or (:issue agent) (:issue event))]
@@ -1711,7 +1711,7 @@
       [:div.objective-health
        [:span.scope-label (if (= scope :federation)
                             "ALL"
-                            (str/upper-case (name scope)))]
+                            (str/upper (name scope)))]
        [:span.live-dot] (str live-count " live")
        (when (pos? stale-count)
          [:span.stale-count (str stale-count " stale")])]]
