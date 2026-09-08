@@ -21,7 +21,7 @@
   In a plain browser — `shadow-cljs watch`, a Pages preview — `available?` is
   false and every call resolves to `:ok? false` with
   `:error \"bridge-unavailable\"`, so one bundle can run in both places."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (defn- bridge []
   (some-> js/globalThis (aget "kotobaShell")))
