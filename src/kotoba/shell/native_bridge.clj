@@ -25,7 +25,7 @@
   `kotoba.shell.launcher/policy-decision` exactly."
   (:require [json.data-json :as json]
             [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [kotoba.lang.text :as str]))
 
 (def bridge-provider-commands
   "Commands the in-app bridge implements natively on every target it supports.

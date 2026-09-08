@@ -4,7 +4,7 @@
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
             [clojure.set :as set]
-            [clojure.string]
+            [kotoba.lang.text]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]
             [kotoba.tamaki.business :as business]
@@ -56,8 +56,8 @@
               (:events base)
               (let [text (String. bytes 0 (inc last-newline)
                                   java.nio.charset.StandardCharsets/UTF_8)
-                    appended (->> (clojure.string/split-lines text)
-                                  (remove clojure.string/blank?)
+                    appended (->> (kotoba.lang.text/split-lines text)
+                                  (remove kotoba.lang.text/blank?)
                                   (mapv edn/read-string))
                     next-state {:path path
                                 :offset (+ offset last-newline 1)
@@ -87,27 +87,27 @@
                                   (.getAbsolutePath (io/file directory))
                                   args)]
     (when (zero? exit)
-      (clojure.string/split-lines out))))
+      (kotoba.lang.text/split-lines out))))
 
 (defn- parse-ref [line]
-  (let [[sha ref] (clojure.string/split line #"\t" 2)]
+  (let [[sha ref] (kotoba.lang.text/split line #"\t" 2)]
     {:name ref :sha sha
      :kind (cond
-             (clojure.string/starts-with? ref "refs/heads/") "branch"
-             (clojure.string/starts-with? ref "refs/remotes/") "remote-branch"
-             (clojure.string/starts-with? ref "refs/tags/") "tag"
+             (kotoba.lang.text/starts-with? ref "refs/heads/") "branch"
+             (kotoba.lang.text/starts-with? ref "refs/remotes/") "remote-branch"
+             (kotoba.lang.text/starts-with? ref "refs/tags/") "tag"
              :else "ref")}))
 
 (defn- parse-commit [line]
-  (let [[sha & parents] (clojure.string/split line #" ")]
+  (let [[sha & parents] (kotoba.lang.text/split line #" ")]
     {:sha sha :parents (vec parents)}))
 
 (defn- path-node [line]
-  (let [[metadata path] (clojure.string/split line #"\t" 2)
-        [mode type sha] (clojure.string/split metadata #" ")]
+  (let [[metadata path] (kotoba.lang.text/split line #"\t" 2)
+        [mode type sha] (kotoba.lang.text/split metadata #" ")]
     {:path path :sha sha :mode mode :type type
      :parent (some-> path io/file .getParent
-                     (clojure.string/replace java.io.File/separator "/"))}))
+                     (kotoba.lang.text/replace java.io.File/separator "/"))}))
 
 (defn- git-object-tree
   "Read the complete locally fetched Git object graph. No sampling is used:
@@ -380,7 +380,7 @@
         result-patch
         (fn [result-id]
           (when result-id
-            (clojure.string/replace (str result-id) #"^result/" "")))
+            (kotoba.lang.text/replace (str result-id) #"^result/" "")))
         evaluated-patches
         (set (keep #(result-patch
                     (get-in % [:tamaki.event/data :evaluation/result]))
@@ -735,7 +735,7 @@
                                    :usage/cache-read :usage/cache-write])
                         {:provider (or (:agent.run/runner run)
                                        (some-> (:agent.run/model run)
-                                               (clojure.string/split #":")
+                                               (kotoba.lang.text/split #":")
                                                first)
                                        "unknown")
                          :input (or (:usage/input data) 0)

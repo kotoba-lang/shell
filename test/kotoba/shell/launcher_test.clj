@@ -1,7 +1,7 @@
 (ns kotoba.shell.launcher-test
   (:require [json.data-json :as json]
             [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
             [kotoba.shell.event-test]

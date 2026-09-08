@@ -3,7 +3,7 @@
   (:require [json.data-json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [kotoba.shell.native-bridge :as bridge]
             [kotoba.shell.stack-e2e :as stack-e2e]))
 
@@ -2343,7 +2343,7 @@
   (let [target (target-option argv)
         target-known? (contains? supported-shell-targets target)
         custom-command (option-value argv "--host-command")
-        windows-host? (str/starts-with? (str/lower-case (System/getProperty "os.name" "")) "windows")
+        windows-host? (str/starts-with? (str/lower (System/getProperty "os.name" "")) "windows")
         command (or (option-value argv "--host-command")
                     (when (or (not= :windows target) windows-host?)
                       (default-host-command target)))

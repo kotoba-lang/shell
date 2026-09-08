@@ -1,6 +1,6 @@
 (ns kotoba.shell.tamaki-observer
   "Read-only native projection of Tamaki's durable event stream."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.java.io :as io]
             [kotoba.tamaki.loop :as agent-loop]
             [kotoba.tamaki.model :as model]
