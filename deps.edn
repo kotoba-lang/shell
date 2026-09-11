@@ -13,7 +13,7 @@
   ;; Intended public command (CLI source-run gap until the CLI accepts this guest):
   ;;   kotoba run kotoba/launcher.kotoba
   ;; There is no kotoba -M. :run is gone (not leftover-jvm-run-path exit 2).
-  ;; Leftover Java in src/kotoba/shell/launcher.clj stays as a library —
+  ;; Leftover Java in src/kotoba/shell/launcher.cljk stays as a library —
   ;; not a start path. Default CI is kotoba compile + instantiateKotoba.
   :test {:extra-paths ["test" "apps/tamaki-observer/src"]
          :extra-deps {tamaki/tamaki {:local/root "../../etzhayyim/tamaki"}}
