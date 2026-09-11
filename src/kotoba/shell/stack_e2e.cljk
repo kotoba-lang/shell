@@ -49,7 +49,7 @@
                      "{:aiueos/manifest {:aiueos/component :kotoba-shell/e2e "
                      ":aiueos/kind :service :aiueos/trust :verified "
                      ":aiueos/imports #{} :aiueos/exports #{}}})))")
-        ai-run (subprocess aiueos-dir ["clojure" "-M" "-e" ai-expr])
+        ai-run (subprocess aiueos-dir ["kbb" "-M" "-e" ai-expr])
         ai-result (last-edn (:output ai-run))
         granted? (and (not (:timed-out? ai-run))
                       (zero? (:exit ai-run))
@@ -58,7 +58,7 @@
         ;; CI and fresh workstations. Keep the generic participant timeout
         ;; tight, but give the compiler-backed tender boundary three minutes.
         tender-run (when granted?
-                     (subprocess kototama-dir ["clojure" "-M:cli" "run" wasm-path] 180000))
+                     (subprocess kototama-dir ["kbb" "-M:cli" "run" wasm-path] 180000))
         guest-ok? (and tender-run (not (:timed-out? tender-run))
                        (zero? (:exit tender-run))
                        (re-find #":result 120" (:output tender-run)))

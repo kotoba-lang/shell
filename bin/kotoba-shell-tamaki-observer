@@ -56,7 +56,7 @@ if [[ "${KOTOBA_SHELL_WATCH:-0}" == "1" ]]; then
   shadow_pid_file="$web_dir/target/shadow-watch.pid"
   shadow_pid="$(command cat "$shadow_pid_file" 2>/dev/null || true)"
   if [[ -z "$shadow_pid" ]] || ! kill -0 "$shadow_pid" 2>/dev/null ||
-     ! ps -p "$shadow_pid" -o command= | rg -q "shadow-cljs watch app"; then
+     ! ps -p "$shadow_pid" -o command= | rg -q "amu compile --target wasm32-browser app"; then
     (
       cd "$web_dir"
       nohup npm run watch >>target/shadow-watch.log 2>&1 &
@@ -81,7 +81,7 @@ mkdir -p "$web_dir/target"
   cd "$app_dir"
   # The projection folds a growing append-only event stream. Bound the daemon
   # heap so a long-lived Observatory cannot consume the whole workstation.
-  exec clojure -J-Xmx1024m -M -m kotoba.shell.tamaki-web-data "$web_dist/snapshot.json"
+  exec kbb -J-Xmx1024m -M -m kotoba.shell.tamaki-web-data "$web_dist/snapshot.json"
 ) >>"$web_dir/target/data.log" 2>&1 &
 data_pid=$!
 

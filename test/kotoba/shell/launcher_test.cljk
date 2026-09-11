@@ -1119,7 +1119,7 @@
 (deftest cli-wrapper-is-compile-then-instantiate-not-clojure-m
   ;; Working operator start is compile + instantiateKotoba. Do not exec
   ;; `kotoba run` of the .kotoba source: Release CLI source-run of typed
-  ;; forms is kotoba/runtime-rejected. The former `exec clojure -Sdeps ...
+  ;; forms is kotoba/runtime-rejected. The former `exec kbb -Sdeps ...
   ;; -M -m kotoba.shell.launcher` wrapper is gone, not leftover-jvm-run-path
   ;; exit 2.
   (let [wrapper (slurp (launcher/sibling-path "bin/kotoba-shell"))]
@@ -1797,7 +1797,7 @@
 
 (defn -main
   [& _]
-  ;; leftover `clojure -M:test` (workflow_dispatch leftover-jvm.yml only) runs
+  ;; leftover `kbb -M:test` (workflow_dispatch leftover-jvm.yml only) runs
   ;; this namespace's -main, so a test namespace that is
   ;; not listed here never executes. kotoba.shell.{event,input,mangaka-app}-test
   ;; existed but were unreachable; they are wired in now and pass.
