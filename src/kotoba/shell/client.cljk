@@ -18,7 +18,7 @@
   `:ok? false` and a reason. A caller has to handle \"the policy says no\"
   regardless, and an exception makes that path easy to forget.
 
-  In a plain browser — `shadow-cljs watch`, a Pages preview — `available?` is
+  In a plain browser — `amu compile --target wasm32-browser`, a Pages preview — `available?` is
   false and every call resolves to `:ok? false` with
   `:error \"bridge-unavailable\"`, so one bundle can run in both places."
   (:require [kotoba.lang.text :as str]))

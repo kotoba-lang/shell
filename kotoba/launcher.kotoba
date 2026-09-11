@@ -25,7 +25,7 @@
             admitted? host-listen?]))
 
 ;; Operator entry for kotoba-lang/shell.
-;; Replaces bin/kotoba-shell `exec clojure -M -m kotoba.shell.launcher`
+;; Replaces bin/kotoba-shell `exec kbb -M -m kotoba.shell.launcher`
 ;; and deps.edn :run. Working start is compile + instantiateKotoba:
 ;;   kotoba compile kotoba/launcher.kotoba --target wasm|web
 ;;   sh scripts/kotoba-compile.sh && sh scripts/kotoba-run.sh

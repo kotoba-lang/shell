@@ -10,7 +10,7 @@ The old `kotoba-lang/kotoba` CLI no longer keeps a compatibility shim for
 ## How to start now
 
 Working operator start is compile + `instantiateKotoba`. There is no
-`kotoba -M` and no `clojure -M` / `clj -M` start path. `:run` is gone.
+`kotoba -M` and no `kbb -M` / `kbb -M` start path. `:run` is gone.
 
 ```sh
 kotoba compile kotoba/launcher.kotoba --target wasm --output target/kotoba/launcher.wasm --json
@@ -104,7 +104,7 @@ integration did more than once).
   deliberately absent from the bridge; each needs a real per-platform
   integration, and listing them would repeat the mistake the catalog already
   had to correct.
-- **Default CI is `kotoba compile` / guest-run, not `clojure -M`.** Job
+- **Default CI is `kotoba compile` / guest-run, not `kbb -M`.** Job
   `kotoba-operator` in `.github/workflows/ci.yml` installs Release kotoba
   CLI, compiles `kotoba/launcher.kotoba` to wasm+web, checks files on disk,
   then guest-runs via `instantiateKotoba`. Linux kexe-verify is HOLD (exit
@@ -264,7 +264,7 @@ integration did more than once).
   kotoba/launcher.kotoba` is the intended public command and a CLI
   source-run gap (`kotoba/runtime-rejected` on Release CLI) until the CLI
   accepts this guest. Leftover JVM library dispatch
-  (`clojure -M -m kotoba.shell.launcher`) is not a start path and has no
+  (`kbb -M -m kotoba.shell.launcher`) is not a start path and has no
   `:run` alias. Use it today as a sibling checkout with the Release kotoba
   CLI on PATH, or a git dependency pinned to a specific commit (as
   `local-manimani/mobile` already does for the underlying
@@ -282,9 +282,9 @@ bin/kotoba-shell
 # kotoba run kotoba/launcher.kotoba
 # leftover JVM library (not a start path; no :run alias).
 # Guest treats native-host / app / store / doctor / e2e as host-listen HOLD.
-# clojure -M -m kotoba.shell.launcher native-host check --target macos --json
+# kbb -M -m kotoba.shell.launcher native-host check --target macos --json
 # Remaining leftover-library subcommands used to ride bin/kotoba-shell when
-# that wrapper was `exec clojure -M -m kotoba.shell.launcher`.
+# that wrapper was `exec kbb -M -m kotoba.shell.launcher`.
 bin/kotoba-shell native-host provider --target macos --provider-command clipboard/write-text --text ok --json
 bin/kotoba-shell native-host provider --target macos --provider-command clipboard/read-text --json
 bin/kotoba-shell native-host provider --target macos --provider-command calendar/list-events --host-arg --from --host-arg 2026-07-01T00:00:00Z --host-arg --to --host-arg 2026-08-01T00:00:00Z --json
@@ -405,7 +405,7 @@ const reply = await window.kotobaShell.invoke("clipboard/write-text", { text: "o
 `invoke` never rejects: a denied command, a missing provider and a provider
 failure all resolve with `ok: false` and a reason, and in a plain browser
 `available` is false so one bundle runs both on a device and under
-`shadow-cljs watch`. Replies carry the same `kotoba.shell.audit.v0` record the
+`amu compile --target wasm32-browser`. Replies carry the same `kotoba.shell.audit.v0` record the
 CLI prints.
 
 This is what makes a ClojureScript app shippable to a phone. An app whose

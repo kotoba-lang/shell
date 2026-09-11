@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Working operator start is compile + instantiateKotoba.
-# There is no kotoba -M and no clojure -M / clj -M start path.
+# There is no kotoba -M and no kbb -M / kbb -M start path.
 #
 # Replaces the former:
-#   exec clojure -Sdeps ... -M -m kotoba.shell.launcher
+#   exec kbb -Sdeps ... -M -m kotoba.shell.launcher
 # That wrapper is gone, not leftover-jvm-run-path exit 2.
 #
 # Do not exec `kotoba run kotoba/launcher.kotoba` here. On Release CLI,
@@ -43,7 +43,7 @@ if [ "$#" -gt 0 ]; then
   echo "repository (it resolves --manifest and :web/dist-dir against the working" >&2
   echo "directory, and this wrapper cd's into kotoba-lang/shell, which is why it" >&2
   echo "could not serve it even if it dispatched):" >&2
-  echo "  clojure -Sdeps '{:deps {io.github.kotoba-lang/shell {:local/root \"<path-to>/kotoba-lang/shell\"}}}' \\" >&2
+  echo "  kbb -Sdeps '{:deps {io.github.kotoba-lang/shell {:local/root \"<path-to>/kotoba-lang/shell\"}}}' \\" >&2
   echo "    -M -m kotoba.shell.launcher $*" >&2
   exit 2
 fi

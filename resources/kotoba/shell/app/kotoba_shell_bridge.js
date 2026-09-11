@@ -31,7 +31,7 @@
       ok: false,
       error: "bridge-unavailable",
       // Deliberately not thrown: a web bundle that also runs in a plain
-      // browser (`shadow-cljs watch`, a Pages preview) should be able to
+      // browser (`amu compile --target wasm32-browser`, a Pages preview) should be able to
       // branch on this rather than crash.
       detail: "no kotoba-shell native host is attached to this WebView"
     });
