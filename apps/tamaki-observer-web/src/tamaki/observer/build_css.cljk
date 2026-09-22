@@ -3,7 +3,7 @@
             [css.build :as css]
             [jp-go-dds.tokens :as tokens]))
 
-(def source "src/tamaki/observer/style.cljs")
+(def source "src/tamaki/observer/style.cljk")
 (def output "dist/style.css")
 (def generated-output "dist/style.generated.css")
 
