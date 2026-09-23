@@ -52,6 +52,54 @@ Leftover JVM library tests live in `.github/workflows/leftover-jvm.yml`
 (`workflow_dispatch` only, labeled leftover). Default CI is job
 `kotoba-operator`.
 
+## Building an app from a consumer repo (kbb, no JVM)
+
+`bin/kotoba-shell <subcommand>` runs the launcher library on the kbb engine
+(SCI on Node) through `bin/kotoba_shell.cljk`. Run it **from the consumer
+repo**: `--manifest`, `:web/dist-dir` and `--output-dir` resolve against the
+caller's directory, and the consumer needs no `deps.edn` entry. `kbb` comes
+from `PATH`, or `$KBB`.
+
+```sh
+cd <consumer>        # has app.kotoba.edn and its :web/dist-dir
+<shell>/bin/kotoba-shell app scaffold --target ios --manifest app.kotoba.edn --json
+<shell>/bin/kotoba-shell app check    --target ios --manifest app.kotoba.edn --json
+<shell>/bin/kotoba-shell app build    --target ios --manifest app.kotoba.edn --execute --json
+```
+
+Without `--execute`, `app build` / `app package` only **plan** the step
+(`executed? false`, `reason planned`) and still exit 0; the built `.app` does
+not exist until you pass `--execute`.
+
+Until 2026-09-23 this wrapper refused every subcommand with exit 2: the
+launcher was JVM code the kbb engine could not load, so there was no working
+way to build an iOS app with kotoba-shell. Host effects (files, processes,
+digests, env, HTTP) now go through `kotoba.shell.host`, whose `:cljs` branch
+is the kbb path; its `:clj` branch holds the former JVM bodies and is
+unmeasured since the move.
+
+Measured 2026-09-23 on the kbb engine, iOS 26.5 Simulator:
+
+- `app scaffold` → `app check` (`app-ready`, exit 0) → `app build --execute`
+  (`** BUILD SUCCEEDED **`) → `simctl install` + `launch` renders the
+  consumer's `index.html` through the `WebBundle` scheme handler, including a
+  `vendor/*.js` it loads.
+- `app check` on a copy with `Resources/WebBundle/index.html` deleted →
+  `app-blocked`, exit 1, `missing-files` names exactly that path.
+- `app package --target ios` without a team id → `app-package-blocked`,
+  `reason team-id-required`, exit 1 (signing, not a launcher defect).
+- `app run` needs `:app/runtime` in the manifest; a web-bundle-only manifest
+  gets `app-runtime-invalid`. Install and launch such an app with `simctl`.
+- A simulator whose WebKit GPU process cannot launch (`Could not find matching
+  appex record for bundleIdentifier "com.apple.WebKit.GPU"` in its log) shows
+  a blank white view for **every** WKWebView, Safari included. That is the
+  device, not the app: a freshly `simctl create`d device renders.
+
+Not measured: `test/kotoba/shell/launcher_test.cljk` and `event_test.cljk`
+require `clojure.java.io` unconditionally, so `kbb -M:test` stops at load
+(`Could not find namespace: clojure.java.io`). Before this change it stopped
+earlier, at `json.data-json`. The suite has no green run on the kbb engine.
+
 ## Status
 
 Everything below this section is a command reference for the full CLI
