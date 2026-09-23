@@ -2,7 +2,7 @@
   (:gen-class)
   (:require [json.data-json :as json]
             [clojure.edn :as edn]
-            [clojure.java.io :as io]
+            [kotoba.shell.host :as host]
             [kotoba.lang.text :as str]
             [kotoba.shell.native-bridge :as bridge]
             [kotoba.shell.stack-e2e :as stack-e2e]))
@@ -313,7 +313,7 @@
   [v]
   (if (string? v)
     (try (let [parsed (edn/read-string v)] (if (coll? parsed) parsed v))
-         (catch Exception _ v))
+         (catch #?(:clj Exception :cljs :default) _ v))
     v))
 
 (defn- reconstitute-entity
@@ -330,8 +330,8 @@
 (defn selfhost-seed
   [name]
   (let [resource (str "kotoba/shell/selfhost/" name ".edn")]
-    (if-let [url (io/resource resource)]
-      (reconstitute-entity (-> url slurp edn/read-string))
+    (if-let [url (host/resource resource)]
+      (reconstitute-entity (-> url host/slurp-file edn/read-string))
       (throw (ex-info "missing kotoba-shell selfhost seed"
                       {:resource resource
                        :seed name})))))
@@ -369,7 +369,7 @@
 (defn read-edn-file-option
   [argv option]
   (when-let [path (option-value argv option)]
-    (-> path slurp edn/read-string)))
+    (-> path host/slurp-file edn/read-string)))
 
 (defn file-reference?
   [value]
@@ -379,7 +379,7 @@
 (defn value-or-file
   [value]
   (if (file-reference? value)
-    (str/trim (slurp (subs value 1)))
+    (str/trim (host/slurp-file (subs value 1)))
     value))
 
 (defn json-ready
@@ -423,10 +423,9 @@
 
 (defn repo-root
   []
-  (let [url (io/resource "kotoba/shell/selfhost/native_host_contract.edn")]
-    (when (= "file" (.getProtocol url))
-      (-> url
-          io/file
+  (let [url (host/resource "kotoba/shell/selfhost/native_host_contract.edn")]
+    (when-let [f (host/resource-file url)]
+      (-> f
           .getParentFile
           .getParentFile
           .getParentFile
@@ -437,18 +436,18 @@
 (defn sibling-path
   [relative]
   (if-let [root (repo-root)]
-    (.getCanonicalPath (io/file root relative))
+    (.getCanonicalPath (host/file root relative))
     relative))
 
 (defn read-json-file
   [file]
-  (json/read-str (slurp file)))
+  (json/read-str (host/slurp-file file)))
 
 (defn default-host-command
   [target]
   (when-let [command (get-in host-runner-specs [target :command])]
     (if-let [root (repo-root)]
-      (.getPath (io/file root command))
+      (.getPath (host/file root command))
       command)))
 
 (def default-provider-timeout-seconds 10)
@@ -580,9 +579,7 @@
 
 (defn sha256-hex
   [value]
-  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
-                        (.getBytes (str value) java.nio.charset.StandardCharsets/UTF_8))]
-    (apply str (map #(format "%02x" (bit-and % 0xff)) digest))))
+  (host/sha256-hex value))
 
 (defn target-artifact-name
   [target manifest]
@@ -610,14 +607,14 @@
 
 (defn write-edn-file!
   [file value]
-  (.mkdirs (.getParentFile (io/file file)))
-  (spit file (pr-str value))
+  (.mkdirs (.getParentFile (host/file file)))
+  (host/spit-file file (pr-str value))
   file)
 
 (defn write-text-file!
   [file value]
-  (.mkdirs (.getParentFile (io/file file)))
-  (spit file value)
+  (.mkdirs (.getParentFile (host/file file)))
+  (host/spit-file file value)
   file)
 
 ;; ─── web bundle embedding (ADR-2607081015 の "WKWebView 実用優先" 決定) ───────
@@ -641,16 +638,10 @@
 
 (defn- copy-tree!
   "src ディレクトリ配下のファイルをすべて dest 配下へ再帰コピーする(単純な
-  file-seq 走査、シンボリックリンクは辿らない)。"
+  file-seq 走査、シンボリックリンクは辿らない)。相対パスを保つ(vendor/x.js は
+  dest/vendor/x.js へ)— 実体は kotoba.shell.host/copy-tree!。"
   [src dest]
-  (let [src-file (io/file src)]
-    (when (.isDirectory src-file)
-      (doseq [f (file-seq src-file)]
-        (when (.isFile f)
-          (let [rel (.relativize (.toPath src-file) (.toPath f))
-                target (io/file dest (str rel))]
-            (.mkdirs (.getParentFile target))
-            (io/copy f target)))))))
+  (host/copy-tree! src dest))
 
 (defn web-assets-into!
   "manifest の :web/dist-dir(あれば)を dest-dir へコピーする。無ければ
@@ -659,7 +650,7 @@
   [manifest dest-dir]
   (if-let [src (:web/dist-dir manifest)]
     (do (copy-tree! src dest-dir) {:source src :placeholder? false})
-    (do (write-text-file! (io/file dest-dir "index.html") placeholder-web-index-html)
+    (do (write-text-file! (host/file dest-dir "index.html") placeholder-web-index-html)
         {:source nil :placeholder? true})))
 
 (defn release-dry-run-row
@@ -672,11 +663,11 @@
        :ok? false
        :missing-manifest-keys (or missing [])
        :reason (if known? :manifest-invalid :unknown-target)}
-      (let [target-dir (io/file output-dir (name target))
+      (let [target-dir (host/file output-dir (name target))
             artifact-name (target-artifact-name target manifest)
-            artifact-file (io/file target-dir artifact-name)
-            signature-file (io/file target-dir (str artifact-name ".sig.edn"))
-            feed-file (io/file target-dir "updater-feed.edn")
+            artifact-file (host/file target-dir artifact-name)
+            signature-file (host/file target-dir (str artifact-name ".sig.edn"))
+            feed-file (host/file target-dir "updater-feed.edn")
             artifact-body {:schema "kotoba.shell.release-artifact.v0"
                            :target target
                            :artifact artifact-name
@@ -1007,7 +998,7 @@
 
 (defn- macos-app-delegate-swift [manifest]
   (if (= :keychain-cacao (:macos/auth-bridge manifest))
-    (let [template (slurp (io/resource "kotoba/shell/macos/keychain_cacao_app_delegate.swift"))
+    (let [template (host/slurp-file (host/resource "kotoba/shell/macos/keychain_cacao_app_delegate.swift"))
           replacements {"{{APP_NAME}}" (str (:app/name manifest))
                         "{{WINDOW_WIDTH}}" (str (or (:macos/window-width manifest) 393))
                         "{{WINDOW_HEIGHT}}" (str (or (:macos/window-height manifest) 852))
@@ -1334,8 +1325,8 @@
   するので、この問題自体が発生しない。"
   [target root]
   (case target
-    (:macos :ios) (io/file root "Resources" "WebBundle")
-    :android (io/file root "app" "src" "main" "assets")
+    (:macos :ios) (host/file root "Resources" "WebBundle")
+    :android (host/file root "app" "src" "main" "assets")
     root))
 
 (defn xcodegen-generate!
@@ -1352,15 +1343,15 @@
       {:xcodegen-ok? (and (not timed-out?) (zero? exit))
        :xcodegen-exit exit
        :xcodegen-output stdout})
-    (catch Exception e
+    (catch #?(:clj Exception :cljs :default) e
       {:xcodegen-ok? false
-       :xcodegen-error (.getMessage e)})))
+       :xcodegen-error (host/error-message e)})))
 
 (defn scaffold-target-row
   [output-dir manifest policy target]
   (let [missing (missing-manifest-keys target manifest)
         known? (contains? supported-shell-targets target)
-        root (io/file output-dir (name target))
+        root (host/file output-dir (name target))
         files (scaffold-files target manifest policy)
         ok? (and known? (empty? missing))]
     (if-not ok?
@@ -1371,7 +1362,7 @@
        :reason (if known? :manifest-invalid :unknown-target)}
       (do
         (doseq [[path body] files]
-          (write-text-file! (io/file root path) body))
+          (write-text-file! (host/file root path) body))
         (let [web-result (web-assets-into! manifest (web-assets-dest target root))
               xcodegen-result (when (#{:macos :ios} target)
                                 (xcodegen-generate! root))]
@@ -1388,7 +1379,7 @@
 
 (defn scaffold-check-row
   [output-dir manifest policy target]
-  (let [root (io/file output-dir (name target))
+  (let [root (host/file output-dir (name target))
         ;; macOS/iOS の xcodegen 産物(`<product-name>.xcodeproj/project.pbxproj`)は
         ;; scaffold-files の [[path body]...] 一覧には含まれない(xcodegen
         ;; generate が別途作る)ので、app-build-row が xcodebuild を実行する前に
@@ -1407,7 +1398,7 @@
         files (concat (mapv first (scaffold-files target manifest policy)) xcodeproj-paths web-bundle-paths)
         file-rows (mapv (fn [path]
                           {:path path
-                           :present? (.isFile (io/file root path))})
+                           :present? (.isFile (host/file root path))})
                         files)
         missing (mapv :path (remove :present? file-rows))
         ok? (and (.isDirectory root)
@@ -1441,14 +1432,14 @@
   (let [product (product-name-for target manifest)]
     (case target
       :macos {:command "xcodebuild"
-              :args ["-project" (.getPath (io/file root (str product ".xcodeproj")))
+              :args ["-project" (.getPath (host/file root (str product ".xcodeproj")))
                      "-scheme" product
                      "build"]
               :default? true
               :platform-step :xcodebuild-macos
               :timeout-seconds default-build-timeout-seconds}
       :ios {:command "xcodebuild"
-            :args ["-project" (.getPath (io/file root (str product ".xcodeproj")))
+            :args ["-project" (.getPath (host/file root (str product ".xcodeproj")))
                    "-scheme" product
                    "-sdk" "iphonesimulator"
                    "build"]
@@ -1461,7 +1452,7 @@
                 :platform-step :gradle-assemble-debug
                 :timeout-seconds default-build-timeout-seconds}
       :windows {:command "msbuild"
-                :args [(.getPath (io/file root (str product ".wapproj")))]
+                :args [(.getPath (host/file root (str product ".wapproj")))]
                 :default? true
                 :platform-step :msbuild-msix
                 :timeout-seconds default-build-timeout-seconds}
@@ -1472,7 +1463,7 @@
   (let [check-row (scaffold-check-row output-dir manifest (provider-policy argv) target)
         execute? (execute-requested? argv)
         step (or (external-step argv "--build-command" [(name target)])
-                 (default-app-build-step (io/file output-dir (name target)) target manifest))
+                 (default-app-build-step (host/file output-dir (name target)) target manifest))
         run (step-run-result execute? step)
         ok? (and (:ok? check-row) (:ok? run))]
     (assoc check-row
@@ -1628,19 +1619,19 @@
   [target root manifest]
   (let [product (product-name-for target manifest)]
     (case target
-      :ios (.getPath (io/file root "build" "export" (str product ".ipa")))
-      :macos (.getPath (io/file root "build" "export" (str product ".app")))
-      :android (.getPath (io/file root "app" "build" "outputs" "bundle" "release" "app-release.aab"))
+      :ios (.getPath (host/file root "build" "export" (str product ".ipa")))
+      :macos (.getPath (host/file root "build" "export" (str product ".app")))
+      :android (.getPath (host/file root "app" "build" "outputs" "bundle" "release" "app-release.aab"))
       nil)))
 
 (defn package-steps
   "The commands that turn a scaffolded project into a distributable artifact."
   [target root manifest]
   (let [product (product-name-for target manifest)
-        project (.getPath (io/file root (str product ".xcodeproj")))
-        archive (.getPath (io/file root "build" (str product ".xcarchive")))
-        export (.getPath (io/file root "build" "export"))
-        options (.getPath (io/file root "build" "exportOptions.plist"))
+        project (.getPath (host/file root (str product ".xcodeproj")))
+        archive (.getPath (host/file root "build" (str product ".xcarchive")))
+        export (.getPath (host/file root "build" "export"))
+        options (.getPath (host/file root "build" "exportOptions.plist"))
         apple-archive (fn [sdk-args]
                         {:command "xcodebuild"
                          :args (vec (concat ["-project" project "-scheme" product
@@ -1721,8 +1712,8 @@
     ;; Gradle resolves the keystore itself, from keystore.properties or the
     ;; environment; the CLI only reports which of those answered so that an
     ;; unsigned .aab is never mistaken for a signed one.
-    (let [properties (io/file root "keystore.properties")
-          env-store (System/getenv "KOTOBA_SHELL_KEYSTORE")
+    (let [properties (host/file root "keystore.properties")
+          env-store (host/getenv "KOTOBA_SHELL_KEYSTORE")
           source (cond (.isFile properties) :keystore-properties
                        env-store :environment
                        :else nil)]
@@ -1734,7 +1725,7 @@
 
 (defn app-package-row
   [argv output-dir manifest target]
-  (let [root (io/file output-dir (name target))
+  (let [root (host/file output-dir (name target))
         check-row (scaffold-check-row output-dir manifest (provider-policy argv) target)
         execute? (execute-requested? argv)
         signing (package-signing-row target root manifest)
@@ -1743,7 +1734,7 @@
                 [override]
                 (package-steps target root manifest))]
     (when (and (#{:ios :macos} target) (:configured? signing))
-      (write-text-file! (io/file root "build" "exportOptions.plist")
+      (write-text-file! (host/file root "build" "exportOptions.plist")
                         (export-options-plist target manifest)))
     (if-not (:configured? signing)
       (assoc check-row
@@ -1756,7 +1747,7 @@
              :reason (:reason signing))
       (let [runs (steps-run-result execute? steps)
             ran-ok? (and (seq runs) (every? :ok? runs))
-            present? (and (some? artifact) (.exists (io/file artifact)))]
+            present? (and (some? artifact) (.exists (host/file artifact)))]
         (assoc check-row
                :signing signing
                :package-steps runs
@@ -1821,8 +1812,8 @@
   asked to create anything."
   [binary {:app/keys [id name]}]
   (when-not (or (str/blank? (str id)) (str/blank? (str name)))
-    (let [exe (.getName (io/file binary))]
-      (.getPath (io/file (.getParentFile (io/file binary))
+    (let [exe (.getName (host/file binary))]
+      (.getPath (host/file (.getParentFile (host/file binary))
                          "apps" (str id) (str name ".app")
                          "Contents" "MacOS" exe)))))
 
@@ -1850,26 +1841,22 @@
   it. Recording the arguments here is what lets the bundle open as itself."
   [binary manifest host-args]
   (when-let [target-path (macos-bundle-executable binary manifest)]
-    (let [source (io/file binary)
-          exe (io/file target-path)
+    (let [source (host/file binary)
+          exe (host/file target-path)
           contents (.getParentFile (.getParentFile exe))]
       (when (.canExecute source)
         (.mkdirs (.getParentFile exe))
-        (spit (io/file contents "Info.plist")
+        (host/spit-file (host/file contents "Info.plist")
               (macos-bundle-plist manifest (.getName exe)))
         ;; A smoke run's arguments are an observation boundary — `--smoke`
         ;; captures a PNG and closes the window — so they must not become what
         ;; the bundle does when a person opens it.
         (when-let [recorded (seq (remove nil? host-args))]
-          (let [resources (io/file contents "Resources")]
+          (let [resources (host/file contents "Resources")]
             (.mkdirs resources)
-            (spit (io/file resources "launch-arguments.json")
+            (host/spit-file (host/file resources "launch-arguments.json")
                   (json/write-str (vec recorded)))))
-        (java.nio.file.Files/copy
-         (.toPath source) (.toPath exe)
-         (into-array java.nio.file.CopyOption
-                     [java.nio.file.StandardCopyOption/REPLACE_EXISTING
-                      java.nio.file.StandardCopyOption/COPY_ATTRIBUTES]))
+        (host/copy-file! source exe :preserve? true)
         (.setExecutable exe true false)
         (.getPath exe)))))
 
@@ -1882,8 +1869,8 @@
   [app-dir icon]
   (if (str/blank? (str icon))
     [nil nil]
-    (let [declared (io/file (str icon))
-          resolved (if (.isAbsolute declared) declared (io/file app-dir (str icon)))]
+    (let [declared (host/file (str icon))
+          resolved (if (.isAbsolute declared) declared (host/file app-dir (str icon)))]
       (if (.isFile resolved)
         [(.getCanonicalPath resolved) nil]
         [nil (str icon)]))))
@@ -1891,11 +1878,15 @@
 (defn- app-runtime-plan
   [argv manifest target]
   (let [manifest-file (or (option-value argv "--manifest") "app.kotoba.edn")
-        app-dir (or (some-> manifest-file io/file .getCanonicalFile .getParent)
-                    (.getCanonicalPath (io/file ".")))
+        app-dir (or (some-> manifest-file host/file .getCanonicalFile .getParent)
+                    (.getCanonicalPath (host/file ".")))
         runtime (:runtime manifest)
         runtime-ns (or (:namespace runtime) (:runtime/namespace runtime))
-        start-fn (or (:start runtime) (:runtime/start runtime) 'start)
+        start-fn (or (:start runtime) (:runtime/start runtime)
+                     ;; (symbol "start"), not 'start: on the kbb engine
+                     ;; (org-babashka-nbb, measured 2026-09-23) `(or nil 'foo)`
+                     ;; fails analysis with "Unable to resolve symbol: foo".
+                     (symbol "start"))
         permissions (->> (:macos/permissions manifest) (map name) sort vec)
         [icon missing-icon] (resolve-app-icon app-dir (:app/icon manifest))
         binary (or (option-value argv "--window-command")
@@ -1925,8 +1916,8 @@
       (if (and (zero? (or (:exit run) 1)) (not (:timed-out? run)))
         (try
           (assoc run :app-result (edn/read-string (last (remove str/blank? (str/split-lines (:stdout run))))))
-          (catch Exception e
-            (assoc run :error (str "invalid app entry output: " (.getMessage e)))))
+          (catch #?(:clj Exception :cljs :default) e
+            (assoc run :error (str "invalid app entry output: " (host/error-message e)))))
         run))))
 
 (defn app-run-result
@@ -1962,9 +1953,9 @@
         builder (when (= :macos target) (sibling-path "bin/kotoba-shell-build-macos-window"))
         rebuild? (boolean (some #{"--rebuild-window"} argv))
         build (when (and (= :macos target) execute? supported? runtime-valid? ops-valid?
-                         (or rebuild? (not (.canExecute (io/file (:window-command plan))))))
+                         (or rebuild? (not (.canExecute (host/file (:window-command plan))))))
                 (run-native-host-command builder [(:window-command plan)] nil 120))
-        binary-ready? (or (.canExecute (io/file (:window-command plan)))
+        binary-ready? (or (.canExecute (host/file (:window-command plan)))
                           (and build (zero? (or (:exit build) 1))))
         ;; The command the plan names, and the one a run would actually use:
         ;; on macOS the host goes inside an .app so the Dock and ⌘-Tab call it
@@ -2054,8 +2045,8 @@
         ops (get-in evaluation [:app-result :kotoba.app/surface-ops])
         valid? (and (sequential? ops) (seq ops) (not (str/blank? output)))]
     (when valid?
-      (io/make-parents output)
-      (spit output (json/write-str (json-ready ops))))
+      (host/make-parents output)
+      (host/spit-file output (json/write-str (json-ready ops))))
     {:kotoba.cli/ok? (boolean valid?)
      :kotoba.cli/code (if valid? :shell/app-surface-rendered :shell/app-surface-failed)
      :kotoba.cli/data {:kotoba.shell/app-run-schema "kotoba.shell.app-surface.v0"
@@ -2065,18 +2056,18 @@
 
 (defn- image-diff
   [baseline-file actual-file]
-  (let [baseline (javax.imageio.ImageIO/read (io/file baseline-file))
-        actual (javax.imageio.ImageIO/read (io/file actual-file))
-        bw (.getWidth baseline) bh (.getHeight baseline)
-        aw (.getWidth actual) ah (.getHeight actual)]
+  (let [baseline (host/read-image-rgb baseline-file)
+        actual (host/read-image-rgb actual-file)
+        bw (:width baseline) bh (:height baseline)
+        aw (:width actual) ah (:height actual)]
     (if (not= [bw bh] [aw ah])
       {:comparable? false :baseline-size [bw bh] :actual-size [aw ah]
        :difference-ratio 1.0 :mean-channel-delta 1.0}
       (let [pixels (* bw bh)
             totals (reduce
                     (fn [[different delta] [x y]]
-                      (let [a (.getRGB baseline x y) b (.getRGB actual x y)
-                            channels (map #(Math/abs (- (bit-and (bit-shift-right a %) 0xff)
+                      (let [a ((:rgb baseline) x y) b ((:rgb actual) x y)
+                            channels (map #(abs (- (bit-and (bit-shift-right a %) 0xff)
                                                          (bit-and (bit-shift-right b %) 0xff)))
                                           [0 8 16 24])
                             d (reduce + channels)]
@@ -2093,18 +2084,16 @@
   [argv]
   (let [baseline (or (option-value argv "--baseline") "test/visual/manimani-macos.png")
         actual (or (option-value argv "--actual") "target/kotoba-shell/visual/manimani-macos.png")
-        threshold (Double/parseDouble (or (option-value argv "--threshold") "0.01"))
+        threshold (parse-double (or (option-value argv "--threshold") "0.01"))
         update? (boolean (some #{"--update-baseline"} argv))
         run-argv (into (vec argv) ["--execute" "--smoke" "--rebuild-window" "--screenshot" actual])
         app-run (app-run-result run-argv)
-        captured? (and (:kotoba.cli/ok? app-run) (.isFile (io/file actual)))
-        baseline-existed? (.isFile (io/file baseline))
+        captured? (and (:kotoba.cli/ok? app-run) (.isFile (host/file actual)))
+        baseline-existed? (.isFile (host/file baseline))
         _ (when (and captured? update?)
-            (io/make-parents baseline)
-            (java.nio.file.Files/copy (.toPath (io/file actual)) (.toPath (io/file baseline))
-                                      (into-array java.nio.file.CopyOption
-                                                  [java.nio.file.StandardCopyOption/REPLACE_EXISTING])))
-        diff (when (and captured? (.isFile (io/file baseline))) (image-diff baseline actual))
+            (host/make-parents baseline)
+            (host/copy-file! actual baseline))
+        diff (when (and captured? (.isFile (host/file baseline))) (image-diff baseline actual))
         passed? (and captured? diff (:comparable? diff)
                      (<= (:difference-ratio diff) threshold))]
     {:kotoba.cli/ok? (boolean passed?)
@@ -2146,7 +2135,7 @@
 
 (defn executable-file?
   [path]
-  (let [file (io/file path)]
+  (let [file (host/file path)]
     (and (.isFile file)
          (.canExecute file))))
 
@@ -2156,7 +2145,7 @@
       (try
         (let [{:keys [exit timed-out?]} (run-native-host-command "/usr/bin/env" ["sh" "-c" (str "command -v " command)])]
           (and (not timed-out?) (zero? exit)))
-        (catch Exception _
+        (catch #?(:clj Exception :cljs :default) _
           false))))
 
 (defn tool-row
@@ -2186,14 +2175,14 @@
   [id]
   (let [spec (get ui-substrate-specs id)
         repo-path (sibling-path (:repo spec))
-        repo-file (io/file repo-path)
-        package-file (io/file repo-file "package.json")
+        repo-file (host/file repo-path)
+        package-file (host/file repo-file "package.json")
         package-json (when (.isFile package-file)
                        (read-json-file package-file))
         scripts (set (keys (get package-json "scripts" {})))
         file-rows (mapv (fn [path]
                           {:path path
-                           :present? (.isFile (io/file repo-file path))})
+                           :present? (.isFile (host/file repo-file path))})
                         (:required-files spec))
         script-rows (mapv (fn [script]
                             {:script script
@@ -2253,70 +2242,19 @@
                         (mapv #(select-keys % [:id :capability :commands :status])
                               providers)})}))
 
-(defn process-output
-  [process]
-  (with-open [stream (.getInputStream process)]
-    (slurp stream)))
-
-(defn destroy-process-tree!
-  [process]
-  (doseq [handle (reverse (iterator-seq (.iterator (.descendants (.toHandle process)))))]
-    (.destroyForcibly handle))
-  (.destroyForcibly process))
-
-(defn output-or-timeout
-  [output-future]
-  (deref output-future 1000 ""))
-
-(defn process-output-async
-  [process]
-  (let [result (promise)
-        thread (Thread. #(deliver result (process-output process)))]
-    (.setDaemon thread true)
-    (.start thread)
-    result))
-
 (defn run-native-host-command
+  "Runs a host command with stderr merged into stdout and a timeout
+  (seconds). The process mechanics live in kotoba.shell.host/run-process."
   ([command args] (run-native-host-command command args nil))
   ([command args stdin] (run-native-host-command command args stdin default-provider-timeout-seconds))
   ([command args stdin timeout-seconds]
-   (let [process (-> (ProcessBuilder. (into [command] args))
-                     (.redirectErrorStream true)
-                     (.start))
-         output-future (process-output-async process)
-         _ (if stdin
-             (with-open [writer (io/writer (.getOutputStream process))]
-               (.write writer (str stdin)))
-             (.close (.getOutputStream process)))
-         completed? (.waitFor process timeout-seconds java.util.concurrent.TimeUnit/SECONDS)]
-     (if completed?
-       {:exit (.exitValue process)
-        :stdout (output-or-timeout output-future)
-        :timed-out? false}
-       (do
-         (destroy-process-tree! process)
-         {:exit nil
-         :stdout (output-or-timeout output-future)
-         :timed-out? true})))))
+   (host/run-process {:command command :args args :stdin stdin
+                      :timeout-seconds timeout-seconds})))
 
 (defn run-native-host-command-in-dir
   [directory command args timeout-seconds]
-  (let [process (-> (ProcessBuilder. (into [command] args))
-                    (.directory (io/file directory))
-                    (.redirectErrorStream true)
-                    (.start))
-        output-future (process-output-async process)
-        _ (.close (.getOutputStream process))
-        completed? (.waitFor process timeout-seconds java.util.concurrent.TimeUnit/SECONDS)]
-    (if completed?
-      {:exit (.exitValue process)
-       :stdout (output-or-timeout output-future)
-       :timed-out? false}
-      (do
-        (destroy-process-tree! process)
-        {:exit nil
-         :stdout (output-or-timeout output-future)
-         :timed-out? true}))))
+  (host/run-process {:command command :args args :dir directory
+                     :timeout-seconds timeout-seconds}))
 
 (defn provider-command-known?
   [target command]
@@ -2343,7 +2281,7 @@
   (let [target (target-option argv)
         target-known? (contains? supported-shell-targets target)
         custom-command (option-value argv "--host-command")
-        windows-host? (str/starts-with? (str/lower (System/getProperty "os.name" "")) "windows")
+        windows-host? (str/starts-with? (str/lower (host/os-name)) "windows")
         command (or (option-value argv "--host-command")
                     (when (or (not= :windows target) windows-host?)
                       (default-host-command target)))
@@ -2380,7 +2318,7 @@
                               :kotoba.shell/exit exit
                               :kotoba.shell/stdout stdout
                               :kotoba.shell/timed-out? timed-out?})})
-        (catch Exception e
+        (catch #?(:clj Exception :cljs :default) e
           {:kotoba.cli/ok? false
            :kotoba.cli/code :shell/native-host-exec-failed
            :kotoba.cli/data (merge
@@ -2389,7 +2327,7 @@
                               :kotoba.shell/native-host-connected? false
                               :kotoba.shell/host-command command
                               :kotoba.shell/host-args args
-                              :kotoba.shell/error (.getMessage e)})})))))
+                              :kotoba.shell/error (host/error-message e)})})))))
 
 (defn native-host-provider-result
   [argv]
@@ -2469,7 +2407,7 @@
                                                  :audit/provider-command provider-command
                                                  :audit/capability (:capability decision)
                                                  :audit/exit exit})})})))
-        (catch Exception e
+        (catch #?(:clj Exception :cljs :default) e
           {:kotoba.cli/ok? false
            :kotoba.cli/code :shell/provider-exec-failed
            :kotoba.cli/data (merge
@@ -2477,7 +2415,7 @@
                              {:kotoba.shell/target target
                               :kotoba.shell/native-host-connected? false
                               :kotoba.shell/provider-command provider-command
-                              :kotoba.shell/error (.getMessage e)})})))))
+                              :kotoba.shell/error (host/error-message e)})})))))
 
 (defn surface-check-result
   [argv]
@@ -2588,24 +2526,18 @@
                     [:macos :ios :android])
         manifest (app-manifest argv)
         artifact (option-value argv "--artifact")
-        artifact-file (when artifact (io/file artifact))
+        artifact-file (when artifact (host/file artifact))
         artifact-ready? (or (nil? artifact) (.isFile artifact-file))
         rollback-from (option-value argv "--rollback-from")
         rollback-to (option-value argv "--rollback-to")
         rollback-ready? (or (and (nil? rollback-from) (nil? rollback-to))
                             (and rollback-from rollback-to
                                  (not= rollback-from rollback-to)
-                                 (.isFile (io/file rollback-from))
-                                 (.isFile (io/file rollback-to))))
+                                 (.isFile (host/file rollback-from))
+                                 (.isFile (host/file rollback-to))))
         artifact-sha256 (when artifact-ready?
                           (when artifact-file
-                            (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
-                              (with-open [in (io/input-stream artifact-file)]
-                                (let [buf (byte-array 65536)]
-                                  (loop []
-                                    (let [n (.read in buf)]
-                                      (when (pos? n) (.update digest buf 0 n) (recur))))))
-                              (format "%064x" (BigInteger. 1 (.digest digest))))))
+                            (host/sha256-file-hex artifact-file)))
         rows (mapv (fn [target]
                      (let [missing (missing-manifest-keys target manifest)
                            ok? (and (contains? supported-shell-targets target)
@@ -2672,11 +2604,11 @@
   (try
     {:ok? true
      :path path
-     :data (-> path slurp edn/read-string)}
-    (catch Exception e
+     :data (-> path host/slurp-file edn/read-string)}
+    (catch #?(:clj Exception :cljs :default) e
       {:ok? false
        :path path
-       :error (.getMessage e)})))
+       :error (host/error-message e)})))
 
 (defn release-verify-row
   [target artifact-path signature-path feed-path]
@@ -2687,8 +2619,8 @@
                           (sha256-hex (:data artifact)))
         signature-digest (get-in signature [:data :digest])
         feed-digest (get-in feed [:data :artifact-digest])
-        artifact-name (some-> artifact-path io/file .getName)
-        signature-name (some-> signature-path io/file .getName)
+        artifact-name (some-> artifact-path host/file .getName)
+        signature-name (some-> signature-path host/file .getName)
         ok? (and (:ok? artifact)
                  (:ok? signature)
                  (:ok? feed)
@@ -2715,14 +2647,14 @@
 
 (defn release-verify-paths
   [argv target manifest]
-  (let [base-dir (io/file (release-output-dir argv) (name target))
+  (let [base-dir (host/file (release-output-dir argv) (name target))
         artifact-name (target-artifact-name target manifest)
         artifact (or (option-value argv "--artifact")
-                     (.getPath (io/file base-dir artifact-name)))
+                     (.getPath (host/file base-dir artifact-name)))
         signature (or (option-value argv "--signature")
-                      (.getPath (io/file base-dir (str artifact-name ".sig.edn"))))
+                      (.getPath (host/file base-dir (str artifact-name ".sig.edn"))))
         feed (or (option-value argv "--updater-feed")
-                 (.getPath (io/file base-dir "updater-feed.edn")))]
+                 (.getPath (host/file base-dir "updater-feed.edn")))]
     [artifact signature feed]))
 
 (defn release-verify-result
@@ -2755,19 +2687,19 @@
   [argv credential]
   (value-or-file
    (or (option-value argv (:option credential))
-       (System/getenv (:env credential)))))
+       (host/getenv (:env credential)))))
 
 (defn credential-row
   [argv credential]
   (let [raw-value (or (option-value argv (:option credential))
-                      (System/getenv (:env credential)))
+                      (host/getenv (:env credential)))
         value (value-or-file raw-value)]
     (assoc credential
            :present? (boolean (seq (str value)))
            :source (cond
                      (file-reference? raw-value) :file
                      (option-value argv (:option credential)) :option
-                     (System/getenv (:env credential)) :env
+                     (host/getenv (:env credential)) :env
                      :else nil))))
 
 (defn artifact-present?
@@ -2777,7 +2709,7 @@
     {:artifact artifact
      :option option
      :path path
-     :present? (boolean (and path (.exists (io/file path))))}))
+     :present? (boolean (and path (.exists (host/file path))))}))
 
 (defn release-connect-row
   [argv manifest target]
@@ -3156,9 +3088,9 @@
   (let [auth-token (or (some-> (option-value argv "--auth-token")
                                value-or-file)
                        (some-> (option-value argv "--auth-token-file")
-                               slurp
+                               host/slurp-file
                                str/trim)
-                       (System/getenv "KOTOBA_STORE_AUTH_TOKEN"))
+                       (host/getenv "KOTOBA_STORE_AUTH_TOKEN"))
         headers (into {}
                       (keep (fn [header]
                               (let [[k v] (str/split header #":" 2)]
@@ -3184,30 +3116,22 @@
 
 (defn store-http-uri
   [endpoint-url request]
-  (java.net.URI/create
-   (str (str/replace (str endpoint-url) #"/$" "")
-        (:endpoint request))))
+  (str (str/replace (str endpoint-url) #"/$" "")
+       (:endpoint request)))
 
 (defn java-http-store-request
   [endpoint-url headers request]
   (let [body (json/write-str (json-ready request))
         method (:method request)
-        builder (-> (java.net.http.HttpRequest/newBuilder (store-http-uri endpoint-url request))
-                    (.header "content-type" "application/json")
-                    (.header "accept" "application/json"))
-        builder (reduce (fn [builder [k v]]
-                          (.header builder k v))
-                        builder
-                        headers)
-        builder (if (= "GET" method)
-                  (.GET builder)
-                  (.method builder method (java.net.http.HttpRequest$BodyPublishers/ofString body)))
-        response (.send (java.net.http.HttpClient/newHttpClient)
-                        (.build builder)
-                        (java.net.http.HttpResponse$BodyHandlers/ofString))]
-    {:status (.statusCode response)
-     :body (.body response)
-     :ok? (<= 200 (.statusCode response) 299)}))
+        response (host/http-request {:method method
+                                     :uri (store-http-uri endpoint-url request)
+                                     :headers (merge {"content-type" "application/json"
+                                                      "accept" "application/json"}
+                                                     headers)
+                                     :body body})]
+    {:status (:status response)
+     :body (:body response)
+     :ok? (<= 200 (:status response) 299)}))
 
 (defn store-step-run-result
   [execute? step request]
@@ -3238,12 +3162,12 @@
                      :ok? (:ok? response)
                      :status (:status response)
                      :body (:body response))))
-        (catch Exception e
+        (catch #?(:clj Exception :cljs :default) e
           (-> step
               (dissoc :headers)
               (assoc :executed? true
                      :ok? false
-                     :error (.getMessage e)))))
+                     :error (host/error-message e)))))
       (let [{:keys [exit stdout timed-out?]} (run-native-host-command (:command step)
                                                                       (:args step)
                                                                       (json/write-str (json-ready (assoc request
@@ -3342,7 +3266,7 @@
 (defn distribution-plan-path
   [argv]
   (or (option-value argv "--plan")
-      (.getPath (io/file (or (option-value argv "--output-dir")
+      (.getPath (host/file (or (option-value argv "--output-dir")
                              "target/kotoba-shell/distribution")
                          "distribution-plan.edn"))))
 
@@ -3403,7 +3327,7 @@
   [argv]
   (or (option-value argv "--api")
       (option-value argv "--snapshot")
-      (.getPath (io/file (or (option-value argv "--output-dir")
+      (.getPath (host/file (or (option-value argv "--output-dir")
                              "target/kotoba-shell/api")
                          "kotoba-shell-api.edn"))))
 
@@ -3715,11 +3639,11 @@
                                 :android (android-connected-device? stdout)
                                 :macos true
                                 false)})
-        (catch Exception e
+        (catch #?(:clj Exception :cljs :default) e
           {:kind (host-smoke-kind target)
            :ran? true
            :ok? false
-           :error (.getMessage e)})))))
+           :error (host/error-message e)})))))
 
 (defn e2e-target-row
   [target]
@@ -3812,10 +3736,10 @@
                                                nil 120))
         run (when (and execute? compile-run (= 0 (:exit compile-run)))
               (run-native-host-command binary ["--smoke"] nil 15))
-        source-ready? (and (.exists (io/file source)) (.exists (io/file builder))
-                           (.exists (io/file app-source)))
+        source-ready? (and (.exists (host/file source)) (.exists (host/file builder))
+                           (.exists (host/file app-source)))
         compile-ready? (and execute? compile-run (= 0 (:exit compile-run))
-                            (.exists (io/file wasm-output)))
+                            (.exists (host/file wasm-output)))
         smoke-ready? (boolean (and execute? run (= 0 (:exit run))
                                    (re-find #"lifecycle/smoke-ready" (:stdout run ""))
                                    (re-find #"lifecycle/terminate" (:stdout run ""))))
@@ -3862,7 +3786,7 @@
      :kotoba.cli/data (merge (shell-authority-data)
                              {:kotoba.shell/runtime-parity
                               {:schema "kotoba.shell.runtime-parity.v0"
-                               :profile profile :wasm wasm :expected (Long/parseLong expected)
+                               :profile profile :wasm wasm :expected (parse-long expected)
                                :runner runner :run run}})}))
 
 (defn device-farm-row
@@ -3922,14 +3846,14 @@
   [argv]
   (or (option-value argv "--workflow")
       (option-value argv "--schedule")
-      (.getPath (io/file (or (option-value argv "--output-dir")
+      (.getPath (host/file (or (option-value argv "--output-dir")
                              "target/kotoba-shell/device-farm")
                          "device-farm-schedule.edn"))))
 
 (defn device-farm-run-log-path
   [argv]
   (or (option-value argv "--run-log")
-      (.getPath (io/file (or (option-value argv "--output-dir")
+      (.getPath (host/file (or (option-value argv "--output-dir")
                              "target/kotoba-shell/device-farm")
                          "device-farm-run.edn"))))
 
@@ -4224,4 +4148,4 @@
         json? (boolean (some #{"--json"} argv))
         result (dispatch argv)]
     (println (render-result result json?))
-    (System/exit (result->exit result))))
+    (host/exit! (result->exit result))))

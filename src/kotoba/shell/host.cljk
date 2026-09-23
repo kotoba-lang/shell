@@ -1,0 +1,414 @@
+(ns kotoba.shell.host
+  "The host layer: every place kotoba.shell.launcher touches the machine it
+  runs on (files, processes, digests, environment, HTTP) goes through here.
+
+  Why this namespace exists: after the kbb cutover (ADR-2609112000) `kbb` is
+  SCI on Node (kotoba-lang/org-babashka-nbb). The launcher was JVM code, and
+  SCI analyses a whole namespace before running any of it, so a single
+  top-level reference to an unresolvable `java.*` class made `app scaffold`
+  unreachable for every target, not just the one that needed the class.
+
+  Reader features, MEASURED rather than assumed (2026-09-23, kbb engine):
+    kbb -e '(println #?(:clj :clj :cljs :cljs :default :d)
+                     #?(:org.babashka/nbb :nbb :default :no))'
+    => :cljs :nbb
+  so the `:cljs` branches below are the kbb path and `:clj` is the JVM path.
+  The `:clj` branches are the launcher's former bodies, moved here verbatim;
+  they are UNMEASURED since the move (no JVM runner loads `.cljk`).
+
+  Files are java.io.File on the JVM and, on Node, a plain JS object carrying
+  the java.io.File method names the launcher calls (`.getPath`, `.isFile`,
+  `.getParentFile` ...), the same approach as the superproject's
+  scripts/nbb_compat.cljk — re-implemented here so kotoba-lang/shell stays
+  self-contained. Paths are NOT made absolute: `(.getPath (file \"a\" \"b\"))`
+  is \"a/b\" on both hosts, because plans and tests report these strings."
+  (:require [kotoba.lang.text :as str]
+            #?@(:clj [[clojure.java.io :as io]]
+                :cljs [["fs" :as fs]
+                       ["os" :as os]
+                       ["path" :as path]
+                       ["crypto" :as crypto]
+                       ["child_process" :as child-process]])))
+
+;; ─── files ────────────────────────────────────────────────────────────────
+
+#?(:cljs
+   (defn- normalize
+     "java.io.File's normalisation: collapse duplicate separators and drop a
+     trailing one (but keep a lone \"/\")."
+     [p]
+     (let [p (str/replace (str p) #"/+" "/")]
+       (if (and (> (count p) 1) (str/ends-with? p "/"))
+         (subs p 0 (dec (count p)))
+         p))))
+
+(declare file)
+
+#?(:cljs
+   (defn- file-obj
+     [p]
+     (let [p (normalize p)
+           stat (fn [] (try (.statSync fs p) (catch :default _ nil)))
+           parent (fn []
+                    (let [i (str/last-index-of p "/")]
+                      (cond (nil? i) nil
+                            (zero? i) (when (not= p "/") "/")
+                            :else (subs p 0 i))))]
+       (js-obj
+        "kotobaShellFile" true
+        "path" p
+        "getPath" (fn [] p)
+        "toString" (fn [] p)
+        "exists" (fn [] (.existsSync fs p))
+        "isFile" (fn [] (boolean (some-> (stat) (.isFile))))
+        "isDirectory" (fn [] (boolean (some-> (stat) (.isDirectory))))
+        "isAbsolute" (fn [] (.isAbsolute path p))
+        "length" (fn [] (or (some-> (stat) (.-size)) 0))
+        "canExecute" (fn [] (try (.accessSync fs p (.-X_OK (.-constants fs))) true
+                                 (catch :default _ false)))
+        "setExecutable" (fn [executable? owner-only?]
+                          (try
+                            (let [mode (.-mode (.statSync fs p))
+                                  bits (if owner-only? 64 73)]
+                              (.chmodSync fs p (if executable?
+                                                 (bit-or mode bits)
+                                                 (bit-and mode (bit-not bits))))
+                              true)
+                            (catch :default _ false)))
+        "getName" (fn [] (.basename path p))
+        "getParent" parent
+        "getParentFile" (fn [] (some-> (parent) file))
+        "getAbsolutePath" (fn [] (.resolve path p))
+        "getCanonicalPath" (fn [] (try (.realpathSync fs p)
+                                       (catch :default _ (.resolve path p))))
+        "getCanonicalFile" (fn [] (file (try (.realpathSync fs p)
+                                             (catch :default _ (.resolve path p)))))
+        "mkdirs" (fn [] (if (.existsSync fs p)
+                          false
+                          (do (.mkdirSync fs p #js {:recursive true}) true)))
+        "delete" (fn [] (try (.rmSync fs p #js {:recursive false}) true
+                             (catch :default _ false)))
+        "deleteOnExit" (fn [] nil)
+        "listFiles" (fn [] (when (some-> (stat) (.isDirectory))
+                             (to-array (map #(file p %) (.readdirSync fs p)))))))))
+
+(defn file?
+  "True for a host file value (java.io.File / the Node file object)."
+  [x]
+  #?(:clj (instance? java.io.File x)
+     :cljs (boolean (and (some? x) (object? x) (.-kotobaShellFile x)))))
+
+(defn path-of
+  "String path of a string or host file."
+  [x]
+  #?(:clj (if (instance? java.io.File x) (.getPath ^java.io.File x) (str x))
+     :cljs (if (file? x) (.-path x) (str x))))
+
+(defn file
+  "clojure.java.io/file: (file \"a\") (file parent \"child\" ...)."
+  [x & more]
+  #?(:clj (apply io/file x more)
+     :cljs (file-obj (reduce (fn [acc part]
+                               (let [part (path-of part)]
+                                 (if (str/blank? acc) part (str acc "/" part))))
+                             (path-of x)
+                             more))))
+
+(defn slurp-file
+  "Text of a path, host file, or resource (see `resource`)."
+  [x]
+  #?(:clj (slurp x)
+     :cljs (.readFileSync fs (path-of x) "utf8")))
+
+(defn make-parents
+  [x]
+  #?(:clj (io/make-parents x)
+     :cljs (.mkdirSync fs (.dirname path (path-of x)) #js {:recursive true})))
+
+(defn spit-file
+  "spit. Does NOT create parent directories (neither does clojure.core/spit)."
+  [x content & {:keys [append]}]
+  #?(:clj (spit x content :append (boolean append))
+     :cljs (if append
+             (.appendFileSync fs (path-of x) (str content))
+             (.writeFileSync fs (path-of x) (str content)))))
+
+(defn file-seq*
+  "clojure.core/file-seq over a path or host file (does not follow symlinked
+  directories on the Node host)."
+  [x]
+  #?(:clj (file-seq (io/file x))
+     :cljs (letfn [(walk [f]
+                     (lazy-seq
+                      (cons f (when (try (.isDirectory (.lstatSync fs (.-path f)))
+                                         (catch :default _ false))
+                                (mapcat walk (seq (.listFiles f)))))))]
+             (walk (if (file? x) x (file x))))))
+
+(defn relative-path
+  "Path of `f` relative to directory `base`, with `/` separators."
+  [base f]
+  #?(:clj (str (.relativize (.toPath (io/file base)) (.toPath (io/file f))))
+     :cljs (.relative path (path-of base) (path-of f))))
+
+(defn copy-file!
+  "Copies src over dest, replacing it. `:preserve?` keeps the file mode and
+  timestamps (java.nio COPY_ATTRIBUTES)."
+  [src dest & {:keys [preserve?]}]
+  #?(:clj (java.nio.file.Files/copy
+           (.toPath (io/file src)) (.toPath (io/file dest))
+           ^"[Ljava.nio.file.CopyOption;"
+           (into-array java.nio.file.CopyOption
+                       (cond-> [java.nio.file.StandardCopyOption/REPLACE_EXISTING]
+                         preserve? (conj java.nio.file.StandardCopyOption/COPY_ATTRIBUTES))))
+     :cljs (let [s (path-of src) d (path-of dest)]
+             (.copyFileSync fs s d)
+             (when preserve?
+               (let [st (.statSync fs s)]
+                 (.chmodSync fs d (.-mode st))
+                 (.utimesSync fs d (.-atime st) (.-mtime st))))))
+  dest)
+
+(defn copy-tree!
+  "Copies every regular file under src into dest, keeping the relative
+  directory structure (vendor/x.js lands at dest/vendor/x.js). Returns the
+  relative paths copied."
+  [src dest]
+  (let [src-file (file src)]
+    (if (.isDirectory src-file)
+      (vec (for [f (file-seq* src-file)
+                 :when (.isFile f)]
+             (let [rel (relative-path src-file f)
+                   target (file dest rel)]
+               (.mkdirs (.getParentFile target))
+               (copy-file! f target)
+               rel)))
+      [])))
+
+;; ─── resources ────────────────────────────────────────────────────────────
+
+#?(:cljs
+   (def ^:private repo-dir
+     "src/kotoba/shell/host.cljk → the repository root. *file* is bound while
+     the namespace loads (measured: absolute path on the kbb engine)."
+     (some-> *file* (->> (.dirname path)) (->> (.dirname path)) (->> (.dirname path))
+             (->> (.dirname path)))))
+
+(defn resource
+  "clojure.java.io/resource. On Node, looked up under this repository's
+  resources/ then src/ (the deps.edn :paths); nil when absent."
+  [name]
+  #?(:clj (io/resource name)
+     :cljs (when repo-dir
+             (some (fn [dir]
+                     (let [f (file (.join path repo-dir dir name))]
+                       (when (.exists f) f)))
+                   ["resources" "src"]))))
+
+(defn resource-file
+  "The resource as a host file when it lives on the filesystem (not in a jar)."
+  [r]
+  #?(:clj (when (and r (= "file" (.getProtocol ^java.net.URL r))) (io/file r))
+     :cljs r))
+
+;; ─── digests, env, exit ───────────────────────────────────────────────────
+
+(defn sha256-hex
+  "Lower-case hex SHA-256 of the UTF-8 bytes of (str value)."
+  [value]
+  #?(:clj (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                                (.getBytes (str value) java.nio.charset.StandardCharsets/UTF_8))]
+            (apply str (map #(format "%02x" (bit-and % 0xff)) digest)))
+     :cljs (-> (.createHash crypto "sha256") (.update (str value) "utf8") (.digest "hex"))))
+
+(defn sha256-file-hex
+  "Lower-case hex SHA-256 of a file's bytes."
+  [x]
+  #?(:clj (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
+            (with-open [in (io/input-stream (io/file x))]
+              (let [buf (byte-array 65536)]
+                (loop []
+                  (let [n (.read in buf)]
+                    (when (pos? n) (.update digest buf 0 n) (recur))))))
+            (format "%064x" (BigInteger. 1 (.digest digest))))
+     :cljs (-> (.createHash crypto "sha256") (.update (.readFileSync fs (path-of x))) (.digest "hex"))))
+
+(defn getenv
+  [k]
+  #?(:clj (System/getenv k)
+     :cljs (aget (.-env js/process) k)))
+
+(defn os-name
+  "java's os.name, or the Node equivalent (\"Mac OS X\" / \"Linux\" / \"Windows_NT\")."
+  []
+  #?(:clj (System/getProperty "os.name" "")
+     :cljs (.type os)))
+
+(defn tmp-dir [] #?(:clj (System/getProperty "java.io.tmpdir") :cljs (.tmpdir os)))
+
+(defn nano-time [] #?(:clj (System/nanoTime) :cljs (* 1000000 (.now js/Date))))
+
+(defn create-temp-dir
+  "A fresh directory under the system temp dir; returns its path string."
+  [prefix]
+  #?(:clj (.getPath (.toFile (java.nio.file.Files/createTempDirectory
+                              prefix (make-array java.nio.file.attribute.FileAttribute 0))))
+     :cljs (.mkdtempSync fs (.join path (.tmpdir os) prefix))))
+
+(defn create-temp-file
+  "A fresh empty file under the system temp dir; returns it as a host file."
+  [prefix suffix]
+  #?(:clj (doto (java.io.File/createTempFile prefix suffix) (.deleteOnExit))
+     :cljs (let [dir (create-temp-dir prefix)
+                 f (file dir (str prefix suffix))]
+             (.writeFileSync fs (.-path f) "")
+             f)))
+
+(defn exit!
+  "Process exit status. On Node this SETS process.exitCode and returns rather
+  than calling process.exit: stdout to a pipe is asynchronous on macOS, and
+  process.exit would drop the tail of a large --json result. Call it last."
+  [code]
+  #?(:clj (System/exit code)
+     :cljs (set! (.-exitCode js/process) code)))
+
+(defn error-message
+  [e]
+  #?(:clj (.getMessage ^Throwable e)
+     :cljs (or (ex-message e) (str e))))
+
+;; ─── processes ────────────────────────────────────────────────────────────
+
+#?(:clj
+   (do
+     (defn- process-output [process]
+       (with-open [stream (.getInputStream process)] (slurp stream)))
+     (defn- destroy-process-tree! [process]
+       (doseq [handle (reverse (iterator-seq (.iterator (.descendants (.toHandle process)))))]
+         (.destroyForcibly handle))
+       (.destroyForcibly process))
+     (defn- output-or-timeout [output-future] (deref output-future 1000 ""))
+     (defn- process-output-async [process]
+       (let [result (promise)
+             thread (Thread. #(deliver result (process-output process)))]
+         (.setDaemon thread true)
+         (.start thread)
+         result))))
+
+(defn run-process
+  "Runs command+args to completion with stderr merged into stdout.
+
+  Returns {:exit n :stdout s :timed-out? false}, or {:exit nil :stdout s
+  :timed-out? true} when `timeout-seconds` elapsed (the process is killed).
+  `dir` is the working directory (nil = inherit); `stdin` is written then
+  closed (nil = closed immediately).
+
+  Node host: spawnSync with stdout AND stderr on the same file descriptor, so
+  the interleaving is the child's own (what redirectErrorStream gives on the
+  JVM). On timeout Node SIGKILLs the child only; its descendants are not
+  walked the way ProcessHandle.descendants() does on the JVM."
+  [{:keys [command args dir stdin timeout-seconds]}]
+  #?(:clj
+     (let [builder (ProcessBuilder. ^java.util.List (into [command] args))
+           _ (when dir (.directory builder (io/file dir)))
+           process (-> builder (.redirectErrorStream true) (.start))
+           output-future (process-output-async process)
+           _ (if stdin
+               (with-open [writer (io/writer (.getOutputStream process))]
+                 (.write writer (str stdin)))
+               (.close (.getOutputStream process)))
+           completed? (.waitFor process timeout-seconds java.util.concurrent.TimeUnit/SECONDS)]
+       (if completed?
+         {:exit (.exitValue process)
+          :stdout (output-or-timeout output-future)
+          :timed-out? false}
+         (do
+           (destroy-process-tree! process)
+           {:exit nil
+            :stdout (output-or-timeout output-future)
+            :timed-out? true})))
+     :cljs
+     (let [out-dir (.mkdtempSync fs (.join path (.tmpdir os) "kotoba-shell-proc-"))
+           out-file (.join path out-dir "out")
+           fd (.openSync fs out-file "w")
+           result (try
+                    (.spawnSync child-process command (to-array (map str args))
+                                (clj->js (cond-> {:stdio ["pipe" fd fd]
+                                                  :timeout (* 1000 timeout-seconds)
+                                                  :killSignal "SIGKILL"}
+                                           dir (assoc :cwd (path-of dir))
+                                           (some? stdin) (assoc :input (str stdin)))))
+                    (finally (.closeSync fs fd)))
+           stdout (try (.readFileSync fs out-file "utf8") (catch :default _ ""))
+           _ (try (.rmSync fs out-dir #js {:recursive true :force true}) (catch :default _ nil))
+           err (.-error result)
+           timed-out? (and err (= "ETIMEDOUT" (.-code err)))]
+       (cond
+         timed-out? {:exit nil :stdout stdout :timed-out? true}
+         ;; ENOENT and friends: the JVM's ProcessBuilder.start throws
+         ;; IOException here, and callers catch it — keep that contract.
+         err (throw (ex-info (str "Cannot run program \"" command "\": " (.-message err))
+                             {:command command :code (.-code err)}))
+         :else {:exit (or (.-status result) 1)
+                :stdout (cond-> stdout
+                          (.-signal result) (str "\n[kotoba.shell.host] killed by signal " (.-signal result)))
+                :timed-out? false}))))
+
+;; ─── http ─────────────────────────────────────────────────────────────────
+
+(defn http-request
+  "Synchronous JSON-ish HTTP request. {:method \"GET\"|\"POST\"... :uri s
+  :headers {k v} :body s-or-nil} → {:status n :body s}.
+
+  Node host: the request runs in a child `node` process (the engine's own
+  executable) so the call stays synchronous like java.net.http's .send."
+  [{:keys [method uri headers body]}]
+  #?(:clj
+     (let [builder (reduce (fn [b [k v]] (.header b k v))
+                           (java.net.http.HttpRequest/newBuilder (java.net.URI/create uri))
+                           headers)
+           request (if (or (nil? body) (= "GET" method))
+                     (.GET builder)
+                     (.method builder method (java.net.http.HttpRequest$BodyPublishers/ofString body)))
+           response (.send (java.net.http.HttpClient/newHttpClient)
+                           (.build request)
+                           (java.net.http.HttpResponse$BodyHandlers/ofString))]
+       {:status (.statusCode response) :body (.body response)})
+     :cljs
+     (let [script (str "const r=JSON.parse(process.argv[1]);"
+                       "fetch(r.uri,{method:r.method,headers:r.headers,body:r.body??undefined})"
+                       ".then(async x=>{process.stdout.write(JSON.stringify({status:x.status,body:await x.text()}))})"
+                       ".catch(e=>{process.stderr.write(String(e&&e.cause||e));process.exit(3)})")
+           spec (.stringify js/JSON (clj->js {:uri uri
+                                               :method (or method "GET")
+                                               :headers (or headers {})
+                                               :body (when-not (= "GET" method) body)}))
+           result (.spawnSync child-process (.-execPath js/process) #js ["-e" script spec]
+                              #js {:encoding "utf8" :timeout 120000 :maxBuffer (* 64 1024 1024)})]
+       (if (zero? (.-status result))
+         (let [parsed (.parse js/JSON (.-stdout result))]
+           {:status (.-status parsed) :body (.-body parsed)})
+         (throw (ex-info (str "http request failed: " (.-stderr result)) {:uri uri}))))))
+
+;; ─── images ───────────────────────────────────────────────────────────────
+
+(defn read-image-rgb
+  "{:width w :height h :rgb (fn [x y] int)} for a PNG/JPEG file.
+  JVM only (javax.imageio); the Node host refuses by name."
+  [x]
+  #?(:clj (let [img (javax.imageio.ImageIO/read (io/file x))]
+            {:width (.getWidth img) :height (.getHeight img)
+             :rgb (fn [px py] (.getRGB img px py))})
+     :cljs (throw (ex-info "image decoding is JVM-only (javax.imageio); `app visual-test` is not ported to the kbb host"
+                           {:kotoba.shell/reason :jvm-only-image-decode :file (path-of x)}))))
+
+;; ─── code loading ─────────────────────────────────────────────────────────
+
+(defn load-source-file
+  "clojure.core/load-file, synchronously. JVM only: on the kbb engine
+  load-file is asynchronous (a promise), and its one caller (`e2e stack`)
+  resolves vars from the loaded namespace on the next line."
+  [f]
+  #?(:clj (load-file (path-of f))
+     :cljs (throw (ex-info "synchronous load-file is JVM-only; `e2e stack` is not ported to the kbb host"
+                           {:kotoba.shell/reason :jvm-only-load-file :file (path-of f)}))))

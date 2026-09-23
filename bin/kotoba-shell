@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Working operator start is compile + instantiateKotoba.
+# With NO arguments the working operator start is compile + instantiateKotoba.
 # There is no kotoba -M and no kbb -M / kbb -M start path.
 #
 # Replaces the former:
@@ -12,41 +12,32 @@ set -euo pipefail
 # source-run of this guest is kotoba/runtime-rejected (typed forms). That
 # is the intended public command and a named CLI gap, not a working start.
 repo_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_dir"
 
-# A subcommand is REFUSED, not ignored.
+# Subcommands (`app scaffold|check|build|package|run ...`, `release ...`,
+# `store ...`) run the launcher library on the kbb engine (SCI on Node, no
+# JVM) through bin/kotoba_shell.cljk.
 #
-# This block used to print the note below and then fall through to the compile
-# + run demo, so `kotoba-shell app scaffold --target ios --target android ...`
-# wrote nothing and exited 0. Measured 2026-09-06: cloud-itonami-app's
-# mobile/README documents exactly that command as the way to build the iOS and
-# Android apps, and running it produced no output directory and no error — a
-# request that could not be served returning the value of one that was
-# (ADR-2608136000).
+# The working directory is NOT changed: --manifest, :web/dist-dir and
+# --output-dir resolve against the caller's directory (the consumer repo).
+# Until 2026-09-23 this wrapper cd'd into kotoba-lang/shell first and then
+# refused every subcommand with exit 2, because the launcher was JVM code
+# that the kbb engine could not load — there was no working way to build an
+# iOS app with kotoba-shell. Host effects now go through kotoba.shell.host.
 #
-# Exit 2 and not 1: this wrapper did not run and refuse the operation, it
-# cannot dispatch it at all. 1 would say the operation was attempted.
-#
-# The decision NOT to exec the JVM library from here is unchanged — that is
-# what the comment above rejects, and it is a different thing from telling the
-# caller their command was not served.
+# kbb is resolved from PATH, or $KBB when set.
 if [ "$#" -gt 0 ]; then
-  echo "kotoba-shell: subcommands are not dispatched from this wrapper: $*" >&2
-  echo >&2
-  echo "working operator start is compile + instantiateKotoba, with NO arguments:" >&2
-  echo "  kotoba-shell" >&2
-  echo >&2
-  echo "intended public command (CLI source-run gap until the CLI accepts this guest):" >&2
-  echo "  kotoba run kotoba/launcher.kotoba" >&2
-  echo >&2
-  echo "the library that implements this subcommand today, run from the CONSUMER" >&2
-  echo "repository (it resolves --manifest and :web/dist-dir against the working" >&2
-  echo "directory, and this wrapper cd's into kotoba-lang/shell, which is why it" >&2
-  echo "could not serve it even if it dispatched):" >&2
-  echo "  kbb -Sdeps '{:deps {io.github.kotoba-lang/shell {:local/root \"<path-to>/kotoba-lang/shell\"}}}' \\" >&2
-  echo "    -M -m kotoba.shell.launcher $*" >&2
-  exit 2
+  kbb_bin="${KBB:-kbb}"
+  if ! command -v "$kbb_bin" >/dev/null 2>&1; then
+    echo "kotoba-shell: kbb not found (set KBB or put kotoba-lang/kotoba/bin on PATH); cannot run: $*" >&2
+    exit 2
+  fi
+  exec "$kbb_bin" --backend sci \
+    --config "$repo_dir/nbb.edn" \
+    --classpath "$repo_dir/src:$repo_dir/resources" \
+    "$repo_dir/bin/kotoba_shell.cljk" "$@"
 fi
 
+# No arguments: the Kotoba operator demo (compile + instantiateKotoba).
+cd "$repo_dir"
 sh scripts/kotoba-compile.sh
 exec sh scripts/kotoba-run.sh

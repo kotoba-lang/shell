@@ -24,7 +24,7 @@
   evaluates, and both native implementations reproduce
   `kotoba.shell.launcher/policy-decision` exactly."
   (:require [json.data-json :as json]
-            [clojure.java.io :as io]
+            [kotoba.shell.host :as host]
             [kotoba.lang.text :as str]))
 
 (def bridge-provider-commands
@@ -54,7 +54,7 @@
 
 (defn- resource-text
   [path]
-  (slurp (io/resource path)))
+  (host/slurp-file (host/resource path)))
 
 (defn- substitute
   [template replacements]

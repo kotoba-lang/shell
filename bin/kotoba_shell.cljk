@@ -1,0 +1,24 @@
+;; bin/kotoba_shell.cljk — the kbb entry for the launcher subcommands
+;; (`app scaffold|check|build|package|run ...`, `release ...`, `store ...`).
+;;
+;; Run from the CONSUMER repository: --manifest, :web/dist-dir and
+;; --output-dir resolve against the working directory. bin/kotoba-shell execs
+;; this with the classpath and nbb.edn of kotoba-lang/shell, so the consumer
+;; needs no deps.edn entry:
+;;
+;;   <path-to>/kotoba-lang/shell/bin/kotoba-shell app scaffold --target ios \
+;;     --manifest app.kotoba.edn --json
+;;
+;; which is
+;;
+;;   kbb --backend sci --config <shell>/nbb.edn \
+;;       --classpath <shell>/src:<shell>/resources \
+;;       <shell>/bin/kotoba_shell.cljk app scaffold ...
+;;
+;; Runs on the kbb engine (SCI on Node); no JVM. Host effects go through
+;; kotoba.shell.host. Exit status is the launcher's result->exit (0 ok / 1
+;; blocked).
+(ns kotoba-shell-entry
+  (:require [kotoba.shell.launcher :as launcher]))
+
+(apply launcher/-main *command-line-args*)
