@@ -1,7 +1,7 @@
 (ns kotoba.shell.event-test
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotoba.shell.event :as event]
             [kotoba.shell.input :as input]))
 

@@ -1,5 +1,5 @@
 (ns kotoba.shell.sidecar-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotoba.shell.sidecar :as sidecar]))
 
 (def ^:private studio
