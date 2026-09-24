@@ -2,7 +2,7 @@
   (:require [json.data-json :as json]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotoba.shell.connector :as connector]
             [kotoba.shell.event-test]
             [kotoba.shell.input-test]
@@ -1812,7 +1812,7 @@
   ;; turn main red; fixing it here would collide with in-flight work on that
   ;; file. Wire it in with the fix, not before.
   (let [{:keys [fail error]}
-        (clojure.test/run-tests 'kotoba.shell.launcher-test
+        (kotoba.test/run-tests 'kotoba.shell.launcher-test
                                 'kotoba.shell.sidecar-test
                                 'kotoba.shell.event-test
                                 'kotoba.shell.input-test

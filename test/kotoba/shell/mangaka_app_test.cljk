@@ -1,5 +1,5 @@
 (ns kotoba.shell.mangaka-app-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotoba.shell.apps.mangaka :as mangaka]))
 
 (deftest mangaka-local-app-exposes-generation-and-preview
