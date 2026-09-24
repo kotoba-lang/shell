@@ -3,7 +3,7 @@
             [kotoba.lang.edn :as edn]
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
-            [clojure.set :as set]
+            [kotoba.lang.coll :as set]
             [kotoba.lang.text]
             [kotoba.shell.tamaki-observer :as observer]
             [kotoba.tamaki.actor :as actor]

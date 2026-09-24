@@ -1,5 +1,5 @@
 (ns kotoba.shell.launcher-test
-  (:require [json.data-json :as json]
+  (:require [kotoba.bytes :as kbytes] [kotoba.io :as kio] [json.data-json :as json]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing]]
@@ -16,8 +16,8 @@
             [kotoba.shell.launcher :as launcher]))
 
 (deftest tamaki-event-reader-only-parses-new-complete-records
-  (let [root (.toFile (java.nio.file.Files/createTempDirectory
-                       "tamaki-events" (make-array java.nio.file.attribute.FileAttribute 0)))
+  (let [root (kio/temp-dir
+                       "tamaki-events")
         file (io/file root "events.edn")
         event-1 {:tamaki.event/id "one" :tamaki.event/at 1}
         event-2 {:tamaki.event/id "二" :tamaki.event/at 2}]
@@ -74,8 +74,8 @@
               ops))))
 
 (deftest tamaki-observer-joins-west-rad-github-and-agent-activity
-  (let [root (.toFile (java.nio.file.Files/createTempDirectory
-                       "tamaki-registry" (make-array java.nio.file.attribute.FileAttribute 0)))
+  (let [root (kio/temp-dir
+                       "tamaki-registry")
         manifest (io/file root "west.yml")
         repo-dir (io/file root "orgs/etzhayyim/tamaki/.git")]
     (.mkdirs repo-dir)
@@ -1046,13 +1046,13 @@
   ;; applied and a 720x512 window titled `Kotoba` came up reading
   ;; `No kotoba:dom root`. The real 430x892 surface never appeared and nothing
   ;; reported a problem -- it looked like the application.
-  (let [dir (java.nio.file.Files/createTempDirectory
-             "kotoba-bundle" (into-array java.nio.file.attribute.FileAttribute []))
-        binary (io/file (.toFile dir) "kotoba-shell-host-macos-window")
+  (let [dir (kio/temp-dir
+             "kotoba-bundle")
+        binary (io/file dir "kotoba-shell-host-macos-window")
         manifest {:app/id "cloud.itonami.app" :app/name "Cloud Itonami"}
         args ["--title" "Cloud Itonami" "--ops-json" "null"
               "--web-url" "http://localhost:1338/?surface=native"]
-        recorded (fn [] (io/file (.toFile dir) "apps" "cloud.itonami.app"
+        recorded (fn [] (io/file dir "apps" "cloud.itonami.app"
                                  "Cloud Itonami.app" "Contents" "Resources"
                                  "launch-arguments.json"))]
     (spit binary "#!/bin/sh\nexit 0\n")
@@ -1345,8 +1345,7 @@
         (reset! seen-auth (some-> (.getRequestHeaders exchange)
                                   (.getFirst "authorization")))
         (let [body (slurp (.getRequestBody exchange))
-              response (.getBytes (str "{\"received\":" (pr-str (boolean (re-find #"app-store-connect" body))) "}")
-                                  java.nio.charset.StandardCharsets/UTF_8)]
+              response (kbytes/utf8-bytes (str "{\"received\":" (pr-str (boolean (re-find #"app-store-connect" body))) "}"))]
           (.sendResponseHeaders exchange 200 (count response))
           (with-open [out (.getResponseBody exchange)]
             (.write out response))))
@@ -1638,8 +1637,8 @@
 
 (defn- temp-dir
   [prefix]
-  (.getPath (.toFile (java.nio.file.Files/createTempDirectory
-                      prefix (make-array java.nio.file.attribute.FileAttribute 0)))))
+  (.getPath (kio/temp-dir
+                      prefix)))
 
 (deftest scaffold-carries-the-in-app-provider-bridge
   ;; Before this, a scaffolded app had no provider implementation at all: the
