@@ -1,15 +1,15 @@
 (ns kotoba.shell.apps.mangaka
   "Kotoba-native local control surface for the Mangaka LangGraph/Genko loop."
   (:require [kotoba.lang.edn :as edn]
-            [clojure.java.io :as io]
+            [kotoba.io :as io]
             [json.data-json :as json]))
 
 (defn- workspace-root []
   (or (System/getenv "MANGAKA_WORKSPACE")
-      (-> (io/file "../../..") .getCanonicalPath)))
+      (-> (io/file "../../..") io/canonical-path)))
 
 (defn- artifact [relative]
-  (.getCanonicalPath (io/file (workspace-root) relative)))
+  (io/canonical-path (io/file (workspace-root) relative)))
 
 (def score-path
   "orgs/gftdcojp/mangaka-data/ghosthacker/resources/gpt-image-base-scenes/gh-arc0-1-p00/visual-score.edn")
