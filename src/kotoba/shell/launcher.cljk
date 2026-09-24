@@ -1,7 +1,7 @@
 (ns kotoba.shell.launcher
   (:gen-class)
   (:require [json.data-json :as json]
-            [clojure.edn :as edn]
+            [kotoba.lang.edn :as edn]
             [kotoba.shell.host :as host]
             [kotoba.lang.text :as str]
             [kotoba.shell.native-bridge :as bridge]
