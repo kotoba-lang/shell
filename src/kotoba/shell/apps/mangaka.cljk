@@ -1,6 +1,6 @@
 (ns kotoba.shell.apps.mangaka
   "Kotoba-native local control surface for the Mangaka LangGraph/Genko loop."
-  (:require [clojure.edn :as edn]
+  (:require [kotoba.lang.edn :as edn]
             [clojure.java.io :as io]
             [json.data-json :as json]))
 
