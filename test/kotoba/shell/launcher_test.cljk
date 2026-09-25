@@ -1,5 +1,5 @@
 (ns kotoba.shell.launcher-test
-  (:require [kotoba.bytes :as kbytes] [kotoba.io :as kio] [json.data-json :as json]
+  (:require [kotoba.lang.error :as kerror] [kotoba.bytes :as kbytes] [kotoba.io :as kio] [json.data-json :as json]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing]]
@@ -243,7 +243,7 @@
   (is (nil? (connector/argv "TEST_CONNECTOR" nil read-string)))
   (is (= ["tool" "--json"]
          (connector/argv "TEST_CONNECTOR" "[\"tool\" \"--json\"]" read-string)))
-  (is (thrown? clojure.lang.ExceptionInfo
+  (is (thrown? kerror/ExceptionInfo
                (connector/argv "TEST_CONNECTOR" "\"tool --json\"" read-string))))
 
 (deftest local-experience-score-is-bounded-and-actionable

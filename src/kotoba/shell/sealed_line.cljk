@@ -3,9 +3,9 @@
   persistence are host/application responsibilities."
   #?(:clj (:import [java.security SecureRandom]
                    [javax.crypto Cipher]
-                   [javax.crypto.spec GCMParameterSpec SecretKeySpec]
-                   [java.util Base64]))
-  #?(:cljs (:require ["crypto" :as crypto])))
+                   [javax.crypto.spec GCMParameterSpec SecretKeySpec]))
+  #?(:cljs (:require ["crypto" :as crypto]))
+  (:require [kotoba.bytes :as kbytes]))
 
 (def version 1)
 
@@ -13,17 +13,17 @@
    (do
      (defn random-key []
        (let [bytes (byte-array 32)] (.nextBytes (SecureRandom.) bytes) bytes))
-     (defn- b64 [bytes] (.encodeToString (Base64/getEncoder) bytes))
-     (defn- unb64 [s] (.decode (Base64/getDecoder) s))
+     (defn- b64 [bytes] (kbytes/base64-encode bytes))
+     (defn- unb64 [s] (kbytes/base64-decode-bytes s))
      (defn seal [key plaintext aad]
        (let [nonce (random-key)
              nonce (java.util.Arrays/copyOf nonce 12)
              cipher (Cipher/getInstance "AES/GCM/NoPadding")]
          (.init cipher Cipher/ENCRYPT_MODE (SecretKeySpec. key "AES") (GCMParameterSpec. 128 nonce))
-         (.updateAAD cipher (.getBytes (str aad) "UTF-8"))
+         (.updateAAD cipher (kbytes/utf8-bytes (str aad)))
          {:sealed/version version :sealed/alg :aes-256-gcm
           :sealed/nonce (b64 nonce)
-          :sealed/ciphertext (b64 (.doFinal cipher (.getBytes (str plaintext) "UTF-8")))}))
+          :sealed/ciphertext (b64 (.doFinal cipher (kbytes/utf8-bytes (str plaintext))))}))
      (defn open [key envelope aad]
        (when-not (and (= version (:sealed/version envelope))
                       (= :aes-256-gcm (:sealed/alg envelope)))
@@ -31,8 +31,8 @@
        (let [cipher (Cipher/getInstance "AES/GCM/NoPadding")]
          (.init cipher Cipher/DECRYPT_MODE (SecretKeySpec. key "AES")
                 (GCMParameterSpec. 128 (unb64 (:sealed/nonce envelope))))
-         (.updateAAD cipher (.getBytes (str aad) "UTF-8"))
-         (String. (.doFinal cipher (unb64 (:sealed/ciphertext envelope))) "UTF-8")))))
+         (.updateAAD cipher (kbytes/utf8-bytes (str aad)))
+         (kbytes/utf8-string (.doFinal cipher (unb64 (:sealed/ciphertext envelope))))))))
 
 #?(:cljs
    (do
