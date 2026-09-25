@@ -22,7 +22,7 @@
   scripts/nbb_compat.cljk — re-implemented here so kotoba-lang/shell stays
   self-contained. Paths are NOT made absolute: `(.getPath (file \"a\" \"b\"))`
   is \"a/b\" on both hosts, because plans and tests report these strings."
-  (:require [kotoba.lang.text :as str]
+  (:require [kotoba.image :as image] [kotoba.bytes :as kbytes] [kotoba.lang.text :as str]
             #?@(:clj [[clojure.java.io :as io]]
                 :cljs [["fs" :as fs]
                        ["os" :as os]
@@ -217,7 +217,7 @@
   "Lower-case hex SHA-256 of the UTF-8 bytes of (str value)."
   [value]
   #?(:clj (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
-                                (.getBytes (str value) java.nio.charset.StandardCharsets/UTF_8))]
+                                (kbytes/utf8-bytes (str value)))]
             (apply str (map #(format "%02x" (bit-and % 0xff)) digest)))
      :cljs (-> (.createHash crypto "sha256") (.update (str value) "utf8") (.digest "hex"))))
 
@@ -396,9 +396,9 @@
   "{:width w :height h :rgb (fn [x y] int)} for a PNG/JPEG file.
   JVM only (javax.imageio); the Node host refuses by name."
   [x]
-  #?(:clj (let [img (javax.imageio.ImageIO/read (io/file x))]
-            {:width (.getWidth img) :height (.getHeight img)
-             :rgb (fn [px py] (.getRGB img px py))})
+  #?(:clj (let [img (image/read-file (io/file x))]
+            {:width (image/width img) :height (image/height img)
+             :rgb (fn [px py] (image/get-rgb img px py))})
      :cljs (throw (ex-info "image decoding is JVM-only (javax.imageio); `app visual-test` is not ported to the kbb host"
                            {:kotoba.shell/reason :jvm-only-image-decode :file (path-of x)}))))
 

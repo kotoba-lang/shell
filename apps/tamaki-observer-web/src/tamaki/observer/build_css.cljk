@@ -1,5 +1,5 @@
 (ns tamaki.observer.build-css
-  (:require [clojure.java.io :as io]
+  (:require [kotoba.io :as io]
             [css.build :as css]
             [jp-go-dds.tokens :as tokens]))
 
