@@ -1,0 +1,98 @@
+(ns kotoba.shell.process
+  "Managed argv processes for the Node/SCI host. Handles grant control only
+  over children created here. Spawn success is not application readiness."
+  (:require ["node:child_process" :as child-process]
+            ["node:crypto" :as crypto]))
+
+(defonce ^:private sessions (atom {}))
+(def ^:private terminal-states #{:exited :failed :cancelled :timed-out :output-limit})
+(defn status [handle]
+  (if-let [entry (get @sessions handle)]
+    @(:state entry)
+    {:state :unknown :ready? false}))
+(defn active-count []
+  (count (remove #(contains? terminal-states (:state @(:state %))) (vals @sessions))))
+(defn release! [handle]
+  (if (contains? terminal-states (:state (status handle)))
+    (do (swap! sessions dissoc handle) true)
+    false))
+(defn- signal! [child signal]
+  (try
+    (if (= "win32" (.-platform js/process))
+      (.kill child signal)
+      (.kill js/process (- (.-pid child)) signal))
+    (catch :default _ nil)))
+(defn- terminate! [entry reason]
+  (when-not (contains? (conj terminal-states :stopping) (:state @(:state entry)))
+    (swap! (:state entry) assoc :state :stopping :reason reason)
+    (signal! (:child entry) "SIGTERM")
+    (when-not @(:kill-timer entry)
+      (reset! (:kill-timer entry)
+              (js/setTimeout #(signal! (:child entry) "SIGKILL") (:grace-ms entry))))))
+(defn stop! [handle]
+  (when-let [entry (get @sessions handle)] (terminate! entry :cancelled))
+  (status handle))
+(defn wait! [handle]
+  (if-let [entry (get @sessions handle)]
+    (:completion entry)
+    (js/Promise.resolve (status handle))))
+
+(defn start!
+  "Return an opaque handle immediately; wait! resolves on close. No shell
+  interpolation. Output is discarded unless capture? is true, and total
+  stdout+stderr bytes are capped either way. Errors never include argv/input.
+  POSIX children own a process group, cleaned on close; Windows stops only
+  the direct child and reports that limitation. release! frees terminal data."
+  [{:keys [argv cwd stdin timeout-ms max-output-bytes capture? grace-ms]
+    :or {timeout-ms 120000 max-output-bytes 1048576 capture? false grace-ms 250}}]
+  (when-not (and (vector? argv) (seq argv) (every? string? argv)
+                 (every? #(not (.includes % "\u0000")) argv)
+                 (seq (first argv))
+                 (or (nil? cwd) (and (string? cwd) (seq cwd) (not (.includes cwd "\u0000"))))
+                 (or (nil? stdin) (and (string? stdin) (<= (.byteLength js/Buffer stdin) 1048576)))
+                 (boolean? capture?)
+                 (integer? timeout-ms) (<= 1 timeout-ms 86400000)
+                 (integer? max-output-bytes) (<= 1 max-output-bytes 16777216)
+                 (integer? grace-ms) (<= 0 grace-ms 10000)
+                 (< (count @sessions) 128))
+    (throw (ex-info "Invalid process request or session capacity exceeded" {})))
+  (let [handle (.randomUUID crypto)
+        state (atom {:state :starting :ready? false
+                     :tree-control (if (= "win32" (.-platform js/process)) :direct-child :process-group)})
+        resolver (atom nil)
+        completion (js/Promise. #(reset! resolver %1))
+        child (.spawn child-process (first argv) (clj->js (vec (rest argv)))
+                      (clj->js (cond-> {:shell false :detached (not= "win32" (.-platform js/process))
+                                       :stdio ["pipe" "pipe" "pipe"]}
+                                 cwd (assoc :cwd cwd))))
+        entry {:state state :child child :completion completion
+               :kill-timer (atom nil) :grace-ms grace-ms}
+        bytes (atom 0) stdout (atom []) stderr (atom [])
+        timer (js/setTimeout #(terminate! entry :timed-out) timeout-ms)
+        collect (fn [target chunk]
+                  (let [n (.-length chunk) remaining (max 0 (- max-output-bytes @bytes))]
+                    (when (and capture? (pos? remaining))
+                      (swap! target conj (.from js/Buffer (.subarray chunk 0 (min remaining n)))))
+                    (swap! bytes + n)
+                    (when (> @bytes max-output-bytes) (terminate! entry :output-limit))))]
+    (swap! sessions assoc handle entry)
+    (.on child "spawn" #(when (= :starting (:state @state))
+                           (swap! state assoc :state :running :pid (.-pid child))))
+    (.on child "exit" (fn [_ _] (signal! child "SIGKILL")))
+    (.on child "error" #(swap! state assoc :state :failed :error (or (.-code %) "SPAWN_ERROR")))
+    (.on (.-stdin child) "error" (fn [_] nil))
+    (.on (.-stdout child) "data" #(collect stdout %))
+    (.on (.-stderr child) "data" #(collect stderr %))
+    (.on child "close"
+         (fn [code signal]
+           (js/clearTimeout timer)
+           (when-let [t @(:kill-timer entry)] (js/clearTimeout t))
+           (swap! state assoc :state (or (:reason @state)
+                                        (when (= :failed (:state @state)) :failed) :exited)
+                  :exit code :signal signal :output-bytes @bytes)
+           (when capture?
+             (swap! state assoc :stdout (.toString (.concat js/Buffer (clj->js @stdout)) "utf8")
+                    :stderr (.toString (.concat js/Buffer (clj->js @stderr)) "utf8")))
+           (@resolver @state)))
+    (.end (.-stdin child) (or stdin ""))
+    {:handle handle :state :starting :ready? false}))
