@@ -1,0 +1,29 @@
+(ns kotoba.shell.async-connector
+  "Promise-based bounded connector for Node/SCI; codec and domain validation
+  belong to callers. The existing JVM connector remains synchronous."
+  (:require [kotoba.shell.process :as process]))
+
+(defn invoke!
+  "One encoded stdin value plus newline; decode stdout only on clean exit.
+  Failures contain no argv, payload, stdout, stderr or exception messages.
+  The promise resolves to a validated domain value or {:ok? false :error ...}."
+  [{:keys [argv input encode decode success? timeout-ms max-output-bytes]
+    :or {timeout-ms 120000 max-output-bytes 1048576}}]
+  (try
+    (let [{:keys [handle]} (process/start! {:argv argv :stdin (str (encode input) "\n")
+                                          :capture? true :timeout-ms timeout-ms
+                                          :max-output-bytes max-output-bytes})]
+      (-> (process/wait! handle)
+          (.then (fn [result]
+                   (process/release! handle)
+                   (if (and (= :exited (:state result)) (= 0 (:exit result)))
+                     (try (let [value (decode (:stdout result))]
+                            (if (success? value) value {:ok? false :error :connector-invalid-result}))
+                          (catch :default _ {:ok? false :error :connector-invalid-result}))
+                     {:ok? false
+                      :error (case (:state result)
+                               :timed-out :connector-timeout
+                               :output-limit :connector-output-limit
+                               :connector-failed)
+                      :exit (:exit result)})))))
+    (catch :default _ (js/Promise.resolve {:ok? false :error :connector-invalid-request}))))

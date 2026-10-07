@@ -1,0 +1,45 @@
+(ns kotoba.shell.process-runtime
+  (:require [kotoba.shell.process :as p] [kotoba.shell.async-connector :as c] ["node:path" :as path]))
+(def fixture (.resolve path "test/fixtures/process-child.cjs"))
+(defn start [mode opts] (p/start! (merge {:argv [(.-execPath js/process) fixture mode]} opts)))
+(defn check! [v message] (when-not v (throw (ex-info message {}))))
+(defn run! []
+  (-> (p/wait! (:handle (start "echo" {:stdin "literal $(touch nope)" :capture? true})))
+      (.then (fn [r]
+               (check! (and (= 0 (:exit r)) (= "literal $(touch nope)" (:stdout r))) "argv/stdin fidelity")
+               (check! (false? (:ready? r)) "spawn must not imply readiness")
+               (p/wait! (:handle (p/start! {:argv ["/definitely/missing" "secret"]})))))
+      (.then (fn [r]
+               (check! (and (= :failed (:state r)) (not (.includes (pr-str r) "secret"))) "redacted spawn error")
+               (p/wait! (:handle (start "sleep" {:timeout-ms 50 :grace-ms 50})))))
+      (.then (fn [r]
+               (check! (= :timed-out (:state r)) "timeout")
+               (p/wait! (:handle (start "flood" {:max-output-bytes 32 :capture? true})))))
+      (.then (fn [r]
+               (check! (and (= :output-limit (:state r)) (= 32 (count (:stdout r)))) "bounded output")
+               (let [s (start "tree" {:capture? true})]
+                 (js/setTimeout #(p/stop! (:handle s)) 300)
+                 (p/wait! (:handle s)))))
+      (.then (fn [r]
+               (check! (= :cancelled (:state r)) "cancel")
+               (let [pid (js/parseInt (:stdout r))]
+                 (check! (pos? pid) "grandchild started")
+                 (try (.kill js/process pid 0) (throw (ex-info "grandchild survived" {}))
+                      (catch :default e (check! (= "ESRCH" (.-code e)) "process group cleanup"))))
+               (check! (= :unknown (:state (p/stop! "foreign-handle"))) "foreign handle")
+               (check! (= 0 (p/active-count)) "no active processes")
+               (p/wait! (:handle (start "orphan" {})))))
+      (.then (fn [r]
+               (check! (= :exited (:state r)) "parent exit cleans inherited descendant pipes")
+               (c/invoke! {:argv [(.-execPath js/process) fixture "echo"]
+                           :input {:ok? true} :encode pr-str :decode read-string :success? :ok?})))
+      (.then (fn [r]
+               (check! (= {:ok? true} r) "connector round trip")
+               (c/invoke! {:argv [(.-execPath js/process) fixture "error"]
+                           :input "private-input-password" :encode str :decode read-string :success? :ok?})))
+      (.then (fn [r]
+               (check! (and (= :connector-failed (:error r))
+                            (not (.includes (pr-str r) "private-input-password"))) "connector error redaction")
+               (println "process runtime: 11 checks passed")))
+      (.catch (fn [e] (println e) (set! (.-exitCode js/process) 1)))))
+(run!)

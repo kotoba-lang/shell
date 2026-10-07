@@ -588,3 +588,52 @@ Tamaki and Radicle.
 - `aiueos`: OS/app orchestration model consumed by the shell provider catalog.
 - `kotoba-safety-clj`: safety gate/policy layer consumed before privileged
   host/provider execution.
+
+## Managed processes and asynchronous connectors (Node/SCI)
+
+`kotoba.shell.process` is the shared library for interactive setup and desktop
+children. `start!` accepts an argv vector, never a shell string, and returns an
+opaque `:handle`. Use `status`, `stop!`, `wait!` (a Promise), and `release!` after
+completion. `:running` means the OS spawned the child; `:ready?` remains false.
+Application readiness must be established through its own protocol.
+
+```clojure
+(require '[kotoba.shell.process :as process])
+(def launch (process/start! {:argv ["/absolute/path/to/murakumo" "setup"]
+                            :timeout-ms 3600000}))
+(process/status (:handle launch))
+(process/stop! (:handle launch))
+(-> (process/wait! (:handle launch))
+    (.then (fn [result] (process/release! (:handle launch)) result)))
+```
+
+The defaults are a two-minute lifetime, 1 MiB combined stdout/stderr, discarded
+output, and a 250 ms graceful shutdown before forced termination. Output limits
+apply even without capture. Capture is opt-in and may contain secrets; callers
+must not log it blindly. Requests cap stdin at 1 MiB and retain at most 128
+sessions. Callers must stop owned sessions when their application shuts down.
+On macOS/Linux, each session owns a process group and descendants are terminated
+when the parent exits, on cancellation, or on timeout. Descendants that explicitly
+leave that process group are outside this guarantee. Windows reports
+`:tree-control :direct-child`; a native job-object provider is still needed for
+whole-tree control there. The new libraries are Node/SCI host modules, not JVM,
+browser guest, or native BLE providers.
+
+`kotoba.shell.async-connector/invoke!` builds on this lifecycle. Supply `:argv`,
+`:input`, `:encode`, `:decode`, and `:success?`; its Promise resolves to a validated
+value or a redacted failure. It frames one value followed by a newline and frees
+its session after completion. Failure data excludes stdin, argv, both outputs,
+and decoder/OS messages. The original synchronous JVM connector and
+`host/run-process` remain unchanged.
+
+Runtime verification:
+
+```sh
+kbb --backend sci --config nbb.edn --classpath src test/kotoba/shell/process_runtime.cljk
+```
+
+The test executes real children and a grandchild: literal stdin, spawn failure,
+timeout with ignored SIGTERM, bounded output, cancellation, process-group cleanup,
+foreign handles, inherited descendant pipes, connector codec round-trip, and
+failure redaction. Mac Node/SCI passed on 2026-10-07. Other OS runtimes are not
+qualified by that result.
